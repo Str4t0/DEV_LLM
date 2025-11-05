@@ -1,3 +1,26 @@
+# 🧠 LLM Dev Environment
+
+**Fejlesztői környezet AI-modellek segítségével, React + FastAPI alapokon.**
+
+Ez a projekt egy lokális fejlesztői környezet, amely lehetővé teszi a kódok, projektek és AI-alapú interakciók kezelését.  
+A rendszer két részből áll: egy **Python FastAPI backendből** (SQLite adatbázissal) és egy **React + TypeScript frontendből (Vite)**.
+
+---
+
+## 🚀 Fő funkciók
+
+- Projektek létrehozása és kezelése (név, leírás, gyökérmappa)
+- Kódszerkesztő több panellel (forrás, módosított, diff nézet)
+- Helyi mentés (LocalStorage) projekt-specifikus beállításokhoz
+- Egyszerű undo/redo és diff összehasonlítás
+- Online/offline állapotjelző (backend elérhetősége alapján)
+- Alap AI-integrációra előkészített architektúra
+
+---
+
+## 📂 Könyvtárstruktúra
+
+```plaintext
 llm_dev_env/
 │
 ├── backend/
@@ -21,10 +44,8 @@ llm_dev_env/
 │   └── vite.config.ts       # Vite build konfiguráció
 │
 └── README.md
-
 ⚙️ Használt technológiák
 Backend
-
 Python 3.10+
 
 FastAPI
@@ -34,7 +55,6 @@ SQLAlchemy
 SQLite
 
 Frontend
-
 React 18
 
 TypeScript
@@ -45,6 +65,8 @@ CSS (custom UI layout)
 
 🧩 Telepítés és futtatás
 1️⃣ Backend (FastAPI)
+bash
+Kód másolása
 cd backend
 python -m venv venv
 venv\Scripts\activate  # Windows
@@ -52,20 +74,19 @@ venv\Scripts\activate  # Windows
 
 pip install fastapi uvicorn sqlalchemy
 uvicorn app.main:app --reload
-
-
 A backend ezután a http://127.0.0.1:8000 címen lesz elérhető.
 Egyszerű health check:
 
+bash
+Kód másolása
 curl http://127.0.0.1:8000/health
 # {"status":"ok"}
-
 2️⃣ Frontend (React + Vite)
+bash
+Kód másolása
 cd frontend
 npm install
 npm run dev
-
-
 A frontend alapértelmezetten a http://localhost:5173 címen fut, és automatikusan kommunikál a backenddel (http://localhost:8000).
 
 🧠 API végpontok
@@ -76,14 +97,14 @@ POST	/projects	Új projekt létrehozása
 
 Példa POST-body:
 
+json
+Kód másolása
 {
   "name": "Teszt projekt",
   "description": "Ez egy teszt projekt",
   "root_path": "C:/Projektek/Teszt"
 }
-
 🧰 Fejlesztői információk
-
 A frontend és backend külön fut, CORS engedéllyel összekötve.
 
 A projektek SQLite adatbázisban tárolódnak (backend/app.db).
@@ -93,11 +114,9 @@ A frontend a localStorage-t használja a projektekhez kötött kódok és beáll
 A diff nézet a két kódszöveg soronkénti egyszerű összehasonlítását végzi.
 
 🧩 Fejlesztői cél
-
 Ez a környezet AI-modellek integrációjához és lokális LLM-fejlesztéshez készült,
 ahol a backend képes modelleket kiszolgálni, a frontend pedig fejlesztői felületet biztosít a kódfuttatáshoz, mentéshez és interakcióhoz.
 
 📜 Licenc
-
 MIT License © 2025
 Készült személyes fejlesztői környezethez és AI-integrációs kísérletekhez.
