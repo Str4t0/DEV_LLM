@@ -1,0 +1,24 @@
+# === PYTHON / FASTAPI ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+.env
+.venv/
+venv/
+
+# === NODE / REACT ===
+node_modules/
+dist/
+*.log
+
+# === PROJEKT ARCHÍV / LOKÁLIS CUCCOK ===
+*.zip
+lista.txt
+
+# === IDE / OS ===
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

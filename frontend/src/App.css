@@ -1,0 +1,656 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #f1f3f6;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.app-root {
+  height: 100%;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ====== FEJLÉC ====== */
+
+.app-header {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid #ddd;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  font-size: 0.9rem;
+  z-index: 100;
+}
+
+.menu-area {
+  flex: 1;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-buttons {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 12px;
+}
+
+.history-button {
+  border-radius: 6px;
+  border: 1px solid #d4d4d8;
+  background: #f4f4f5;
+  padding: 2px 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  min-width: 24px;
+}
+
+.history-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.history-button:not(:disabled):hover {
+  background: #e5e7eb;
+}
+
+.status-area {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: gray;
+}
+
+.status-online {
+  background: #16a34a;
+}
+
+.status-offline {
+  background: #dc2626;
+}
+
+.status-connecting {
+  background: #f59e0b;
+}
+
+.status-label {
+  font-size: 0.8rem;
+}
+
+.header-right {
+  flex: 1;
+  text-align: right;
+  font-weight: 600;
+}
+
+/* ====== FŐ LAYOUT ====== */
+
+.app-body {
+  flex: 1;
+  padding: 8px;
+  background: #f1f3f6;
+  width: 100%;
+  min-height: 0;
+}
+
+.main-row {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+}
+
+/* ====== PANELEK ÁLTALÁNOSSÁG ====== */
+
+.panel {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Bal oszlop: projektek */
+
+.projects-panel {
+  flex: 0 0 auto;
+  min-width: 160px;
+  max-width: 600px;
+}
+
+/* Jobb oldal: kód + chat + opciók */
+
+.right-area {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  margin-left: 8px;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Felső sor: forráskód, módosított, opciók */
+
+.top-row {
+  display: flex;
+  width: 100%;
+  min-height: 220px;
+  min-height: 0;
+}
+
+/* Forráskód panel */
+
+.source-panel {
+  flex: 0 0 auto;
+  min-width: 200px;
+  min-height: 0;
+}
+
+/* Módosított kód panel */
+
+.projected-panel {
+  flex: 1 1 auto;
+  min-width: 220px;
+  margin-left: 8px;
+  min-height: 0;
+}
+
+/* Opciók panel */
+
+.options-panel {
+  flex: 0 0 auto;
+  min-width: 140px;
+  max-width: 520px;
+  margin-left: 8px;
+}
+
+.options-content {
+  flex: 1;
+  padding: 10px;
+}
+
+.options-section {
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+.options-section-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+}
+
+.options-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+
+.options-number-input {
+  width: 100%;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid #d4d4d8;
+  font-size: 0.8rem;
+}
+
+.options-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.8rem;
+}
+
+.options-checkbox-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+
+.options-hint {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+/* Chat panel */
+
+.chat-panel {
+  margin-top: 8px;
+  min-height: 140px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ====== PANEL FEJLÉCEK ====== */
+
+.panel-header {
+  height: 38px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #eee;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #f8f9fb;
+}
+
+.panel-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-toggle {
+  display: inline-flex;
+  background: #e5e7eb;
+  border-radius: 999px;
+  padding: 2px;
+}
+
+.diff-toggle-btn {
+  border: none;
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.diff-toggle-btn.active {
+  background: #ffffff;
+  box-shadow: 0 0 0 1px #d4d4d8;
+  font-weight: 600;
+}
+
+
+/* Encoding select */
+
+.encoding-select {
+  border-radius: 6px;
+  border: 1px solid #d4d4d8;
+  padding: 2px 4px;
+  font-size: 0.75rem;
+  background: #ffffff;
+}
+
+/* ====== KÓDSZERKESZTŐ SORSZÁMMAL ====== */
+
+.code-editor-wrapper {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  font-family: "Fira Code", Menlo, Monaco, Consolas, "Courier New", monospace;
+  font-size: 0.9rem;
+}
+
+.diff-view {
+  flex: 1;
+  padding: 8px 10px;
+  overflow: auto;
+  font-family: "Fira Code", Menlo, Monaco, Consolas, "Courier New", monospace;
+  font-size: 0.85rem;
+  background: #f9fafb;
+}
+
+.diff-line {
+  display: flex;
+  gap: 6px;
+  white-space: pre;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.diff-gutter {
+  width: 14px;
+  text-align: center;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.diff-line-common {
+  background: transparent;
+}
+
+.diff-line-added {
+  background: #ecfdf5;
+  color: #166534;
+}
+
+.diff-line-removed {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+
+.line-numbers {
+  width: 3.2rem;
+  padding: 10px 4px 10px 8px;
+  background: #f5f5f5;
+  color: #6b7280;
+  text-align: right;
+  border-right: 1px solid #e5e7eb;
+  overflow-y: hidden;
+  overflow-x: hidden;
+  white-space: pre;
+  line-height: 1.4;
+}
+
+.code-textarea {
+  flex: 1;
+  border: none;
+  padding: 10px;
+  resize: none;
+  outline: none;
+  font-family: inherit;
+  font-size: inherit;
+  overflow: auto; /* függőleges + vízszintes scrollbar */
+}
+
+/* ====== PROJEKTEK LISTA ====== */
+
+.projects-list {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+  font-size: 0.85rem;
+}
+
+.projects-info {
+  font-size: 0.8rem;
+  color: #6b7280;
+  padding: 4px;
+}
+
+.projects-error {
+  font-size: 0.8rem;
+  color: #b91c1c;
+  padding: 4px;
+}
+
+.project-item {
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.15s, transform 0.05s;
+}
+
+.project-item:hover {
+  background: #f3f4f6;
+}
+
+.project-item.selected {
+  background: #dcfce7;
+  border: 1px solid #16a34a;
+}
+
+.project-name {
+  font-weight: 600;
+}
+
+.project-description {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+/* ====== CHAT ====== */
+
+.chat-messages {
+  flex: 1;
+  padding: 10px;
+  overflow: auto;
+  font-size: 0.9rem;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid #eee;
+  background: #fafafa;
+  flex: 0 0 auto;
+}
+
+.chat-input {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  font-size: 0.85rem;
+  transition: border-color 0.2s;
+}
+
+.chat-input:focus {
+  border-color: #16a34a;
+  outline: none;
+}
+
+/* ====== GOMBOK ====== */
+
+.primary-button,
+.secondary-button,
+.icon-button {
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  background: #f3f4f6;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.primary-button {
+  border-color: #16a34a;
+}
+
+.primary-button:hover {
+  background: #dcfce7;
+  transform: scale(1.02);
+}
+
+.secondary-button:hover {
+  background: #e5e7eb;
+  transform: scale(1.01);
+}
+
+.icon-button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+/* ====== ELVÁLASZTÓK ====== */
+
+.vertical-resizer {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vertical-resizer::before {
+  content: "";
+  width: 2px;
+  border-radius: 999px;
+  background: #e4e4e7;
+  height: 100%;
+}
+
+.vertical-resizer:hover::before {
+  background: #c4c4cc;
+}
+
+.vertical-resizer.edge-right {
+  right: -3px;
+}
+
+.vertical-resizer.inner-right {
+  right: -3px;
+}
+
+/* Vízszintes elválasztó (kód ↔ chat) */
+
+.horizontal-resizer {
+  height: 6px;
+  cursor: row-resize;
+  margin: 8px 0;
+  position: relative;
+}
+
+.horizontal-resizer::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 999px;
+  background: #e4e4e7;
+}
+
+.horizontal-resizer:hover::before {
+  background: #c4c4cc;
+}
+
+/* ====== MODÁL – ÚJ PROJEKT ====== */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.modal {
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 16px 18px 14px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: 0 15px 40px rgba(15, 23, 42, 0.35);
+}
+
+.modal h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.modal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modal-form input,
+.modal-form textarea {
+  border-radius: 8px;
+  border: 1px solid #d4d4d8;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+.modal-form textarea {
+  resize: vertical;
+}
+
+.modal-error {
+  color: #b91c1c;
+  font-size: 0.8rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* ====== RESPONSIVE ====== */
+
+@media (max-width: 1100px) {
+  .options-panel {
+    display: none;
+  }
+
+  .projected-panel {
+    margin-right: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .main-row {
+    flex-direction: column;
+  }
+
+  .projects-panel {
+    width: 100% !important;
+    max-width: none;
+    margin-bottom: 8px;
+  }
+
+  .right-area {
+    margin-left: 0;
+  }
+
+  .top-row {
+    flex-direction: column;
+  }
+
+  .projected-panel,
+  .options-panel {
+    margin-left: 0;
+    margin-top: 8px;
+  }
+}
