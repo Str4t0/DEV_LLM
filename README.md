@@ -66,7 +66,6 @@ CSS (custom UI layout)
 🧩 Telepítés és futtatás
 1️⃣ Backend (FastAPI)
 bash
-Kód másolása
 cd backend
 python -m venv venv
 venv\Scripts\activate  # Windows
@@ -78,12 +77,10 @@ A backend ezután a http://127.0.0.1:8000 címen lesz elérhető.
 Egyszerű health check:
 
 bash
-Kód másolása
 curl http://127.0.0.1:8000/health
 # {"status":"ok"}
 2️⃣ Frontend (React + Vite)
 bash
-Kód másolása
 cd frontend
 npm install
 npm run dev
@@ -98,7 +95,6 @@ POST	/projects	Új projekt létrehozása
 Példa POST-body:
 
 json
-Kód másolása
 {
   "name": "Teszt projekt",
   "description": "Ez egy teszt projekt",
