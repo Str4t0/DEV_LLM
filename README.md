@@ -63,7 +63,7 @@ Vite
 
 CSS (custom UI layout)
 
-🧩 Telepítés és futtatás
+## 🧩 Telepítés és futtatás
 1️⃣ Backend (FastAPI)
 bash
 cd backend
@@ -86,7 +86,7 @@ npm install
 npm run dev
 A frontend alapértelmezetten a http://localhost:5173 címen fut, és automatikusan kommunikál a backenddel (http://localhost:8000).
 
-🧠 API végpontok
+## 🧠 API végpontok
 Módszer	Útvonal	Leírás
 GET	/health	Egyszerű online/ok állapotjelzés
 GET	/projects	Összes projekt listázása
@@ -100,7 +100,7 @@ json
   "description": "Ez egy teszt projekt",
   "root_path": "C:/Projektek/Teszt"
 }
-🧰 Fejlesztői információk
+## 🧰 Fejlesztői információk
 A frontend és backend külön fut, CORS engedéllyel összekötve.
 
 A projektek SQLite adatbázisban tárolódnak (backend/app.db).
@@ -109,7 +109,7 @@ A frontend a localStorage-t használja a projektekhez kötött kódok és beáll
 
 A diff nézet a két kódszöveg soronkénti egyszerű összehasonlítását végzi.
 
-🧩 Fejlesztői cél
+## 🧩 Fejlesztői cél
 Ez a környezet AI-modellek integrációjához és lokális LLM-fejlesztéshez készült,
 ahol a backend képes modelleket kiszolgálni, a frontend pedig fejlesztői felületet biztosít a kódfuttatáshoz, mentéshez és interakcióhoz.
 
