@@ -7,6 +7,7 @@ __pycache__/
 .env
 .venv/
 venv/
+backend/.env
 
 # === NODE / REACT ===
 node_modules/
@@ -22,3 +23,8 @@ lista.txt
 .idea/
 .DS_Store
 Thumbs.db
+
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+

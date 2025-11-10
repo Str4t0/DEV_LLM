@@ -1,118 +1,207 @@
-# 🧠 LLM Dev Environment
+# 🧠 DEV LLM – Local AI-Powered Developer Environment
 
-**Fejlesztői környezet AI-modellek segítségével, React + FastAPI alapokon.**
+> **Fejlesztői környezet AI-modellek (LLM-ek) segítségével**  
+> FastAPI + React + OpenAI + Vektoros adatbázis (RAG)
 
-Ez a projekt egy lokális fejlesztői környezet, amely lehetővé teszi a kódok, projektek és AI-alapú interakciók kezelését.  
-A rendszer két részből áll: egy **Python FastAPI backendből** (SQLite adatbázissal) és egy **React + TypeScript frontendből (Vite)**.
+---
+
+## 📘 Áttekintés
+
+A **DEV LLM** egy lokális, LLM-alapú fejlesztői környezet, amely képes a **saját kódbázisodat megérteni és feldolgozni**.  
+Segít a kód olvasásában, magyarázatában, refaktorálásában és a fejlesztési folyamat gyorsításában.
+
+A rendszer két fő komponensből áll:
+
+- 🐍 **Backend:** Python + FastAPI + SQLAlchemy + OpenAI integráció  
+- ⚛️ **Frontend:** React + TypeScript + Vite  
+- 🧩 **RAG (Retrieval-Augmented Generation):** vektoros keresés a projekt fájljaiban (`vector_store.py`)
 
 ---
 
 ## 🚀 Fő funkciók
 
-- Projektek létrehozása és kezelése (név, leírás, gyökérmappa)
-- Kódszerkesztő több panellel (forrás, módosított, diff nézet)
-- Helyi mentés (LocalStorage) projekt-specifikus beállításokhoz
-- Egyszerű undo/redo és diff összehasonlítás
-- Online/offline állapotjelző (backend elérhetősége alapján)
-- Alap AI-integrációra előkészített architektúra
+### 🗂️ Projektkezelés
+- Új projektek létrehozása, szerkesztése, törlése
+- Leírás + gyökérmappa (`root_path`)
+- „Reindex” gomb: újraépíti a vektoros indexet (RAG)
+
+### 📁 Fájlrendszer böngésző
+- Fa-nézetben listázza a projekt gyökérmappáját
+- Fájlok kattintással betölthetők és szerkeszthetők
+
+### 🧠 LLM Chat (RAG-gal)
+- Chat az LLM-mel az aktuális projekt kontextusában
+- Vektoros keresés a projekt kódbázisában  
+- Az LLM fájlrészleteket kap, így ténylegesen a **projekt kódját elemzi**
+- Kattintható hivatkozások:  
+  `(FILE: backend\app\main.py | chunk #0)` → a megfelelő fájl megnyílik a szerkesztőben
+
+### 💬 Chat memória
+- A beszélgetések **projektenként mentődnek** `localStorage`-be  
+- Oldalfrissítés után sem tűnnek el a korábbi üzenetek
+
+### 🧱 Kódszerkesztő
+- Forrás- és módosított kód panel
+- Undo/Redo
+- Diff-nézet
+- Projekt-specifikus mentés (`localStorage`)
+
+### 📶 Állapotfigyelés
+- „Online / Offline” kijelzés a `/health` endpoint alapján
+
+### 📱 Mobil-nézet támogatás
+- Reszponzív elrendezés: kód / projektek / chat tabok között lehet váltani
 
 ---
 
-## 📂 Könyvtárstruktúra
+## 🧩 Könyvtárstruktúra
 
 ```plaintext
-llm_dev_env/
-│
+DEV_LLM/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py          # FastAPI belépési pont, API-végpontok
-│   │   ├── database.py      # SQLite adatbázis kapcsolat + SQLAlchemy Base
-│   │   ├── models.py        # SQLAlchemy ORM modellek
-│   │   ├── schemas.py       # Pydantic sémák (request/response modellek)
-│   │   └── app.db           # SQLite adatbázis fájl
-│   └── venv/                # (virtuális környezet)
+│   │   ├── main.py          # FastAPI belépési pont + /chat (RAG)
+│   │   ├── database.py      # SQLite + SQLAlchemy
+│   │   ├── models.py        # ORM modellek (Project, stb.)
+│   │   ├── schemas.py       # Pydantic sémák
+│   │   ├── config.py        # OpenAI, CORS, ENV-olvasás
+│   │   └── app.db           # SQLite adatbázis
+│   ├── requirements.txt
+│   └── venv/
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx          # Fő React komponens (kódszerkesztő és UI)
-│   │   ├── config.ts        # Backend URL konfiguráció
-│   │   ├── main.tsx         # React entry point
-│   │   ├── App.css          # Alkalmazás stílus
-│   │   └── index.css        # Globális stílus
-│   ├── package.json         # Frontend függőségek (React, Vite, TypeScript)
-│   ├── tsconfig.json        # TypeScript konfiguráció
-│   └── vite.config.ts       # Vite build konfiguráció
+│   │   ├── App.tsx          # Fő UI komponens (projektek, chat, szerkesztő)
+│   │   ├── App.css
+│   │   ├── config.ts        # Backend URL ENV-ből
+│   │   ├── main.tsx
+│   │   └── index.css
+│   ├── package.json
+│   └── vite.config.ts
 │
+├── vector_store.py          # Vektoros indexelő + lekérdező
+├── start_dev_env.bat        # Indítja a backend + frontend ablakokat
+├── .env                     # Lokális konfiguráció
+├── .gitignore
 └── README.md
-⚙️ Használt technológiák
-Backend
-Python 3.10+
 
-FastAPI
+⚙️ Technológiák
+Komponens	Stack
+Backend	FastAPI · SQLAlchemy · OpenAI · python-dotenv · SQLite
+Frontend	React · TypeScript · Vite · CSS
+RAG	OpenAI Embeddings + Chroma / SQLite tárolás
+Integráció	REST API + CORS + JSON schema
 
-SQLAlchemy
+🔑 Konfiguráció
+Backend .env
+env
+Kód másolása
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
 
-SQLite
+# CORS engedélyezett origin-ek
+FRONTEND_ORIGINS=*
+Frontend .env
+env
 
-Frontend
-React 18
 
-TypeScript
+VITE_BACKEND_URL=yourbackendurl
+# vagy lokálisan:
+# VITE_BACKEND_URL=yourlocalurl
 
-Vite
+🧠 RAG – vektoros kontextus
+A vector_store.py feldarabolja a projektfájlokat chunkokra
 
-CSS (custom UI layout)
+A chunkok embeddingjei OpenAI Embeddings API-val kerülnek eltárolásra
 
-## 🧩 Telepítés és futtatás
-1️⃣ Backend (FastAPI)
+Kérdés esetén a backend meghívja:
+
+python
+Kód másolása
+chunks = query_project(project_key, search_text, top_k=5)
+és az eredményeket system üzenetként adja át az LLM-nek.
+
+Ezáltal a modell a projekt saját kódjára válaszol.
+A válaszokban fájl- és chunk-hivatkozásokat látsz, amelyek a frontendben kattinthatók.
+
+🧠 API rövid áttekintés
+Metódus	Útvonal	Leírás
+GET	/health	Egyszerű státuszellenőrzés
+GET	/projects	Projektek listázása
+POST	/projects	Új projekt létrehozása
+PUT	/projects/{id}	Projekt módosítása
+DELETE	/projects/{id}	Projekt törlése
+POST	/projects/{id}/reindex	Kódbázis újraindexelése
+GET	/projects/{id}/files	Fájlfa lekérése
+GET	/projects/{id}/file	Fájl tartalmának lekérése
+POST	/chat	Chat az LLM-mel (RAG integrációval)
+
+🧩 Telepítés
+1 ️⃣ Klónozás
 bash
+Kód másolása
+git clone https://github.com/Str4t0/DEV_LLM.git
+cd DEV_LLM
+2 ️⃣ Backend
+bash
+Kód másolása
 cd backend
 python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
-
-pip install fastapi uvicorn sqlalchemy
-uvicorn app.main:app --reload
-A backend ezután a http://127.0.0.1:8000 címen lesz elérhető.
-Egyszerű health check:
-
+venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+3️ ⃣ Frontend
 bash
-curl http://127.0.0.1:8000/health
-# {"status":"ok"}
-2️⃣ Frontend (React + Vite)
-bash
+Kód másolása
 cd frontend
 npm install
-npm run dev
-A frontend alapértelmezetten a http://localhost:5173 címen fut, és automatikusan kommunikál a backenddel (http://localhost:8000).
+npm run dev -- --host 0.0.0.0 --port 5173
+4 ️⃣ Egyszerű indítás (Windows)
+bash
+Kód másolása
+start_dev_env.bat
+Ez automatikusan:
 
-## 🧠 API végpontok
-Módszer	Útvonal	Leírás
-GET	/health	Egyszerű online/ok állapotjelzés
-GET	/projects	Összes projekt listázása
-POST	/projects	Új projekt létrehozása
+aktiválja a virtualenv-et,
 
-Példa POST-body:
+elindítja a FastAPI backendet,
 
-json
-{
-  "name": "Teszt projekt",
-  "description": "Ez egy teszt projekt",
-  "root_path": "C:/Projektek/Teszt"
-}
-## 🧰 Fejlesztői információk
-A frontend és backend külön fut, CORS engedéllyel összekötve.
+és külön ablakban a React frontendet.
 
-A projektek SQLite adatbázisban tárolódnak (backend/app.db).
+💾 Mentés és állapotkezelés
+Projektek → SQLite adatbázisban (backend/app/app.db)
 
-A frontend a localStorage-t használja a projektekhez kötött kódok és beállítások mentésére.
+Vektoros index → külön SQLite DB (vector_store.py)
 
-A diff nézet a két kódszöveg soronkénti egyszerű összehasonlítását végzi.
+Forráskód + projected kód → localStorage
 
-## 🧩 Fejlesztői cél
-Ez a környezet AI-modellek integrációjához és lokális LLM-fejlesztéshez készült,
-ahol a backend képes modelleket kiszolgálni, a frontend pedig fejlesztői felületet biztosít a kódfuttatáshoz, mentéshez és interakcióhoz.
+Chat előzmények → projektenként localStorage (projectChat_{id})
+
+🧭 Használat röviden
+Indítsd el a környezetet (start_dev_env.bat)
+
+Nyisd meg a frontendet:
+👉 http://localhost:5173 vagy http://<IP>:5173
+
+Hozz létre egy projektet, add meg a root_path-ot
+
+Nyomd meg a Reindex gombot (vektoros index építése)
+
+Nyisd meg a Chatet és kérdezd meg pl.:
+
+„Hol van a FastAPI belépési pont a projektben?”
+
+Az LLM válaszában fájl-hivatkozásokat fogsz látni, amelyekre kattintva a fájl megnyílik a kódszerkesztőben.
+
+🧠 Fejlesztői cél
+A DEV LLM célja, hogy a fejlesztés során:
+
+megértsd a komplex kódbázisokat,
+
+refaktorálást végezhess az LLM segítségével,
+
+és saját offline / on-premise környezetet biztosítson AI-integrációhoz.
 
 📜 Licenc
 MIT License © 2025
-Készült személyes fejlesztői környezethez és AI-integrációs kísérletekhez.
+Személyes fejlesztői és AI-integrációs projektekhez készült.

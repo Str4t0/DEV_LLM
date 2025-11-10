@@ -1,73 +1,207 @@
-# React + TypeScript + Vite
+# 🧠 DEV LLM – Local AI-Powered Developer Environment
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> **Fejlesztői környezet AI-modellek (LLM-ek) segítségével**  
+> FastAPI + React + OpenAI + Vektoros adatbázis (RAG)
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 📘 Áttekintés
 
-## React Compiler
+A **DEV LLM** egy lokális, LLM-alapú fejlesztői környezet, amely képes a **saját kódbázisodat megérteni és feldolgozni**.  
+Segít a kód olvasásában, magyarázatában, refaktorálásában és a fejlesztési folyamat gyorsításában.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+A rendszer két fő komponensből áll:
 
-## Expanding the ESLint configuration
+- 🐍 **Backend:** Python + FastAPI + SQLAlchemy + OpenAI integráció  
+- ⚛️ **Frontend:** React + TypeScript + Vite  
+- 🧩 **RAG (Retrieval-Augmented Generation):** vektoros keresés a projekt fájljaiban (`vector_store.py`)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+---
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## 🚀 Fő funkciók
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 🗂️ Projektkezelés
+- Új projektek létrehozása, szerkesztése, törlése
+- Leírás + gyökérmappa (`root_path`)
+- „Reindex” gomb: újraépíti a vektoros indexet (RAG)
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+### 📁 Fájlrendszer böngésző
+- Fa-nézetben listázza a projekt gyökérmappáját
+- Fájlok kattintással betölthetők és szerkeszthetők
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### 🧠 LLM Chat (RAG-gal)
+- Chat az LLM-mel az aktuális projekt kontextusában
+- Vektoros keresés a projekt kódbázisában  
+- Az LLM fájlrészleteket kap, így ténylegesen a **projekt kódját elemzi**
+- Kattintható hivatkozások:  
+  `(FILE: backend\app\main.py | chunk #0)` → a megfelelő fájl megnyílik a szerkesztőben
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### 💬 Chat memória
+- A beszélgetések **projektenként mentődnek** `localStorage`-be  
+- Oldalfrissítés után sem tűnnek el a korábbi üzenetek
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+### 🧱 Kódszerkesztő
+- Forrás- és módosított kód panel
+- Undo/Redo
+- Diff-nézet
+- Projekt-specifikus mentés (`localStorage`)
+
+### 📶 Állapotfigyelés
+- „Online / Offline” kijelzés a `/health` endpoint alapján
+
+### 📱 Mobil-nézet támogatás
+- Reszponzív elrendezés: kód / projektek / chat tabok között lehet váltani
+
+---
+
+## 🧩 Könyvtárstruktúra
+
+```plaintext
+DEV_LLM/
+├── backend/
+│   ├── app/
+│   │   ├── main.py          # FastAPI belépési pont + /chat (RAG)
+│   │   ├── database.py      # SQLite + SQLAlchemy
+│   │   ├── models.py        # ORM modellek (Project, stb.)
+│   │   ├── schemas.py       # Pydantic sémák
+│   │   ├── config.py        # OpenAI, CORS, ENV-olvasás
+│   │   └── app.db           # SQLite adatbázis
+│   ├── requirements.txt
+│   └── venv/
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.tsx          # Fő UI komponens (projektek, chat, szerkesztő)
+│   │   ├── App.css
+│   │   ├── config.ts        # Backend URL ENV-ből
+│   │   ├── main.tsx
+│   │   └── index.css
+│   ├── package.json
+│   └── vite.config.ts
+│
+├── vector_store.py          # Vektoros indexelő + lekérdező
+├── start_dev_env.bat        # Indítja a backend + frontend ablakokat
+├── .env                     # Lokális konfiguráció
+├── .gitignore
+└── README.md
+
+⚙️ Technológiák
+Komponens	Stack
+Backend	FastAPI · SQLAlchemy · OpenAI · python-dotenv · SQLite
+Frontend	React · TypeScript · Vite · CSS
+RAG	OpenAI Embeddings + Chroma / SQLite tárolás
+Integráció	REST API + CORS + JSON schema
+
+🔑 Konfiguráció
+Backend .env
+env
+Kód másolása
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+
+# CORS engedélyezett origin-ek
+FRONTEND_ORIGINS=*
+Frontend .env
+env
+
+
+VITE_BACKEND_URL=yourbackendurl
+# vagy lokálisan:
+# VITE_BACKEND_URL=yourlocalurl
+
+🧠 RAG – vektoros kontextus
+A vector_store.py feldarabolja a projektfájlokat chunkokra
+
+A chunkok embeddingjei OpenAI Embeddings API-val kerülnek eltárolásra
+
+Kérdés esetén a backend meghívja:
+
+python
+Kód másolása
+chunks = query_project(project_key, search_text, top_k=5)
+és az eredményeket system üzenetként adja át az LLM-nek.
+
+Ezáltal a modell a projekt saját kódjára válaszol.
+A válaszokban fájl- és chunk-hivatkozásokat látsz, amelyek a frontendben kattinthatók.
+
+🧠 API rövid áttekintés
+Metódus	Útvonal	Leírás
+GET	/health	Egyszerű státuszellenőrzés
+GET	/projects	Projektek listázása
+POST	/projects	Új projekt létrehozása
+PUT	/projects/{id}	Projekt módosítása
+DELETE	/projects/{id}	Projekt törlése
+POST	/projects/{id}/reindex	Kódbázis újraindexelése
+GET	/projects/{id}/files	Fájlfa lekérése
+GET	/projects/{id}/file	Fájl tartalmának lekérése
+POST	/chat	Chat az LLM-mel (RAG integrációval)
+
+🧩 Telepítés
+1 ️⃣ Klónozás
+bash
+Kód másolása
+git clone https://github.com/Str4t0/DEV_LLM.git
+cd DEV_LLM
+2 ️⃣ Backend
+bash
+Kód másolása
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+3️ ⃣ Frontend
+bash
+Kód másolása
+cd frontend
+npm install
+npm run dev -- --host 0.0.0.0 --port 5173
+4 ️⃣ Egyszerű indítás (Windows)
+bash
+Kód másolása
+start_dev_env.bat
+Ez automatikusan:
+
+aktiválja a virtualenv-et,
+
+elindítja a FastAPI backendet,
+
+és külön ablakban a React frontendet.
+
+💾 Mentés és állapotkezelés
+Projektek → SQLite adatbázisban (backend/app/app.db)
+
+Vektoros index → külön SQLite DB (vector_store.py)
+
+Forráskód + projected kód → localStorage
+
+Chat előzmények → projektenként localStorage (projectChat_{id})
+
+🧭 Használat röviden
+Indítsd el a környezetet (start_dev_env.bat)
+
+Nyisd meg a frontendet:
+👉 http://localhost:5173 vagy http://<IP>:5173
+
+Hozz létre egy projektet, add meg a root_path-ot
+
+Nyomd meg a Reindex gombot (vektoros index építése)
+
+Nyisd meg a Chatet és kérdezd meg pl.:
+
+„Hol van a FastAPI belépési pont a projektben?”
+
+Az LLM válaszában fájl-hivatkozásokat fogsz látni, amelyekre kattintva a fájl megnyílik a kódszerkesztőben.
+
+🧠 Fejlesztői cél
+A DEV LLM célja, hogy a fejlesztés során:
+
+megértsd a komplex kódbázisokat,
+
+refaktorálást végezhess az LLM segítségével,
+
+és saját offline / on-premise környezetet biztosítson AI-integrációhoz.
+
+📜 Licenc
+MIT License © 2025
+Személyes fejlesztői és AI-integrációs projektekhez készült.
