@@ -11,6 +11,12 @@ if ROOT_DIR not in sys.path:
 
 from typing import List, Optional
 
+from pathlib import Path
+
+SYSTEM_PROMPT_PATH = Path(__file__).parent /  "system_prompt.txt"
+SYSTEM_PROMPT = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+
+
 from fastapi import Depends, FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -431,18 +437,10 @@ class ChatResponse(BaseModel):
 def build_llm_messages(db: Session, payload: ChatRequest) -> list[dict]:
     """
     Összerakja az OpenAI messages listát:
-    - system prompt (fejlesztői asszisztens)
+    - system prompt (globális + opcionális projektspecifikus)
     - RAG kontextus a vector_store-ból (ha van project_id)
     - user üzenet + extra kontextus (kódrészletek)
     """
-    system_prompt = (
-        "Te egy fejlesztői asszisztens vagy. "
-        "Segítesz kódot átnézni, refaktorálni, magyarázni. "
-        "Röviden, célzottan válaszolj, konkrét kódrészletekkel, ha lehetséges. "
-        "Ha a kontextusban fájlnevek vagy chunk információk szerepelnek, "
-        "a válaszban hivatkozz rájuk (FILE: path, chunk #)."
-    )
-
     user_parts: list[str] = [payload.message]
 
     project: Optional[models.Project] = None
@@ -455,10 +453,17 @@ def build_llm_messages(db: Session, payload: ChatRequest) -> list[dict]:
             .filter(models.Project.id == payload.project_id)
             .first()
         )
-        user_parts.append(f"\n[Projekt ID: {payload.project_id}]")
-
         if project:
-            vector_key = get_vector_project_key(project)
+            user_parts.append(
+                f"\n[Aktív projekt: {project.name} (ID: {project.id})]"
+            )
+            if project.root_path:
+                vector_key = get_vector_project_key(project)
+        else:
+            user_parts.append(
+                f"\n[Figyelem: A megadott projekt (ID={payload.project_id}) "
+                "nem található az adatbázisban.]"
+            )
 
     # --- Extra: forráskód + módosított kód részlet ---
     if payload.source_code:
@@ -473,7 +478,7 @@ def build_llm_messages(db: Session, payload: ChatRequest) -> list[dict]:
 
     user_text = "\n".join(user_parts)
 
-    # --- RAG: releváns chunkok a vector_store-ból ---
+    # --- RAG: releváns részletek a vector_store-ból ---
     rag_context = ""
     if project and project.root_path and vector_key:
         try:
@@ -492,21 +497,36 @@ def build_llm_messages(db: Session, payload: ChatRequest) -> list[dict]:
                 parts: list[str] = []
                 for c in chunks:
                     file_path = c.get("file_path", "?")
-                    idx = c.get("chunk_index", 0)
                     content = c.get("content", "")
 
-                    parts.append(
-                        f"[FILE: {file_path} | chunk #{idx}]\n{content}"
-                    )
+                    # NINCS chunk # a kimenetben, csak a fájlútvonal
+                    parts.append(f"[FILE: {file_path}]\n{content}")
 
                 rag_context = "\n\n".join(parts)
         except Exception as e:
             print(f"[RAG] Hiba a vektoros lekérdezésnél: {e}")
 
+    # --- System prompt összeállítása (globális + projektspecifikus) ---
+    # Alap: a system_prompt.txt tartalma
+    system_prompt = SYSTEM_PROMPT
+
+    # Ha a projekt leírásában van szöveg, azt projektspecifikus kiegészítésként hozzáfűzzük
+    if project and project.description:
+        extra = project.description.strip()
+        if extra:
+            system_prompt = (
+                SYSTEM_PROMPT
+                + "\n\nPROJEKT SPECIFIKUS ÚTMUTATÁS:\n"
+                + extra
+            )
+
     # --- messages összeállítása ---
     messages: list[dict] = []
+
+    # 1) Globális + projektspecifikus system prompt
     messages.append({"role": "system", "content": system_prompt})
 
+    # 2) RAG kontextus – külön system üzenetben, de chunk # nélkül
     if rag_context:
         messages.append(
             {
@@ -519,8 +539,11 @@ def build_llm_messages(db: Session, payload: ChatRequest) -> list[dict]:
             }
         )
 
+    # 3) User üzenet
     messages.append({"role": "user", "content": user_text})
+
     return messages
+
 
 
 @app.post("/chat", response_model=ChatResponse)

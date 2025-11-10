@@ -9,8 +9,7 @@ body,
   margin: 0;
   overflow: hidden;
   background: #f1f3f6;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .app-root {
@@ -120,7 +119,7 @@ body,
   min-height: 0;
 }
 
-/* ====== PANELEK ÁLTALÁNOSSÁG ====== */
+/* ====== PANELEK ====== */
 
 .panel {
   background: #ffffff;
@@ -149,8 +148,7 @@ body,
   min-height: 0;
 }
 
-
-/* Jobb oldal: kód + chat + opciók */
+/* ====== JOBB OLDALI FŐTERÜLET: kódmezők + chat ====== */
 
 .right-area {
   flex: 1 1 auto;
@@ -161,17 +159,16 @@ body,
   min-height: 0;
 }
 
-/* Felső sor: forráskód, módosított, opciók */
-
+/* --- Felső sor: forráskód + módosított kód + opciók --- */
 .top-row {
   display: flex;
   width: 100%;
+  flex: 0 0 auto;
   min-height: 220px;
-  min-height: 0;
+  overflow: hidden;
 }
 
 /* Forráskód panel */
-
 .source-panel {
   flex: 0 0 auto;
   min-width: 200px;
@@ -179,7 +176,6 @@ body,
 }
 
 /* Módosított kód panel */
-
 .projected-panel {
   flex: 1 1 auto;
   min-width: 220px;
@@ -188,7 +184,6 @@ body,
 }
 
 /* Opciók panel */
-
 .options-panel {
   flex: 0 0 auto;
   min-width: 140px;
@@ -251,15 +246,50 @@ body,
   color: #6b7280;
 }
 
-/* Chat panel */
-
+/* --- Chat panel: a maradék helyet foglalja el --- */
 .chat-panel {
-  margin-top: 8px;
-  min-height: 140px;
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  margin-top: 8px;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+/* Chat üzenetek területe – görgethető, de nem tágul végtelenre */
+.chat-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px;
+  font-size: 0.9rem;
+  background: #fff;
   min-height: 0;
+}
+
+/* Chat beviteli sáv alul fixen */
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid #eee;
+  background: #fafafa;
+  flex-shrink: 0;
+}
+
+.chat-input {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  font-size: 0.85rem;
+  transition: border-color 0.2s;
+}
+
+.chat-input:focus {
+  border-color: #16a34a;
+  outline: none;
 }
 
 /* ====== PANEL FEJLÉCEK ====== */
@@ -282,40 +312,7 @@ body,
   gap: 6px;
 }
 
-.diff-toggle {
-  display: inline-flex;
-  background: #e5e7eb;
-  border-radius: 999px;
-  padding: 2px;
-}
-
-.diff-toggle-btn {
-  border: none;
-  background: transparent;
-  padding: 2px 8px;
-  font-size: 0.75rem;
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.diff-toggle-btn.active {
-  background: #ffffff;
-  box-shadow: 0 0 0 1px #d4d4d8;
-  font-weight: 600;
-}
-
-
-/* Encoding select */
-
-.encoding-select {
-  border-radius: 6px;
-  border: 1px solid #d4d4d8;
-  padding: 2px 4px;
-  font-size: 0.75rem;
-  background: #ffffff;
-}
-
-/* ====== KÓDSZERKESZTŐ SORSZÁMMAL ====== */
+/* ====== DIFF ÉS KÓDSZERKESZTŐ ====== */
 
 .code-editor-wrapper {
   display: flex;
@@ -364,7 +361,6 @@ body,
   color: #b91c1c;
 }
 
-
 .line-numbers {
   width: 3.2rem;
   padding: 10px 4px 10px 8px;
@@ -386,7 +382,7 @@ body,
   outline: none;
   font-family: inherit;
   font-size: inherit;
-  overflow: auto; /* függőleges + vízszintes scrollbar */
+  overflow: auto;
 }
 
 /* ====== PROJEKTEK LISTA ====== */
@@ -416,6 +412,8 @@ body,
   cursor: pointer;
   margin-bottom: 4px;
   transition: background 0.15s, transform 0.05s;
+  position: relative;
+  padding-bottom: 6px;
 }
 
 .project-item:hover {
@@ -436,134 +434,76 @@ body,
   color: #6b7280;
 }
 
-/* ====== CHAT ====== */
+/* ====== CHAT FILE LINK ====== */
 
-.chat-messages {
-  flex: 1;
-  padding: 10px;
-  overflow: auto;
-  font-size: 0.9rem;
-}
-
-.chat-input-row {
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  border-top: 1px solid #eee;
-  background: #fafafa;
-  flex: 0 0 auto;
-}
-
-.chat-input {
-  flex: 1;
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px solid #ccc;
-  font-size: 0.85rem;
-  transition: border-color 0.2s;
-}
-
-.chat-input:focus {
-  border-color: #16a34a;
-  outline: none;
-}
-
-/* ====== GOMBOK ====== */
-
-.primary-button,
-.secondary-button,
-.icon-button {
-  border-radius: 8px;
-  border: 1px solid #ccc;
-  background: #f3f4f6;
-  padding: 6px 10px;
+.chat-file-link {
+  background: transparent;
+  border: none;
+  color: #2563eb;
+  text-decoration: underline;
   cursor: pointer;
-  font-size: 0.8rem;
-  transition: background 0.2s, transform 0.1s;
-}
-
-.primary-button {
-  border-color: #16a34a;
-}
-
-.primary-button:hover {
-  background: #dcfce7;
-  transform: scale(1.02);
-}
-
-.secondary-button:hover {
-  background: #e5e7eb;
-  transform: scale(1.01);
-}
-
-.icon-button {
-  width: 26px;
-  height: 26px;
   padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  margin: 0 2px;
+  font: inherit;
+}
+
+.chat-file-link:hover {
+  color: #1d4ed8;
+}
+
+/* ====== REINDEX / DELETE GOMBOK ====== */
+
+.project-actions {
+  margin-top: 4px;
+  text-align: right;
+}
+
+.project-actions .primary-button {
+  background-color: #4ade80;
+  color: #1e293b;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.75rem;
   font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
 }
 
-/* ====== ELVÁLASZTÓK ====== */
-
-.vertical-resizer {
-  position: absolute;
-  top: 8px;
-  bottom: 8px;
-  width: 6px;
-  cursor: col-resize;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.project-actions .primary-button:hover {
+  background-color: #22c55e;
+  color: white;
 }
 
-.vertical-resizer::before {
-  content: "";
-  width: 2px;
-  border-radius: 999px;
-  background: #e4e4e7;
-  height: 100%;
+.project-actions .primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
-.vertical-resizer:hover::before {
-  background: #c4c4cc;
+.delete-button {
+  background-color: #f87171;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  font-size: 16px;
+  line-height: 18px;
+  text-align: center;
+  vertical-align: middle;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.05s ease;
 }
 
-.vertical-resizer.edge-right {
-  right: -3px;
+.delete-button:hover {
+  background-color: #ef4444;
 }
 
-.vertical-resizer.inner-right {
-  right: -3px;
+.delete-button:active {
+  transform: scale(0.92);
 }
 
-/* Vízszintes elválasztó (kód ↔ chat) */
-
-.horizontal-resizer {
-  height: 6px;
-  cursor: row-resize;
-  margin: 8px 0;
-  position: relative;
-}
-
-.horizontal-resizer::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: 2px;
-  bottom: 2px;
-  border-radius: 999px;
-  background: #e4e4e7;
-}
-
-.horizontal-resizer:hover::before {
-  background: #c4c4cc;
-}
-
-/* ====== MODÁL – ÚJ PROJEKT ====== */
+/* ====== MODÁL ====== */
 
 .modal-backdrop {
   position: fixed;
@@ -627,45 +567,66 @@ body,
   margin-top: 6px;
 }
 
-/* ====== RESPONSIVE ====== */
+/* ====== ELVÁLASZTÓK ====== */
 
-@media (max-width: 1100px) {
-  .options-panel {
-    display: none;
-  }
-
-  .projected-panel {
-    margin-right: 0;
-  }
+.vertical-resizer,
+.horizontal-resizer {
+  position: relative;
 }
 
-@media (max-width: 900px) {
-  .main-row {
-    flex-direction: column;
-  }
-
-  .projects-panel {
-    width: 100% !important;
-    max-width: none;
-    margin-bottom: 8px;
-  }
-
-  .right-area {
-    margin-left: 0;
-  }
-
-  .top-row {
-    flex-direction: column;
-  }
-
-  .projected-panel,
-  .options-panel {
-    margin-left: 0;
-    margin-top: 8px;
-  }
+.vertical-resizer {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* ====== FÁJLLISTA A PROJEKTPANELBEN ====== */
+.vertical-resizer::before {
+  content: "";
+  width: 2px;
+  border-radius: 999px;
+  background: #e4e4e7;
+  height: 100%;
+}
+
+.vertical-resizer:hover::before {
+  background: #c4c4cc;
+}
+
+.vertical-resizer.edge-right {
+  right: -3px;
+}
+
+.vertical-resizer.inner-right {
+  right: -3px;
+}
+
+.horizontal-resizer {
+  height: 6px;
+  cursor: row-resize;
+  margin: 8px 0;
+}
+
+.horizontal-resizer::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 999px;
+  background: #e4e4e7;
+}
+
+.horizontal-resizer:hover::before {
+  background: #c4c4cc;
+}
+
+/* ====== FÁJLLISTA ====== */
 
 .files-panel {
   flex: 1;
@@ -734,20 +695,63 @@ body,
   font-weight: 600;
 }
 
-/* Mobil tab sáv alapból rejtve (desktopon) */
+/* ====== RESPONSIVE ====== */
+
+@media (max-width: 1100px) {
+  .options-panel {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .main-row {
+    flex-direction: column;
+  }
+
+  .projects-panel {
+    width: 100% !important;
+    max-width: none;
+    margin-bottom: 8px;
+  }
+
+  .right-area {
+    margin-left: 0;
+  }
+
+  .top-row {
+    flex-direction: column;
+    height: auto !important;
+    min-height: 0;
+  }
+
+  .projected-panel,
+  .options-panel {
+    margin-left: 0;
+    margin-top: 8px;
+  }
+
+  .chat-panel {
+    margin-top: 8px;
+    height: auto;
+  }
+
+  .chat-messages {
+    max-height: 40vh;
+  }
+}
+
+/* ====== MOBIL TAB SÁV ====== */
+
 .mobile-tabs {
   display: none;
 }
 
-
-/* ===== Mobil layout (telefon / keskeny kijelző, tabos) ===== */
 @media (max-width: 768px) {
   .app-body {
     padding: 4px;
-    padding-bottom: 60px; /* hely az alsó tab sávnak */
+    padding-bottom: 60px;
   }
 
-  /* Alsó tab sáv */
   .mobile-tabs {
     position: fixed;
     bottom: 0;
@@ -777,12 +781,35 @@ body,
     font-weight: 600;
     border-top: 2px solid #16a34a;
   }
-
-  .main-row {
+  
+    /* --- CHAT MOBILON --- */
+  .chat-panel {
+    margin-top: 8px;
+    flex: 1 1 auto;
+    min-height: 250px;        /* legyen tényleges helye */
+    display: flex;
     flex-direction: column;
+    height: auto;
   }
 
-  /* Panel megjelenítés/eltüntetés tab szerint */
+  .chat-messages {
+    flex: 1 1 auto;
+    max-height: none;         /* ne vágjuk le 40vh-nál */
+    overflow-y: auto;         /* görgethető előzmények */
+  }
+
+  .chat-input {
+    font-size: 14px;
+    padding: 6px 8px;
+  }
+
+  .primary-button,
+  .secondary-button {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  
+    /* 🔥 EZ HIÁNYZOTT – tab szerinti panelváltás */
   .mobile-show {
     display: flex !important;
   }
@@ -791,7 +818,6 @@ body,
     display: none !important;
   }
 
-  /* Bal oldali projektek panel – felül, teljes szélességben */
   .projects-panel {
     width: 100% !important;
     min-width: 0;
@@ -803,13 +829,11 @@ body,
     border-bottom: 1px solid #e5e7eb;
   }
 
-  /* Jobb oldal (kód + chat + opciók) – projektek alatt */
   .right-area {
     width: 100%;
     margin-left: 0;
   }
 
-  /* Felső sor (Forráskód / Módosított / Opciók) egymás alatt */
   .top-row {
     flex-direction: column;
     height: auto !important;
@@ -823,39 +847,25 @@ body,
     min-width: 0;
   }
 
-  /* Opciók panel a kódszerkesztők után jöjjön */
   .options-panel {
     order: 3;
   }
 
-  /* Resizerek eltüntetése mobilon */
   .horizontal-resizer,
   .vertical-resizer {
     display: none !important;
   }
 
-  /* Kódszerkesztők magassága – ne legyen kilométer hosszú scroll */
   .code-editor-wrapper {
     height: 35vh;
   }
 
-  /* Kisebb betű mobilon a kódban */
   .code-textarea {
     font-size: 13px;
   }
 
   .line-numbers {
     font-size: 11px;
-  }
-
-  /* Chat panel rugalmas magassággal */
-  .chat-panel {
-    height: auto;
-    min-height: 200px;
-  }
-
-  .chat-input-row {
-    gap: 6px;
   }
 
   .chat-input {
@@ -868,76 +878,4 @@ body,
     padding: 6px 10px;
     font-size: 13px;
   }
-}
-
-/* --- Reindex gomb stílusa a projektlistában --- */
-
-.project-item {
-  position: relative;
-  padding-bottom: 6px;
-}
-
-.project-actions {
-  margin-top: 4px;
-  text-align: right;
-}
-
-.project-actions .primary-button {
-  background-color: #4ade80; /* halvány zöld */
-  color: #1e293b; /* sötétszürke szöveg */
-  border: none;
-  border-radius: 6px;
-  padding: 3px 8px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.2s ease;
-}
-
-.project-actions .primary-button:hover {
-  background-color: #22c55e;
-  color: white;
-}
-
-.project-actions .primary-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.delete-button {
-  background-color: #f87171;
-  color: white;
-  border: none;
-  border-radius: 50%;
-  width: 22px;
-  height: 22px;
-  font-size: 16px;
-  line-height: 18px;
-  text-align: center;
-  vertical-align: middle;
-  cursor: pointer;
-  transition: background-color 0.2s ease, transform 0.05s ease;
-}
-
-.delete-button:hover {
-  background-color: #ef4444;
-}
-
-.delete-button:active {
-  transform: scale(0.92);
-}
-
-.chat-file-link {
-  background: transparent;
-  border: none;
-  color: #2563eb;
-  text-decoration: underline;
-  cursor: pointer;
-  padding: 0;
-  margin: 0 2px;
-  font: inherit;
-}
-
-.chat-file-link:hover {
-  color: #1d4ed8;
 }
