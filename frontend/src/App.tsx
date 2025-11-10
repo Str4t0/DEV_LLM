@@ -8,7 +8,8 @@ type DragState =
   | { type: "projects"; startX: number; startWidth: number }
   | { type: "options"; startX: number; startWidth: number }
   | { type: "source"; startX: number; startRatio: number }
-  | { type: "top"; startY: number; startRatio: number };
+  | { type: "top"; startY: number; startRatio: number }
+  | { type: "projects-inner"; startY: number; startRatio: number };
 
 // Backend project típus
 interface Project {
@@ -17,6 +18,65 @@ interface Project {
   description: string | null;
   root_path: string | null;
   created_at: string;
+}
+
+// Backend fájlfa típus
+interface FileNode {
+  name: string;
+  path: string; // projekt root-hoz képest, pl. "src/App.tsx"
+  is_dir: boolean;
+  children?: FileNode[];
+}
+
+function renderFileNode(
+  node: FileNode,
+  depth: number,
+  selectedPath: string | null,
+  expandedPaths: string[],
+  onToggleDir: (path: string) => void,
+  onFileClick: (path: string) => void
+): React.ReactNode {
+  const isSelected = !node.is_dir && node.path === selectedPath;
+  const isExpanded = node.is_dir && expandedPaths.includes(node.path);
+
+  return (
+    <React.Fragment key={node.path}>
+      <div
+        className={
+          "file-item" +
+          (node.is_dir ? " file-dir" : " file-file") +
+          (isSelected ? " selected" : "")
+        }
+        style={{ paddingLeft: 8 + depth * 14 }}
+        onClick={() => {
+          if (node.is_dir) {
+            onToggleDir(node.path);
+          } else {
+            onFileClick(node.path);
+          }
+        }}
+        title={node.path}
+      >
+        <span className="file-icon">
+          {node.is_dir ? (isExpanded ? "▾" : "▸") : "📄"}
+        </span>
+        <span className="file-name">{node.name}</span>
+      </div>
+
+      {isExpanded &&
+        node.children &&
+        node.children.map((child) =>
+          renderFileNode(
+            child,
+            depth + 1,
+            selectedPath,
+            expandedPaths,
+            onToggleDir,
+            onFileClick
+          )
+        )}
+    </React.Fragment>
+  );
 }
 
 // Támogatott kódolások
@@ -113,7 +173,10 @@ function loadProjectSettings(projectId: number): ProjectEditorSettings {
   }
 }
 
-function saveProjectSettings(projectId: number, settings: ProjectEditorSettings): void {
+function saveProjectSettings(
+  projectId: number,
+  settings: ProjectEditorSettings
+): void {
   const key = `projectSettings_${projectId}`;
   try {
     localStorage.setItem(key, JSON.stringify(settings));
@@ -128,6 +191,31 @@ interface ProjectCode {
   source: string;
   projected: string;
 }
+
+// --- Projekt-specifikus chat állapot ---
+
+function loadProjectChat(projectId: number): ChatMessage[] {
+  const key = `projectChat_${projectId}`;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ChatMessage[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+
+function saveProjectChat(projectId: number, messages: ChatMessage[]): void {
+  const key = `projectChat_${projectId}`;
+  try {
+    localStorage.setItem(key, JSON.stringify(messages));
+  } catch {
+    // ignore
+  }
+}
+
 
 function loadProjectCode(projectId: number): ProjectCode {
   const key = `projectCode_${projectId}`;
@@ -260,21 +348,26 @@ const DiffView: React.FC<DiffViewProps> = ({ original, modified }) => {
   return (
     <div className="diff-view">
       {diffs.map((d, idx) => (
-        <div
-          key={idx}
-          className={`diff-line diff-line-${d.type}`}
-        >
+        <div key={idx} className={`diff-line diff-line-${d.type}`}>
           <span className="diff-gutter">
             {d.type === "added" ? "+" : d.type === "removed" ? "-" : " "}
           </span>
-          <span className="diff-text">
-            {d.text === "" ? " " : d.text}
-          </span>
+          <span className="diff-text">{d.text === "" ? " " : d.text}</span>
         </div>
       ))}
     </div>
   );
 };
+
+// --- Chat típusok ---
+
+type ChatRole = "user" | "assistant";
+
+interface ChatMessage {
+  id: number;
+  role: ChatRole;
+  text: string;
+}
 
 // --- Undo / Redo snapshot típus ---
 
@@ -286,15 +379,28 @@ interface CodeSnapshot {
 const App: React.FC = () => {
   const [status, setStatus] = React.useState<Status>("connecting");
 
+  // Mobil nézet: melyik tab aktív?
+  const [activeTab, setActiveTab] = React.useState<
+    "projects" | "code" | "chat"
+  >("projects");
+
   // Méretek
   const [projectsWidth, setProjectsWidth] = React.useState(260); // px
   const [optionsWidth, setOptionsWidth] = React.useState(260); // px
   const [sourceWidthRatio, setSourceWidthRatio] = React.useState(0.5); // 0–1
-  const [topHeightRatio, setTopHeightRatio] = React.useState(0.65); // 0–1
+  const DEFAULT_TOP_RATIO = 0.6; // vagy akár 0.55, ha még több chat kell
+  const [topHeightRatio, setTopHeightRatio] =
+    React.useState(DEFAULT_TOP_RATIO);
 
   const [drag, setDrag] = React.useState<DragState | null>(null);
 
   const rightAreaRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Bal panelen belüli arány: projektek (felül) / fájlfa (alul)
+  const [projectsInnerRatio, setProjectsInnerRatio] =
+    React.useState(0.6); // 60% projektek, 40% fájlok
+
+  const projectsPanelRef = React.useRef<HTMLDivElement | null>(null);
 
   // Kódszövegek (AKTÍV projekt, már feldolgozott formában)
   const [sourceCode, setSourceCode] = React.useState("");
@@ -308,7 +414,7 @@ const App: React.FC = () => {
   // Diff nézet toggle (csak Módosított kód panelre)
   const [showDiff, setShowDiff] = React.useState(false);
 
-  // Kódolások panelenként
+  // Kódlások panelenként
   const [sourceEncoding, setSourceEncoding] =
     React.useState<Encoding>("utf-8");
   const [projectedEncoding, setProjectedEncoding] =
@@ -329,17 +435,69 @@ const App: React.FC = () => {
     number | null
   >(null);
   const [projectsLoading, setProjectsLoading] = React.useState(false);
-  const [projectsError, setProjectsError] = React.useState<string | null>(null);
+  const [projectsError, setProjectsError] = React.useState<string | null>(
+    null
+  );
+  const [reindexingProjectId, setReindexingProjectId] =
+    React.useState<number | null>(null);
+
+  // Fájlfa + kiválasztott fájl
+  const [filesTree, setFilesTree] = React.useState<FileNode[] | null>(null);
+  const [filesLoading, setFilesLoading] = React.useState(false);
+  const [filesError, setFilesError] = React.useState<string | null>(null);
+  const [selectedFilePath, setSelectedFilePath] =
+    React.useState<string | null>(null);
+  // --- Mappák kinyitásához / bezárásához ---
+  const [expandedPaths, setExpandedPaths] = React.useState<string[]>([]);
+
+  const handleToggleDir = React.useCallback((path: string) => {
+    setExpandedPaths((prev) =>
+      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path]
+    );
+  }, []);
+
+  // Gondoskodunk róla, hogy a fájl útvonalához vezető mappák ki legyenek nyitva
+	const ensureFilePathExpanded = React.useCallback((filePath: string) => {
+	  const parts = filePath.split("/");
+	  const dirs: string[] = [];
+
+	  // pl. "src/app/main.ts" -> "src", "src/app"
+	  for (let i = 0; i < parts.length - 1; i++) {
+		const sub = parts.slice(0, i + 1).join("/");
+		dirs.push(sub);
+	  }
+
+	  setExpandedPaths((prev) => {
+		const s = new Set(prev);
+		for (const d of dirs) s.add(d);
+		return Array.from(s);
+	  });
+	}, []);
 
   // Új projekt modál state
-  const [isProjectModalOpen, setIsProjectModalOpen] = React.useState(false);
+  const [isProjectModalOpen, setIsProjectModalOpen] =
+    React.useState(false);
+  const [projectModalMode, setProjectModalMode] = React.useState<
+    "create" | "edit"
+  >("create");
+  const [editingProjectId, setEditingProjectId] =
+    React.useState<number | null>(null);
   const [newProjectName, setNewProjectName] = React.useState("");
   const [newProjectDescription, setNewProjectDescription] =
     React.useState("");
   const [newProjectRootPath, setNewProjectRootPath] = React.useState("");
   const [projectModalError, setProjectModalError] =
     React.useState<string | null>(null);
-  const [projectModalSaving, setProjectModalSaving] = React.useState(false);
+  const [projectModalSaving, setProjectModalSaving] =
+    React.useState(false);
+
+  // Chat state
+  const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>(
+    []
+  );
+  const [chatInput, setChatInput] = React.useState("");
+  const [chatLoading, setChatLoading] = React.useState(false);
+  const [chatError, setChatError] = React.useState<string | null>(null);
 
   // --- Undo/Redo segédfüggvények (REDO fix) ---
 
@@ -350,8 +508,6 @@ const App: React.FC = () => {
       setHistory((prev) => {
         const currentIndex = historyIndex;
 
-        // „aktuális” index: ha az index érvényes, azt használjuk,
-        // különben az utolsó elemet tekintjük aktuálisnak
         const effectiveIndex =
           currentIndex >= 0 && currentIndex < prev.length
             ? currentIndex
@@ -360,8 +516,6 @@ const App: React.FC = () => {
         const currentSnap =
           effectiveIndex >= 0 ? prev[effectiveIndex] : undefined;
 
-        // Ha a mostani kód megegyezik a jelenlegi snapshot-tal,
-        // akkor semmit nem csinálunk (nem vágunk és nem adunk hozzá új elemet).
         if (
           currentSnap &&
           currentSnap.source === nextSource &&
@@ -370,7 +524,6 @@ const App: React.FC = () => {
           return prev;
         }
 
-        // Ha változott a kód, akkor innen kezdve vágjuk le a „jövőt”
         let base = prev;
         if (effectiveIndex >= 0 && effectiveIndex < prev.length - 1) {
           base = prev.slice(0, effectiveIndex + 1);
@@ -382,7 +535,6 @@ const App: React.FC = () => {
           merged = merged.slice(merged.length - 100);
         }
 
-        // mindig a legutóbbi snapshot az aktuális
         setHistoryIndex(merged.length - 1);
         return merged;
       });
@@ -442,6 +594,42 @@ const App: React.FC = () => {
     return () => clearInterval(id);
   }, []);
 
+  // Fájlfa betöltése, ha változik az aktív projekt
+  React.useEffect(() => {
+    if (!selectedProjectId) {
+      setFilesTree(null);
+      setSelectedFilePath(null);
+      setFilesError(null);
+      setExpandedPaths([]);
+      return;
+    }
+
+    async function loadFiles() {
+      setFilesLoading(true);
+      setFilesError(null);
+      try {
+        const res = await fetch(
+          `${BACKEND_URL}/projects/${selectedProjectId}/files?max_depth=3`
+        );
+        if (!res.ok) {
+          throw new Error(`Hiba a fájllista betöltésekor: ${res.status}`);
+        }
+        const data: FileNode[] = await res.json();
+        setFilesTree(data);
+      } catch (err: any) {
+        console.error(err);
+        setFilesError(
+          err.message || "Nem sikerült betölteni a fájlokat a projekthez."
+        );
+        setFilesTree(null);
+      } finally {
+        setFilesLoading(false);
+      }
+    }
+
+    loadFiles();
+  }, [selectedProjectId, projects]);
+
   // Projektek betöltése induláskor
   React.useEffect(() => {
     async function loadProjects() {
@@ -493,7 +681,6 @@ const App: React.FC = () => {
     }
     const loaded = loadProjectCode(selectedProjectId);
 
-    // betöltött kódra az aktuális beállítások szerint ráengedjük a limitet
     const processedSource = applyEditorSettings(loaded.source, sourceSettings);
     const processedProjected = applyEditorSettings(
       loaded.projected,
@@ -513,6 +700,23 @@ const App: React.FC = () => {
     setHistoryIndex(0);
   }, [selectedProjectId, sourceSettings, projectedSettings]);
 
+// Chat üzenetek betöltése projektváltáskor
+React.useEffect(() => {
+  if (!selectedProjectId) {
+    setChatMessages([]);
+    return;
+  }
+  const loaded = loadProjectChat(selectedProjectId);
+  setChatMessages(loaded);
+}, [selectedProjectId]);
+
+// Chat üzenetek mentése localStorage-be, ha változnak
+React.useEffect(() => {
+  if (!selectedProjectId) return;
+  saveProjectChat(selectedProjectId, chatMessages);
+}, [selectedProjectId, chatMessages]);
+
+
   // Ha változnak a beállítások, igazítsuk hozzá az aktuális kódot is
   React.useEffect(() => {
     if (!selectedProjectId) return;
@@ -521,7 +725,9 @@ const App: React.FC = () => {
 
   React.useEffect(() => {
     if (!selectedProjectId) return;
-    setProjectedCode((prev) => applyEditorSettings(prev, projectedSettings));
+    setProjectedCode((prev) =>
+      applyEditorSettings(prev, projectedSettings)
+    );
   }, [projectedSettings, selectedProjectId]);
 
   // Projekt-specifikus beállítások mentése
@@ -579,6 +785,17 @@ const App: React.FC = () => {
         if (newRatio < 0.25) newRatio = 0.25;
         if (newRatio > 0.85) newRatio = 0.85;
         setTopHeightRatio(newRatio);
+      } else if (drag.type === "projects-inner") {
+        if (!projectsPanelRef.current) return;
+        const rect = projectsPanelRef.current.getBoundingClientRect();
+        const totalHeight = rect.height;
+        if (totalHeight <= 0) return;
+
+        const delta = e.clientY - drag.startY;
+        let nextRatio = drag.startRatio + delta / totalHeight;
+        if (nextRatio < 0.15) nextRatio = 0.15;
+        if (nextRatio > 0.85) nextRatio = 0.85;
+        setProjectsInnerRatio(nextRatio);
       }
     }
 
@@ -595,51 +812,315 @@ const App: React.FC = () => {
   }, [drag, optionsWidth]);
 
   // Új projekt mentése
-  async function handleCreateProject(e: React.FormEvent) {
+  async function handleProjectModalSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!newProjectName.trim()) {
-      setProjectModalError("A név megadása kötelező.");
-      return;
-    }
-    setProjectModalSaving(true);
     setProjectModalError(null);
 
+    const name = newProjectName.trim();
+    if (!name) {
+      setProjectModalError("A név kötelező.");
+      return;
+    }
+
+    setProjectModalSaving(true);
+
     try {
-      const res = await fetch(`${BACKEND_URL}/projects`, {
+      let res: Response;
+      if (projectModalMode === "create") {
+        res = await fetch(`${BACKEND_URL}/projects`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            description: newProjectDescription || null,
+            root_path: newProjectRootPath || null,
+          }),
+        });
+      } else {
+        if (editingProjectId == null) {
+          throw new Error("Nincs kiválasztott projekt a szerkesztéshez.");
+        }
+        res = await fetch(`${BACKEND_URL}/projects/${editingProjectId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            description: newProjectDescription || null,
+            root_path: newProjectRootPath || null,
+          }),
+        });
+      }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || `Hiba: ${res.status}`);
+      }
+
+      const saved: Project = await res.json();
+
+      setProjects((prev) => {
+        if (projectModalMode === "create") {
+          return [saved, ...prev];
+        } else {
+          return prev.map((p) => (p.id === saved.id ? saved : p));
+        }
+      });
+
+      setSelectedProjectId((prev) =>
+        prev == null ? saved.id : prev === saved.id ? saved.id : prev
+      );
+
+      setIsProjectModalOpen(false);
+    } catch (err: any) {
+      console.error(err);
+      setProjectModalError(
+        err.message || "Nem sikerült menteni a projektet."
+      );
+    } finally {
+      setProjectModalSaving(false);
+    }
+  }
+
+  async function handleReindexProject(projectId: number) {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+
+    if (!project.root_path) {
+      alert(
+        "Ehhez a projekthez nincs root mappa beállítva, ezért nem lehet reindexelni."
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Biztosan újraindexeled a(z) "${project.name}" projektet?`
+    );
+    if (!confirmed) return;
+
+    try {
+      setReindexingProjectId(projectId);
+
+      const res = await fetch(
+        `${BACKEND_URL}/projects/${projectId}/reindex`,
+        {
+          method: "POST",
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || `Hiba: ${res.status}`);
+      }
+
+      alert("Reindexelés elindítva a háttérben.");
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || "Hiba történt a reindexelés indításakor.");
+    } finally {
+      setReindexingProjectId((prev) =>
+        prev === projectId ? null : prev
+      );
+    }
+  }
+
+  // 🔴 Projekt törlése (– gomb)
+  async function handleDeleteProject(projectId: number) {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+
+    const confirmed = window.confirm(
+      `Biztosan törlöd a(z) "${project.name}" projektet?`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/projects/${projectId}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || `HTTP ${res.status}`);
+      }
+
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+
+      if (selectedProjectId === projectId) {
+        setSelectedProjectId(null);
+      }
+
+      alert("✅ Projekt törölve.");
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || "Hiba történt a törlés során.");
+    }
+  }
+
+  async function handleLoadFile(relPath: string) {
+    if (!selectedProjectId) return;
+
+    try {
+      const params = new URLSearchParams({
+        rel_path: relPath,
+        encoding: sourceEncoding,
+      });
+
+      const res = await fetch(
+        `${BACKEND_URL}/projects/${selectedProjectId}/file?` +
+          params.toString()
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        const msg =
+          data?.detail ||
+          `Nem sikerült beolvasni a fájlt (HTTP ${res.status}).`;
+        throw new Error(msg);
+      }
+
+      const data: { path: string; encoding: string; content: string } =
+        await res.json();
+
+      setSelectedFilePath(data.path);
+
+      const processed = applyEditorSettings(
+        data.content,
+        sourceSettings
+      );
+
+      const snap: CodeSnapshot = {
+        source: processed,
+        projected: projectedCode,
+      };
+
+      restoringRef.current = true;
+      setSourceCode(processed);
+      restoringRef.current = false;
+
+      setHistory([snap]);
+      setHistoryIndex(0);
+    } catch (err: any) {
+      alert(err.message || "Ismeretlen hiba történt a fájl beolvasásakor.");
+    }
+  }
+  
+	const handleChatFileClick = React.useCallback(
+	  (rawPath: string) => {
+		if (!selectedProjectId) {
+		  alert(
+			"Először válassz egy projektet, hogy meg tudjam nyitni a fájlt."
+		  );
+		  return;
+		}
+
+		// backslash -> slash, felesleges whitespace le
+		const filePath = rawPath.replace(/\\/g, "/").trim();
+
+		ensureFilePathExpanded(filePath);
+		handleLoadFile(filePath);
+	  },
+	  [selectedProjectId, ensureFilePathExpanded]
+	);
+
+
+	function renderAssistantMessage(text: string): React.ReactNode {
+	  // Elfogad:
+	  // [FILE: valami\útvonal | chunk #12]
+	  // (FILE: valami/útvonal | chunk #0)
+	  const regex = /[\[\(]FILE:\s*([^|\]\)]+)(?:[^\]\)]*)[\]\)]/g;
+
+	  const nodes: React.ReactNode[] = [];
+	  let lastIndex = 0;
+	  let match: RegExpExecArray | null;
+
+	  while ((match = regex.exec(text)) !== null) {
+		if (match.index > lastIndex) {
+		  nodes.push(text.slice(lastIndex, match.index));
+		}
+
+		const rawPath = match[1].trim();
+		const filePath = rawPath.replace(/\\/g, "/");
+
+		nodes.push(
+		  <button
+			key={`${filePath}-${match.index}`}
+			className="chat-file-link"
+			onClick={(e) => {
+			  e.stopPropagation();
+			  handleChatFileClick(filePath);
+			}}
+		  >
+			{`[FILE: ${filePath}]`}
+		  </button>
+		);
+
+		lastIndex = regex.lastIndex;
+	  }
+
+	  if (lastIndex < text.length) {
+		nodes.push(text.slice(lastIndex));
+	  }
+
+	  return nodes;
+	}
+
+
+
+  // --- Chat küldése az LLM-nek ---
+  async function sendChat() {
+    const text = chatInput.trim();
+    if (!text) return;
+
+    const newUserMsg: ChatMessage = {
+      id: Date.now(),
+      role: "user",
+      text,
+    };
+
+    setChatMessages((prev) => [...prev, newUserMsg]);
+    setChatInput("");
+    setChatError(null);
+    setChatLoading(true);
+
+    try {
+      const resp = await fetch(`${BACKEND_URL}/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          name: newProjectName.trim(),
-          description: newProjectDescription.trim() || null,
-          root_path: newProjectRootPath.trim() || null,
+          message: text,
+          project_id: selectedProjectId,
+          source_code: sourceCode,
+          projected_code: projectedCode,
         }),
       });
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        const msg =
-          data?.detail ||
-          `Nem sikerült létrehozni a projektet (HTTP ${res.status}).`;
-        throw new Error(msg);
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(errText || `HTTP ${resp.status}`);
       }
 
-      const created: Project = await res.json();
-      // Új projekt felvétele a listába (legfelülre)
-      setProjects((prev) => [created, ...prev]);
-      setSelectedProjectId(created.id);
+      const data: { reply: string } = await resp.json();
 
-      // Modál ürítése + bezárás
-      setNewProjectName("");
-      setNewProjectDescription("");
-      setNewProjectRootPath("");
-      setIsProjectModalOpen(false);
-    } catch (err: any) {
+      const assistantMsg: ChatMessage = {
+        id: Date.now() + 1,
+        role: "assistant",
+        text: data.reply,
+      };
+
+      setChatMessages((prev) => [...prev, assistantMsg]);
+    } catch (err) {
       console.error(err);
-      setProjectModalError(err.message || "Ismeretlen hiba történt.");
+      setChatError("Hiba történt a chat hívás közben.");
     } finally {
-      setProjectModalSaving(false);
+      setChatLoading(false);
+    }
+  }
+
+  function handleChatSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!chatLoading) {
+      sendChat();
     }
   }
 
@@ -687,58 +1168,260 @@ const App: React.FC = () => {
 
       {/* Fő tartalom */}
       <div className="app-body">
+        {/* Mobil tab sáv – desktopon a CSS elrejti */}
+        <div className="mobile-tabs">
+          <button
+            type="button"
+            className={
+              "mobile-tab" + (activeTab === "projects" ? " active" : "")
+            }
+            onClick={() => setActiveTab("projects")}
+          >
+            📁 Projektek
+          </button>
+          <button
+            type="button"
+            className={
+              "mobile-tab" + (activeTab === "code" ? " active" : "")
+            }
+            onClick={() => setActiveTab("code")}
+          >
+            💻 Kód
+          </button>
+          <button
+            type="button"
+            className={
+              "mobile-tab" + (activeTab === "chat" ? " active" : "")
+            }
+            onClick={() => setActiveTab("chat")}
+          >
+            💬 Chat
+          </button>
+        </div>
+
         <div className="main-row">
           {/* Bal: Projektek */}
           <section
-            className="panel projects-panel"
+            className={
+              "panel projects-panel" +
+              (activeTab === "projects" ? " mobile-show" : " mobile-hide")
+            }
             style={{ width: projectsWidth }}
+            ref={projectsPanelRef}
           >
             <div className="panel-header">
               <span>Projektek</span>
-              <button
-                className="icon-button"
-                title="Új projekt"
-                onClick={() => {
-                  setProjectModalError(null);
-                  setIsProjectModalOpen(true);
-                }}
-              >
-                +
-              </button>
+              <div className="panel-header-right">
+                <button
+                  className="secondary-button"
+                  disabled={selectedProjectId == null}
+                  onClick={() => {
+                    if (selectedProjectId == null) return;
+                    const p = projects.find(
+                      (pr) => pr.id === selectedProjectId
+                    );
+                    if (!p) return;
+                    setProjectModalMode("edit");
+                    setEditingProjectId(p.id);
+                    setNewProjectName(p.name);
+                    setNewProjectDescription(p.description ?? "");
+                    setNewProjectRootPath(p.root_path ?? "");
+                    setProjectModalError(null);
+                    setIsProjectModalOpen(true);
+                  }}
+                >
+                  Szerk.
+                </button>
+
+                <button
+                  className="primary-button"
+                  onClick={() => {
+                    setProjectModalMode("create");
+                    setEditingProjectId(null);
+                    setNewProjectName("");
+                    setNewProjectDescription("");
+                    setNewProjectRootPath("");
+                    setProjectModalError(null);
+                    setIsProjectModalOpen(true);
+                  }}
+                >
+                  +
+                </button>
+              </div>
             </div>
 
-            <div className="projects-list">
-              {projectsLoading && (
-                <div className="projects-info">Betöltés…</div>
-              )}
-              {projectsError && !projectsLoading && (
-                <div className="projects-error">{projectsError}</div>
-              )}
-              {!projectsLoading && projects.length === 0 && !projectsError && (
-                <div className="projects-info">
-                  Még nincs projekt. Kattints a + gombra egy újhoz.
-                </div>
-              )}
-              {projects.map((p) => (
-                <div
-                  key={p.id}
-                  className={
-                    "project-item" +
-                    (p.id === selectedProjectId ? " selected" : "")
-                  }
-                  onClick={() => setSelectedProjectId(p.id)}
-                  title={
-                    p.description || p.root_path || "Projekt részletek…"
-                  }
-                >
-                  <div className="project-name">{p.name}</div>
-                  {p.description && (
-                    <div className="project-description">
-                      {p.description}
+            {/* Projektek ↑↓ Fájlfa – belső osztás */}
+            <div className="projects-inner">
+              {/* Projektek lista (felső rész) */}
+              <div
+                className="projects-list"
+                style={{ flexBasis: `${projectsInnerRatio * 100}%` }}
+              >
+                {projectsLoading && (
+                  <div className="projects-info">Betöltés…</div>
+                )}
+                {projectsError && !projectsLoading && (
+                  <div className="projects-error">{projectsError}</div>
+                )}
+                {!projectsLoading &&
+                  projects.length === 0 &&
+                  !projectsError && (
+                    <div className="projects-info">
+                      Még nincs projekt. Kattints a + gombra egy újhoz.
                     </div>
                   )}
+                {projects.map((p) => (
+                  <div
+                    key={p.id}
+                    className={
+                      "project-item" +
+                      (p.id === selectedProjectId ? " selected" : "")
+                    }
+                    onClick={() => setSelectedProjectId(p.id)}
+                    title={
+                      p.description || p.root_path || "Projekt részletek…"
+                    }
+                  >
+                    <div className="project-name">{p.name}</div>
+                    {p.description && (
+                      <div className="project-description">
+                        {p.description}
+                      </div>
+                    )}
+
+                    <div className="project-actions">
+                      {/* Reindex gomb */}
+                      <button
+                        type="button"
+                        className="primary-button"
+                        style={{
+                          marginTop: "4px",
+                          fontSize: "0.75rem",
+                          padding: "2px 6px",
+                          marginRight: "4px",
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReindexProject(p.id);
+                        }}
+                        disabled={reindexingProjectId === p.id}
+                        title={
+                          p.root_path
+                            ? "A projekt kódbázisának újraindexelése"
+                            : "Nincs root mappa beállítva ehhez a projekthez"
+                        }
+                      >
+                        {reindexingProjectId === p.id
+                          ? "Reindex…"
+                          : "Reindex"}
+                      </button>
+
+                      {/* Törlés gomb: kis piros „–” */}
+                      <button
+                        type="button"
+                        className="delete-button"
+                        style={{
+                          marginTop: "4px",
+                          width: "22px",
+                          height: "22px",
+                          borderRadius: "50%",
+                          border: "none",
+                          backgroundColor: "#f87171",
+                          color: "white",
+                          cursor: "pointer",
+                          fontSize: "16px",
+                          lineHeight: "18px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteProject(p.id);
+                        }}
+                        title="Projekt törlése"
+                      >
+                        &minus;
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Belső vízszintes resizer a projektek és fájlfa között */}
+              <div
+                className="horizontal-resizer inner"
+                onMouseDown={(e) =>
+                  setDrag({
+                    type: "projects-inner",
+                    startY: e.clientY,
+                    startRatio: projectsInnerRatio,
+                  })
+                }
+                title="Húzd a projektek és fájlok közti arányhoz"
+              />
+
+              {/* Fájlok a projekt root_path alól (alsó rész) */}
+              <div
+                className="files-panel"
+                style={{
+                  flexBasis: `${(1 - projectsInnerRatio) * 100}%`,
+                }}
+              >
+                <div className="files-header">
+                  Fájlok
+                  {selectedProjectId && (
+                    <span className="files-subtitle">
+                      (projekt #{selectedProjectId})
+                    </span>
+                  )}
                 </div>
-              ))}
+
+                <div className="files-list">
+                  {!selectedProjectId && (
+                    <div className="files-info">
+                      Válassz egy projektet a fájlokhoz.
+                    </div>
+                  )}
+
+                  {selectedProjectId && filesLoading && (
+                    <div className="files-info">Fájlok betöltése…</div>
+                  )}
+
+                  {selectedProjectId &&
+                    filesError &&
+                    !filesLoading && (
+                      <div className="files-error">{filesError}</div>
+                    )}
+
+                  {selectedProjectId &&
+                    !filesLoading &&
+                    !filesError &&
+                    filesTree &&
+                    filesTree.length === 0 && (
+                      <div className="files-info">
+                        Nincs megjeleníthető fájl ebben a projekt root
+                        mappában.
+                      </div>
+                    )}
+
+                  {selectedProjectId &&
+                    !filesLoading &&
+                    !filesError &&
+                    filesTree &&
+                    filesTree.length > 0 &&
+                    filesTree.map((node) =>
+                      renderFileNode(
+                        node,
+                        0,
+                        selectedFilePath,
+                        expandedPaths,
+                        handleToggleDir,
+                        handleLoadFile
+                      )
+                    )}
+                </div>
+              </div>
             </div>
 
             {/* Bal oldali elválasztó */}
@@ -760,7 +1443,10 @@ const App: React.FC = () => {
           <div className="right-area" ref={rightAreaRef}>
             {/* Felső sor: Forráskód, Módosított kód, Opciók */}
             <div
-              className="top-row"
+              className={
+                "top-row" +
+                (activeTab === "code" ? " mobile-show" : " mobile-hide")
+              }
               style={{ height: `${topHeightRatio * 100}%` }}
             >
               {/* Forráskód panel */}
@@ -855,10 +1541,7 @@ const App: React.FC = () => {
                 </div>
 
                 {showDiff ? (
-                  <DiffView
-                    original={sourceCode}
-                    modified={projectedCode}
-                  />
+                  <DiffView original={sourceCode} modified={projectedCode} />
                 ) : (
                   <CodeEditor
                     value={projectedCode}
@@ -1015,10 +1698,11 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="options-hint">
-                    A max sor / max oszlop beállítások ténylegesen korlátozzák a
-                    kódot: „vágás” módban a sorok adott oszlopszámnál
-                    levágódnak, „tördelés” módban új sorokra törnek. A sorok
-                    száma és a sorszámozás mindig ehhez igazodik.
+                    A max sor / max oszlop beállítások ténylegesen
+                    korlátozzák a kódot: „vágás” módban a sorok adott
+                    oszlopszámnál levágódnak, „tördelés” módban új
+                    sorokra törnek. A sorok száma és a sorszámozás
+                    mindig ehhez igazodik.
                   </div>
                 </div>
               </aside>
@@ -1026,7 +1710,10 @@ const App: React.FC = () => {
 
             {/* Vízszintes elválasztó: felső kód ↔ chat */}
             <div
-              className="horizontal-resizer"
+              className={
+                "horizontal-resizer" +
+                (activeTab === "code" ? " mobile-show" : " mobile-hide")
+              }
               onMouseDown={(e) =>
                 setDrag({
                   type: "top",
@@ -1034,24 +1721,81 @@ const App: React.FC = () => {
                   startRatio: topHeightRatio,
                 })
               }
-              onDoubleClick={() => setTopHeightRatio(0.65)}
+              onDoubleClick={() => setTopHeightRatio(DEFAULT_TOP_RATIO)}
               title="Húzd a magassághoz, dupla katt az alap arányhoz"
             />
 
             {/* Alsó: LLM Chat */}
-            <section className="panel chat-panel">
-              <div className="panel-header">LLM Chat</div>
-              <div className="chat-messages">
-                {/* ide jönnek majd az üzenetek */}
+            <section
+              className={
+                "panel chat-panel" +
+                (activeTab === "chat" ? " mobile-show" : " mobile-hide")
+              }
+            >
+              <div className="panel-header">
+                <span>LLM Chat</span>
+                <div className="panel-header-right">
+                  {chatLoading && <span>Gondolkodom…</span>}
+                  {chatError && (
+                    <span className="projects-error">{chatError}</span>
+                  )}
+                </div>
               </div>
-              <form className="chat-input-row">
+
+              <div className="chat-messages">
+                {chatMessages.length === 0 && (
+                  <div className="projects-info">
+                    Írj egy kérdést az LLM-nek a kóddal kapcsolatban…
+                  </div>
+                )}
+
+                {chatMessages.map((m) => (
+			  <div
+				key={m.id}
+				style={{
+				  marginBottom: "6px",
+				  textAlign: m.role === "user" ? "right" : "left",
+				}}
+			  >
+				<div
+				  style={{
+					display: "inline-block",
+					padding: "6px 10px",
+					borderRadius: 10,
+					background: m.role === "user" ? "#e5e7eb" : "#dcfce7",
+					fontSize: "0.9rem",
+					maxWidth: "80%",
+					whiteSpace: "pre-wrap",
+				  }}
+				>
+				  {m.role === "assistant"
+					? renderAssistantMessage(m.text)
+					: m.text}
+				</div>
+			  </div>
+			))}
+
+              </div>
+
+              <form className="chat-input-row" onSubmit={handleChatSubmit}>
                 <input
                   className="chat-input"
                   placeholder="Írj az LLM-nek…"
                   autoComplete="off"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      // a submit úgyis lefut, de nem árt, ha nem engedjük a több soros inputot
+                    }
+                  }}
                 />
-                <button className="primary-button" type="submit">
-                  Küldés
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={chatLoading || !chatInput.trim()}
+                >
+                  {chatLoading ? "Küldés..." : "Küldés"}
                 </button>
               </form>
             </section>
@@ -1067,11 +1811,18 @@ const App: React.FC = () => {
         >
           <div
             className="modal"
-            onClick={(e) => e.stopPropagation()} // backdrop click zárjon, de a modál ne
+            onClick={(e) => e.stopPropagation()}
           >
-            <h2>Új projekt</h2>
+            <h2>
+              {projectModalMode === "create"
+                ? "Új projekt"
+                : "Projekt szerkesztése"}
+            </h2>
 
-            <form onSubmit={handleCreateProject} className="modal-form">
+            <form
+              onSubmit={handleProjectModalSubmit}
+              className="modal-form"
+            >
               <label>
                 Projekt neve *
                 <input
@@ -1123,7 +1874,11 @@ const App: React.FC = () => {
                   className="primary-button"
                   disabled={projectModalSaving}
                 >
-                  {projectModalSaving ? "Mentés…" : "Létrehozás"}
+                  {projectModalSaving
+                    ? "Mentés…"
+                    : projectModalMode === "create"
+                    ? "Létrehozás"
+                    : "Mentés"}
                 </button>
               </div>
             </form>

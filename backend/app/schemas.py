@@ -20,3 +20,11 @@ class ProjectRead(ProjectBase):
 
     class Config:
         orm_mode = True
+
+
+class ProjectUpdate(BaseModel):
+    # mind opcionális, PATCH-szerű update-hez
+    name: Optional[str] = None
+    description: Optional[str] = None
+    root_path: Optional[str] = None
+
