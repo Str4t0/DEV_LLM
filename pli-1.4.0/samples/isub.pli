@@ -1,0 +1,21 @@
+/* iSub: Sample program using iSub defined arrays.        */
+/* Array d is defined as a slice consisting               */
+/* of the diagonal of the base array b.                   */
+/* To run type isub (or ./isub)                           */
+iSub: proc options(main);
+    dcl b(3,3) bin fixed  init(            /* Base array     */
+              1,2,3,
+              4,5,6, 
+              7,8,9  );
+    dcl d(3) bin fixed def (b(1sub,1sub)); /* Diagonal slice */
+    dcl t    char(80) var static init('   -1   -2   -3' );
+
+    put skip(1) list('Values of d');
+    /* d = s(i,i) = {1,5,9}       */
+    put skip edit('b: ',b)(a,(9)f(4)); /* Print b */
+    put skip edit('d: ',d)(a,(5)f(4)); /* Print d */
+    put skip;
+    get string(t) edit(d)(f(5));       /* Set new values of v */
+    put skip edit('b: ',b)(a,(9)f(4)); /* Print b */
+
+  end iSub;

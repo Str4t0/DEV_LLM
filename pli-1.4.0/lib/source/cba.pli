@@ -1,0 +1,176 @@
+ /* _pli_CBA                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CBA (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CBA                                     */
+ /*                                                                  */
+ /*      Function:      Convert bit string to coded arithmetic       */
+ /*                     FIXED BIN(31) when the source attributes     */
+ /*                     preclude inline conversion.                  */
+ /*                                                                  */
+ /*                     IBM PL/I for MVS and VM does the following:  */
+ /*                     "The source bit string is converted to an    */
+ /*                      unsigned binary value with precision (15,0) */
+ /*                      if the conversion occurs during evaluation  */
+ /*                      of an operational expression, or with       */
+ /*                      precision (56,0) if the conversion occurs   */
+ /*                      during an assignment." -SC26-3114-01, p.86  */
+ /*                     [Where does '56' come from?]                 */
+ /*                                                                  */
+ /*                     IBM Enterprise PL/I 3.4 does this:           */
+ /*                     "If the conversion occurs during evaluation  */
+ /*                      of an operational expression, the source    */
+ /*                      bit string is converted to an unsigned      */
+ /*                      value that is FIXED BINARY(M,0)"            */
+ /*                                             -SC27-1460-04, p.78  */
+ /*                     [What if it's not during expression eval?]   */
+ /*                                                                  */
+ /*                     We always convert to FIXED BINARY(31,0).     */
+ /*                     In all cases the rightmost bits are used.    */
+ /*                     "If the source string is longer than the     */
+ /*                      allowable precision, bits on the left are   */
+ /*                      ignored.  If nonzero bits are lost, the     */
+ /*                      SIZE condition is raised."                  */
+ /*                                             -SC27-1460-04, p.78  */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Bit string descriptor             |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Bit string (byte addr of 1st byte)|  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Converted value returned in EAX              */
+ /*                                                                  */
+ /*      Called from:   Compiled code.  Not in PGT because hopefully */
+ /*                     will not be needed in all programs.          */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2025-03-04: Changes for UNSIGNED, Add entry CBU to 1.3.3*/
+ /*                      not break compatibility with old code. 1.3.3*/
+ /*                                                                  */
+ /********************************************************************/
+
+ CBA: package exports(pli_CBA,pli_CBU);
+
+ /* Entry for UNSIGNED result */
+ pli_CBU: proc(pData,pDesc)
+          external( '_pli_CBU' )
+          returns( fixed bin(31) )
+          options( linkage(system) );
+ dcl     pData               ptr;                     /* -> Bit str. */
+ dcl     pDesc               ptr;                     /* -> Descript.*/
+ return( convert(pData,pDesc,0) );
+ end pli_CBU;
+
+ /* Entry for signed result   */
+ pli_CBA: proc(pData,pDesc)
+          external( '_pli_CBA' )
+          returns( fixed bin(31) )
+          options( linkage(system) );
+ dcl     pData               ptr;                     /* -> Bit str. */
+ dcl     pDesc               ptr;                     /* -> Descript.*/
+ return( convert(pData,pDesc,1) );
+ end pli_CBA;
+
+ (NOFIXEDOVERFLOW):
+ convert: proc(pData,pDesc,signed)
+          returns( fixed bin(31) )
+          options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pData               ptr;                     /* -> Bit str. */
+ dcl     pDesc               ptr;                     /* -> Descript.*/
+ dcl     signed              fixed bin(31);           /* Signed      */
+
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl     iBits               fixed bin(31);           /* Bit str len */
+ dcl     iOff                fixed bin(31);           /* Bit str off */
+ dcl    (n,s)                fixed bin(31);
+
+ dcl     result              fixed bin(31)       init(0);
+ dcl     bresult             bit(31);
+ dcl     bSize               bit(1)              init( '0'b );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FB15                fixed bin(15)       based;
+ dcl     VarStr              bit(0)    varying   based;
+ dcl     bStr                bit(32760)          based;
+
+ %include CONDMASK;
+
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( linkage(system) );
+ dcl    (addr,length,min,mod,stg)
+                             builtin;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled condition mask */
+ bresult = ''b;                        /* Zero result field          */
+ iBits = pDesc->ST_len;
+ if pDesc->ST_id = '21'x then do;      /* Varying string?            */
+   iBits = length(pData->VarStr);      /* Yes, get current length    */
+   pData = pData+stg( null()->VarStr );/*   and ->Data               */
+   end;
+ if iBits=0 then return(0);            /* Source was null string     */
+ iOff = pDesc->ST_bo;                  /* Offset of first bit        */
+ if signed=1                                                  /*1.3.3*/
+ then n = min(31,iBits);               /* Num of bits to convert1.3.3*/
+ else n = min(32,iBits);                                      /*1.3.3*/
+ if iBits>n then do;                   /* Truncation?                */
+   if substr(pData->bStr,iOff+1,iBits-n)ª=''b
+   then bSize = '1'b;                  /* Yes, check for SIZE        */
+   iOff  = iOff + iBits-n;             /*   skip excess bits         */
+   pData = pData + iOff/8;             /*   and adjust if necessary  */
+   iOff  = mod(iOff,8);
+   end; /* iBits>n */
+
+ /*---------------------------------------------*/
+ /* Move up to 31 bits to result                */
+ /*---------------------------------------------*/
+ if signed=1                                                  /*1.3.3*/
+ then substr(bResult,32-n,n) = substr(pData->bStr,iOff+1,n);  /*1.3.3*/
+ else substr(bResult,33-n,n) = substr(pData->bStr,iOff,n);    /*1.3.3*/
+
+ /*------------------------------------------------------------------*/
+ /* Check for high-order one bits truncated IFF SIZE is enabled.     */
+ /* COMMENT: IBM PL/I seems to return zero if bits are truncated     */
+ /*       whether or not SIZE is enabled.                            */
+ /*       We will just return the first 'n' bits.               1.3.3*/
+ /*------------------------------------------------------------------*/
+ if bSize then do;                     /* Bits truncated             */
+   if M_Size then signal SIZE;         /* SIZE was enabled           */
+   /* Normal return from SIZE condition here.                        */
+/* return(0);                          /* Set result to zero    1.3.3*/
+   end; /* SIZE */
+
+ result = bResult;
+ return( result );
+
+ %include desc;
+
+ end convert;
+
+ end CBA;

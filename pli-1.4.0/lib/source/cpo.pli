@@ -1,0 +1,291 @@
+ /* _pli_CPO                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        CPO     (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CPO                                     */
+ /*                                                                  */
+ /*      Function:      Convert character to character picture.      */
+ /*                                                                  */
+ /*      Dependencies:  Version 1.0 DED formats                      */
+ /*                                                                  */
+ /*                     This program assumes that all pictures are   */
+ /*                     correct (verified during compilation).       */
+ /*                     Unpredictable results may occur otherwise.   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                    +16 | -> FILE or SYSNULL (for ONFILE)      |  */
+ /*                        +--------------------------------------+  */
+ /*                    +12 | -> Result (picture) descriptor       |  */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Result field                      |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Character Descriptor              |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Character data                    |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Result stored at address passed as 4th arg.  */
+ /*                                                                  */
+ /*      Called From:   Compiled code.                               */
+ /*                                                                  */
+ /*      Errors         CONVERSION, STRINGSIZE                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ CPO: proc(pChar,pdChar,pPIC,pdPic,pFile)
+                             external( '_pli_CPO' )
+                             options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pChar               ptr;      /* ->Input string data        */
+ dcl     pdChar              ptr;      /* ->Input string descriptor  */
+ dcl     pPIC                ptr;      /* ->Output PICTURE data      */
+ dcl     pdPIC               ptr;      /* ->PICTURE descriptor       */
+ dcl     pFile               ptr;      /* ->ONFILE or SYSNULL        */
+
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl     i                   fixed bin(31);
+ dcl     strlen              fixed bin(31);
+ dcl     outlen              fixed bin(31);
+ dcl     pI                  ptr;      /* ->Input character          */
+ dcl     pO                  ptr;      /* ->Output character         */
+ dcl     pP                  ptr;      /* ->Picture character        */
+ dcl     n                   char(1);  /* Current input char         */
+ dcl     x                   bit(8);   /* Curr character class       */
+ dcl     bSTRZ               bit(1)    init( '0'b );
+
+ /*-------------------------*/
+ /* Parms for CONVERSION    */
+ /*-------------------------*/
+ dcl   1 conv_parms,
+         5 conv_onsource     ptr,      /* -> ONSOURCE Locator/Descr  */
+         5 conv_onchar       ptr,      /* -> Single character        */
+         5 conv_onfile       ptr;      /* -> ONFILE or SYSNULL       */
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     VarStr              char(0)   varying   based;
+ dcl     b                   bit(8)              based;
+ dcl     c                   char(1)             based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     CONV                entry( fixed bin(31), ptr )
+                             returns( ptr )
+                             ext( '_pli_Conv' )
+                             options( linkage(system) );
+
+ dcl    (addr,length,max,null,plifill,ptradd,rank)
+                             builtin;
+
+ /*------------------------------------------------------------------*/
+ /*      Program Begins Here                                         */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+
+ /*-----------------------------------*/
+ /* Set up entry variable and data    */
+ /* for SIGNAL CONVERSION             */
+ /*-----------------------------------*/
+ conv_onsource = addr(pChar);          /* -> Source Loc/Desc         */
+ conv_onfile   = pFile;                /* -> FILE for ONFILE         */
+
+ /*-----------------------------------*/
+ /* Restart here after CONVERSION     */
+ /*-----------------------------------*/
+ retry:
+
+ pI = pChar;                           /* ->Input data               */
+ pO = pPic;                            /* ->Output data              */
+ pP = addr( pdPIC->CP_pic );           /* ->Picture string           */
+ outlen = pdPic->CP_size;              /* Get length of pic data     */
+ call plifill( pO, ' ', outlen );      /* Clear result               */
+ strlen = pdChar->ST_len;              /* Get string length from desc*/
+ if pdChar->ST_id = '11'x then do;     /* Varying string             */
+   strlen = length(pI->VarStr);        /* -> Data                    */
+   pI = pI + stg(null()->VarStr);      /* Skip over prefix           */
+   end;
+ if strlen>outlen then do;             /* Pretest for STRINGSIZE     */
+   bSTRZ = '1'b;                       /* Set flag                   */
+   strlen = outlen;                    /* Truncate input             */
+   end;
+
+ do i = 1 to strlen;
+   n = pI->c;                          /* Get next data character    */
+   x =  ptradd( addr(charclass), rank(n) )->b;
+   /* Notice that blank matches both '9' and 'A'.                    */
+   /* Note: This usage redefines the CHARACTER array 'charclass'     */
+   /*       as an array of BIT(8).                                   */
+   select(pP->c);                      /* Process picture character  */
+     when(pc_9) do;
+       if (x&'02'bx)='00'bx            /* This char must be numeric  */
+       then goto signal_CONV;          /* Or CONV will be raised     */
+       end; /* pc_9 */
+     when(pc_A) do;                    /* 'A'                        */
+       if (x&'01'bx)='00'bx            /* This char must be alpha    */
+       then goto signal_CONV;          /* Or CONV will be raised     */
+       end; /* pc_A */
+     when(pc_X) /* continue */ ;       /* 'X'                        */
+     /* 'OTHERWISE' is compiler error.                               */
+     end; /* select */
+   pO->c = n;                          /* Store this output char     */
+   pI = pI+1;                          /* Consume one input char     */
+   pP = pP+1;                          /*   and one picture char     */
+   pO = pO+1;                          /* Generate one output char   */
+   end; /* do i */
+ if bSTRZ then goto signal_STRZ;       /* Raise STRINGSIZE           */
+ return;
+
+ /*-----------------------------------*/
+ /* Raise error conditions            */
+ /*   if enabled by caller            */
+ /*-----------------------------------*/
+ signal_CONV: ;
+   (conversion):    if M_Conversion then do;
+     /*--------------------------------------------------------------*/
+     /* "Signal CONVERSION;"                                         */
+     /* This can't be done via SIGNAL statement due to the need to   */
+     /* pass a parameter for the ONSOURCE and ONCHAR information.    */
+     /*--------------------------------------------------------------*/
+     conv_onchar = pI;               /* Set up ONCHAR                */
+     call CONV( oncode_conv, addr(conv_parms) );
+     GOTO retry;                     /* Retry conversion             */
+     /* COMMENT: "If the ONSOURCE or ONCHAR pseudovariable is used,  */
+     /*          the program retries the conversion on return from   */
+     /*          the ON-unit.  If the error is not corrected, the    */
+     /*          program loops.  If these pseudovariables are not    */
+     /*          used, the ERROR condition is raised."               */
+     /*             -SC26-3114-2, p.313,                             */
+     /*          SIG checks to see whether these pseudovariables     */
+     /*          have been used, and raises ERROR if not.  If the    */
+     /*          code returns here, they have been used.             */
+     end; /* M_CONVERSION */
+   else do;                            /* CONVERSION disabled        */
+     /* COMMENT: "If the CONVERSION condition is raised and it is    */
+     /*          disabled, the program is in error."                 */
+     /*          (I.E. The behavior is undefined.)                   */
+     /*               -SC26-3114-2, p.313.                           */
+     /*          Our default action is to return whatever has been   */
+     /*          converted to date.                                  */
+     end;
+   return;
+
+ signal_STRZ: ;
+   (stringsize):    if M_Stringsize then signal STRZ;
+   return;
+
+ %page;
+ /********************************************************************/
+ /*                                                                  */
+ /*      Module:        Picture Character Definitions                */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2002                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Defines values of characters in internal     */
+ /*                     coded pictures.                              */
+ /*                                                                  */
+ /*                     There is supposed to be some logic to how    */
+ /*                     these are defined:                           */
+ /*                                                                  */
+ /*                     The picture characters 'V' and 'K' are       */
+ /*                     not stored.                                  */
+ /*                                                                  */
+ /*      Dependencies:  None.                                        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2005-07-19 - Drifting vs. nondrifting renamed and       */
+ /*                       values changed to agree with compiler.     */
+ /*                                                                  */
+ /********************************************************************/
+
+ dcl   1 Picture_Chars       static,   /* Picture char definitions   */
+         5 pc_9              char(1)             init( '82'x ),
+         5 pc_Z              char(1)             init( '90'x ),
+         5 pc_Ast            char(1)             init( '91'x ),
+         5 pc_Com            char(1)             init( 'A0'x ),
+         5 pc_Per            char(1)             init( 'A1'x ),
+         5 pc_Sl             char(1)             init( 'A2'x ),
+         5 pc_B              char(1)             init( 'A3'x ),
+         5 pc_Sn             char(1)             init( '93'x ),
+         5 pc_Pls            char(1)             init( '94'x ),
+         5 pc_Min            char(1)             init( '95'x ),
+         5 pc_T              char(1)             init( 'B3'x ),
+         5 pc_I              char(1)             init( 'B4'x ),
+         5 pc_R              char(1)             init( 'B5'x ),
+         5 pc_CurNd          char(1)             init( 'A4'x ),
+         5 pc_CRC            char(1)             init( 'B6'x ),
+         5 pc_CRR            char(1)             init( 'B7'x ),
+         5 pc_DBD            char(1)             init( 'B8'x ),
+         5 pc_DBB            char(1)             init( 'B9'x ),
+         5 pc_Y              char(1)             init( '83'x ),
+         5 pc_A              char(1)             init( '80'x ),
+         5 pc_X              char(1)             init( '81'x ),
+         5 pc_E              char(1)             init( 'A6'x ),/*0609*/
+         5 pc_K              char(1)             init( 'A7'x ),/*1005*/
+         /* Drifting Characters                                      */
+         5 pc_SnDr           char(1)             init( 'B0'x ),
+         5 pc_PlsDr          char(1)             init( 'B1'x ),
+         5 pc_MinDr          char(1)             init( 'B2'x ),
+         5 pc_CurDr          char(1)             init( 'A5'x );
+
+ /********************************************************************/
+ /*      Character classification:                                   */
+ /*        '01'x = alphabetic (including $, #, @, and _)             */
+ /*        '02'x = numeric                                           */
+ /*        '03'x = blank                                             */
+ /********************************************************************/
+ dcl     charclass       (16)char(16)            static    init(
+             /* .0.1.2.3.4.5.6.7.8.9.A.B.C.D.E.F                     */
+               '00000000000000000000000000000000'x,        /* 00-0F  */
+               '00000000000000000000000000000000'x,        /* 10-1F  */
+               '03000001010000000000000000000000'x,        /* 20-2F  */
+               '02020202020202020202000000000000'x,        /* 30-3F  */
+               '01010101010101010101010101010101'x,        /* 40-4F  */
+               '01010101010101010101010000000001'x,        /* 50-5F  */
+               '00010101010101010101010101010101'x,        /* 60-6F  */
+               '01010101010101010101010000000000'x,        /* 70-7F  */
+               '00000000000000000000000000000000'x,        /* 80-8F  */
+               '00000000000000000000000000000000'x,        /* 90-9F  */
+               '00000000000000000000000000000000'x,        /* A0-AF  */
+               '00000000000000000000000000000000'x,        /* B0-BF  */
+               '00000000000000000000000000000000'x,        /* C0-CF  */
+               '00000000000000000000000000000000'x,        /* D0-DF  */
+               '00000000000000000000000000000000'x,        /* E0-EF  */
+               '00000000000000000000000000000000'x         /* F0-FF  */
+         );
+ %include DESC;
+ %include ONCODE;
+
+ end CPO;

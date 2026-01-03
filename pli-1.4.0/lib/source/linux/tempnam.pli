@@ -1,0 +1,187 @@
+ /* _pli_Tempnam                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Tempnam (PL/I runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Tempnam                                 */
+ /*                                                                  */
+ /*      Function:      Tempnam is the rough equivalent of the C     */
+ /*                     _tempnam function.  It generates a unique    */
+ /*                     name for a temporary file.                   */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Linux directory functions.                   */
+ /*                                                                  */
+ /*      Restrictions:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     dcl tempnam entry( char(*) varying,          */
+ /*                                        char(*) varying,          */
+ /*                                        char(*) varying )         */
+ /*                                 returns( char(260) varying );    */
+ /*                     name = tempnam( dir, prefix, suffix );       */
+ /*                   . dir is the directory in which the file       */
+ /*                     is to be created.  If this is the null       */
+ /*                     string, the current working dir is used.     */
+ /*                   . prefix is the prefix to be used for the      */
+ /*                     generated name, or the null string.          */
+ /*                   . suffix is the suffix to be used for the      */
+ /*                     generated name, or the null string.          */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*         2017-07-23: Default to '.' if dir name omitted     0.9.10*/
+ /*	    2010-03-05: Change DosSearchPath to Linux Directory func.*/
+ /*	    2010-03-04: Change to use 'OSGetProcInfo', heximage. 0.8d*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Tempnam: proc(sDir,sPfx,sSfx)
+              returns( char(260) varying )
+              ext( '_pli_Tempnam' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    (sDir,sPfx,sSfx)     char(*) varying;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl   1  procinfo,           /* like pliprocinfo            20100304*/
+          5 pi_len            fixed bin(31),               /*20100304*/
+          5 pi_pid            fixed bin(31),               /*20100304*/
+          5 pi_tid            fixed bin(31);               /*20100304*/
+ dcl      RC                  fixed bin(31);
+ dcl     dirname              char(1024)     varying;
+ dcl     filename             char(1024)     varying;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     unique_id            fixed bin(31)  static    init(0);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ /* PL/I 'dir' structure                        */
+ dcl    1 dir                 based,
+          5 dir_hdr,
+            10 dir_fd         fixed bin(31),
+	    10 dir_bufsz      fixed bin(31),
+	    10 dir_pLast      ptr,
+	    10 dir_pNext      ptr,
+	  5 dir_buffer        char(0);
+
+ /* dirent.h                                     */
+ dcl    1 dirent              based,                          /*0.9.9*/
+          5 d_ino             fixed bin(31),
+	  5 d_off             fixed bin(31),
+	  5 d_reclen          fixed bin(15),
+	  5 d_name            char(256);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      GetProcInfo         entry( ptr )                  /*20100304*/
+                              returns( fixed bin(31) )      /*20100304*/
+                              external( '_pli_OSGetProcInfo' )/*100304*/
+                              options( LINKAGE(SYSTEM) );   /*20100304*/
+			     
+  dcl 	  opendir             entry(ptr)
+                              returns( ptr )
+	                      ext( '_pli_OpenDir' )
+	                      options( linkage(system) );
+  dcl 	  closedir            entry(ptr)
+                              returns( fixed bin(31) )
+	                      ext( '_pli_CloseDir' )
+	                      options( linkage(system) );
+  dcl 	  readdir             entry(ptr)
+                              returns( ptr )
+	                      ext( '_pli_ReadDir' )
+	                      options( linkage(system) );
+			      
+  %replace SYS_STAT64   by 195;
+  dcl      syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+
+ dcl    ( 
+ 	  addr,
+	  allocate,
+	  heximage,                                        /*20100304*/
+	  null,
+	  plifree,
+	  stg,
+	  string,
+	  substr,
+	  sysnull 
+                  )          builtin;
+
+ pi_len = stg(procinfo);               /* (short control blk)20100304*/
+ RC = GetProcInfo( addr(procinfo) );   /* Get current proc in20100304*/
+
+ /*-------------------------------------------------------*/
+ /* Build the filename as <pfx>pid-tid-uniqueid<sfx>      */
+ /*-------------------------------------------------------*/
+ dirname = sDir;
+ if length(dirname)=0 then dirname='.'; /* Curr dur if omitted 0.9.10*/
+ /*  Drop trailing '/' (if any) from dir name */
+ if length(dirname)>0 then do;
+   if substr(dirname,length(dirname),1)='/' |
+      substr(dirname,length(dirname),1)='\' 
+   then dirname = substr(dirname,1,length(dirname)-1);
+   end; /* length(dirname)>0 */
+ do while( '1'b );                     /* Until unique name gen'd    */
+ (fofl):  
+   unique_id = unique_id + 1;          /* Get unique value   20100305*/
+   filename = sPfx || heximage(addr(pi_pid),4) || '-'      /*20100304*/
+                   || heximage(addr(pi_tid),4) || '-'      /*20100304*/
+                   || heximage(addr(unique_id),4) || sSfx; /*20100304*/
+   RC = file_exists( dirname, filename );
+   if RC = -1 then return( '' );        /* Error                     */
+   if RC = 0                            /* File not found            */
+   then return( dirname || '/' || filename );		   
+   end; /* do while */
+   
+ /*-------------------------------------------------------*/
+ /* Check to see if file exists                           */
+ /*-------------------------------------------------------*/
+ file_exists: proc( sDir, sFile ) returns( fixed bin(31) );
+   dcl  (sDir,sFile)          char(*) varying;
+   dcl 	(pDir,pEnt)	      ptr;
+   dcl   RC                   fixed bin(31);
+   dcl   DirEntL              fixed bin(31);                  /* LINUX */
+   dcl  (szPathOrName,szFilename,Buf)
+                              char(1024);
+   /* Null-terminate directory and file name */
+   szPathOrName = translate( sDir,  '/', '\' ) || '00'x;
+   szFileName   = translate( sFile, '/', '\' ) || '00'x;
+   pDir = opendir( addr(szPathOrName) ); /* Open the directory LINUX */
+   if pDir=sysnull then return(-1);      /* Error              LINUX */
+   
+   /* Scan through to the end of the directory or until match found. */
+   do while( '1'b );
+     pEnt = readdir(pDir);                                  /* LINUX */
+     if pEnt=sysnull() then leave;      /* Not Found or error  LINUX */
+     if substr(pEnt->d_name,1,DirEntL) = sFile              /* LINUX */
+     then leave;                                            /* LINUX */
+     end; /* do while */
+     
+   RC = closedir(pDir);
+   if pEnt = sysnull() then return(0);  /* No match                  */
+   return(1);                           /* Match                     */
+   
+   end file_exists;
+  
+
+ %page;
+
+ end pli_Tempnam;

@@ -1,0 +1,45 @@
+ /* _pli_IIC                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        pli_IIC  (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2002                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_IIC                                     */
+ /*                                                                  */
+ /*      Function:      This is a stub procedure whose address is    */
+ /*                     plugged into the PGT in place of any         */
+ /*                     unimplemented intrinsics.  It prints a       */
+ /*                     message and raises the ERROR condition.      */
+ /*                                                                  */
+ /*                     A call to this procedure indicates a         */
+ /*                     compiler error or a mismatch between         */
+ /*                     compiled code and library code.              */
+ /*                                                                  */
+ /*      Dependencices: None                                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Call _pli_IIC (not user-callable)            */
+ /*                                                                  */
+ /*      Called from:   Compiled code vis PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . Replace call to WriteLn with PL/I I/O        */
+ /*                     when this becomes available.                 */
+ /*                   . Message text/format?                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2009-12-14: Replace WriteLn with display.           0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_IIC: proc               external( '_pli_IIC' )
+                             options( linkage(system) );
+
+ display( 'Unrecognized intrinsic function call' );            /*0.8c*/
+ signal error;
+
+ end pli_IIC;

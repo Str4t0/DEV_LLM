@@ -1,0 +1,302 @@
+/* ═══════════════════════════════════════════════════════════════
+   SYNTAX HIGHLIGHTING CSS
+   Unified colors for all languages (VS Code Dark+ theme inspired)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────
+   BASE TOKEN CLASSES
+   ───────────────────────────────────────────────────────────────── */
+
+/* Keywords (if, else, for, while, function, class, etc.) */
+.syntax-keyword,
+.pli-token-keyword,
+.token-keyword {
+  color: #c586c0;
+  font-weight: 500;
+}
+
+/* Strings ("hello", 'world', `template`) */
+.syntax-string,
+.pli-token-string,
+.token-string {
+  color: #ce9178;
+}
+
+/* Comments (// single, /* multi */, # python) */
+.syntax-comment,
+.pli-token-comment,
+.token-comment {
+  color: #6a9955;
+  font-style: italic;
+}
+
+/* Numbers (123, 45.67, 0xFF, 1e10) */
+.syntax-number,
+.pli-token-number,
+.token-number {
+  color: #b5cea8;
+}
+
+/* Operators (+, -, *, /, =, ==, &&, ||) */
+.syntax-operator,
+.pli-token-operator,
+.token-operator {
+  color: #d4d4d4;
+}
+
+/* Preprocessor (#include, %INCLUDE, @import) */
+.syntax-preprocessor,
+.pli-token-preprocessor,
+.token-preprocessor {
+  color: #c586c0;
+  font-style: italic;
+}
+
+/* Built-in functions (print, len, substr, abs) */
+.syntax-builtin,
+.pli-token-builtin,
+.token-builtin {
+  color: #dcdcaa;
+}
+
+/* Function names & calls */
+.syntax-function,
+.pli-token-function,
+.token-function {
+  color: #dcdcaa;
+}
+
+/* Type names (int, string, MyClass) */
+.syntax-type,
+.pli-token-type,
+.token-type {
+  color: #4ec9b0;
+}
+
+/* Variables */
+.syntax-variable,
+.pli-token-variable,
+.token-variable {
+  color: #9cdcfe;
+}
+
+/* Object properties (obj.property) */
+.syntax-property,
+.pli-token-property,
+.token-property {
+  color: #9cdcfe;
+}
+
+/* Punctuation (brackets, semicolons, commas) */
+.syntax-punctuation,
+.pli-token-punctuation,
+.token-punctuation {
+  color: #808080;
+}
+
+/* HTML/XML tags */
+.syntax-tag,
+.pli-token-tag,
+.token-tag {
+  color: #569cd6;
+}
+
+/* HTML/XML attributes */
+.syntax-attribute,
+.pli-token-attribute,
+.token-attribute {
+  color: #9cdcfe;
+}
+
+/* Normal/default text */
+.syntax-normal,
+.pli-token-normal,
+.token-normal {
+  color: #d4d4d4;
+}
+
+/* Unknown/error tokens */
+.syntax-unknown,
+.pli-token-unknown,
+.token-unknown {
+  color: #d4d4d4;
+  text-decoration: wavy underline #ff0000;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   LANGUAGE-SPECIFIC OVERRIDES
+   ───────────────────────────────────────────────────────────────── */
+
+/* PL/I specific */
+.lang-pli .syntax-keyword {
+  color: #569cd6;
+  font-weight: bold;
+}
+
+.lang-pli .syntax-builtin {
+  color: #dcdcaa;
+}
+
+/* COBOL specific */
+.lang-cobol .syntax-keyword {
+  color: #569cd6;
+  text-transform: uppercase;
+}
+
+.lang-cobol .syntax-section {
+  color: #c586c0;
+  font-weight: bold;
+}
+
+/* JCL specific */
+.lang-jcl .syntax-keyword {
+  color: #569cd6;
+}
+
+.lang-jcl .syntax-operator {
+  color: #ce9178;
+}
+
+/* SQL specific */
+.lang-sql .syntax-keyword {
+  color: #569cd6;
+  text-transform: uppercase;
+}
+
+.lang-sql .syntax-function {
+  color: #dcdcaa;
+}
+
+/* Python specific */
+.lang-python .syntax-builtin {
+  color: #4ec9b0;
+}
+
+.lang-python .syntax-decorator {
+  color: #dcdcaa;
+}
+
+/* JavaScript/TypeScript specific */
+.lang-javascript .syntax-keyword,
+.lang-typescript .syntax-keyword {
+  color: #c586c0;
+}
+
+/* HTML specific */
+.lang-html .syntax-tag {
+  color: #569cd6;
+}
+
+.lang-html .syntax-attribute {
+  color: #9cdcfe;
+}
+
+.lang-html .syntax-string {
+  color: #ce9178;
+}
+
+/* CSS specific */
+.lang-css .syntax-property {
+  color: #9cdcfe;
+}
+
+.lang-css .syntax-value {
+  color: #ce9178;
+}
+
+.lang-css .syntax-selector {
+  color: #d7ba7d;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   THEME VARIANTS
+   ───────────────────────────────────────────────────────────────── */
+
+/* Light theme override (add .theme-light to parent) */
+.theme-light .syntax-keyword { color: #0000ff; }
+.theme-light .syntax-string { color: #a31515; }
+.theme-light .syntax-comment { color: #008000; }
+.theme-light .syntax-number { color: #098658; }
+.theme-light .syntax-function { color: #795e26; }
+.theme-light .syntax-type { color: #267f99; }
+.theme-light .syntax-variable { color: #001080; }
+.theme-light .syntax-normal { color: #000000; }
+
+/* High contrast theme */
+.theme-high-contrast .syntax-keyword { color: #569cd6; font-weight: bold; }
+.theme-high-contrast .syntax-string { color: #ce9178; }
+.theme-high-contrast .syntax-comment { color: #7ca668; }
+.theme-high-contrast .syntax-number { color: #b5cea8; }
+.theme-high-contrast .syntax-function { color: #dcdcaa; }
+.theme-high-contrast .syntax-normal { color: #ffffff; }
+
+/* ─────────────────────────────────────────────────────────────────
+   CODE EDITOR CONTAINER STYLES
+   ───────────────────────────────────────────────────────────────── */
+
+.code-highlight-container {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.code-highlight-container code {
+  display: block;
+  padding: 0;
+  margin: 0;
+}
+
+/* Line numbers */
+.code-line-number {
+  display: inline-block;
+  width: 3em;
+  padding-right: 1em;
+  text-align: right;
+  color: #858585;
+  user-select: none;
+  border-right: 1px solid #3c3c3c;
+  margin-right: 1em;
+}
+
+/* Current line highlight */
+.code-line.current {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Selection */
+.code-highlight-container ::selection {
+  background: #264f78;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   LOADING & ERROR STATES
+   ───────────────────────────────────────────────────────────────── */
+
+.syntax-loading {
+  position: relative;
+}
+
+.syntax-loading::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #569cd6 0%, #c586c0 50%, #569cd6 100%);
+  background-size: 200% 100%;
+  animation: syntax-loading-bar 1.5s ease-in-out infinite;
+}
+
+@keyframes syntax-loading-bar {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.syntax-error {
+  border: 1px solid #f44747;
+  background: rgba(244, 71, 71, 0.1);
+}

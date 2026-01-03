@@ -1,0 +1,242 @@
+ /* task: Iron Spring PL/I multitasking sample            */           
+ /*********************************************************/
+ /*                                                       */
+ /* Module:   task                                        */
+ /*           Peter Flass -- May 2011                     */
+ /*                                                       */
+ /* Function: Demonstrate PL/I multitasking.              */
+ /*                                                       */
+ /* Usage:    task                                        */
+ /*                                                       */
+ /*           task runs in an OS/2 VIO window or a Linux  */
+ /*           xterm or console.                           */
+ /*           It starts five tasks, four                  */
+ /*           of which write different-color block        */
+ /*           characters at random locations in the       */
+ /*           window, and one task displays the elapsed   */
+ /*           time in the bottom left corner of the screen*/        
+ /*           The program runs continuously until         */
+ /*           interrupted by the attention key.           */
+ /*                                                       */
+ /*           This is not, nor is it intended to be, an   */
+ /*           example of good coding technique.           */
+ /*                                                       */
+ /* Modifications:                                        */
+ /*     2023-01-25: Use RANDOM() builtin instead of  1.0.0*/
+ /*                 internal procedure; adjust timing1.0.0*/
+ /*                                                       */
+ /* Dependencies:                                         */
+ /*                                                       */
+ /* To Do:                                                */
+ /*                                                       */
+ /*********************************************************/
+ /*                                                       */
+ /*********************************************************/
+
+ task: proc options(main);
+ dcl      sysprint           record output unbuffered env( U recsize(1) );
+
+ dcl     (t1,t2,t3,t4,t5) task;
+ dcl     (e1,e2,e3,e4,e5) event;
+ dcl     (mux1,mux2)      fixed bin(31)          init(0);
+			     
+ dcl      term_buffer        char(256) varying;
+ dcl      pSysId             ptr;
+ dcl      sys_id             char(8)   varying   based;
+ dcl     (disp_row,disp_col) fixed bin(31);
+ 
+ dcl      sysid              entry
+                             returns(ptr)
+			     options( LINKAGE(SYSTEM) )
+                             external( '_pli_Sysid' );
+                     
+ dcl	  mutex_init	     entry(ptr)			     
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_mutex_init' );
+ dcl	  mutex_wait	     entry(ptr)			     
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_mutex_wait' );
+ dcl	  mutex_post	     entry(ptr)			     
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_mutex_post' );
+ 			     
+ 
+ /*------ Mainline -------------*/
+ on attention goto exit;         /* User interrupt            */
+
+ call mutex_init( addr(mux1) );
+ call mutex_init( addr(mux2) );
+ pSysId = sysid;
+ 
+ /*-----------------------------------------------------------*/
+ /* Initialize the display, start the five subtasks,          */
+ /* and then execute an endless loop with a time delay        */
+ /* waiting for the user to press CTRL/C to raise ATTENTION.  */
+ /* Note that only the initial task (thread 1) will receive   */
+ /* the ATTENTION condition.                                  */
+ /*-----------------------------------------------------------*/
+ if substr(pSysId->sys_id,1,1)='L' then do; /* Linux          */
+   disp_row = 24;
+   disp_col = 80;
+   end; /* Linux */
+ else do; 
+   disp_row = 25;
+   disp_col = 80;
+   term_buffer = '1B'x || '[2h';   /* Set 25x80               */
+   call write( addr(term_buffer)+2, length(term_buffer) );
+   end; /* OS/2 */
+ term_buffer = '1B'x || '[2J';   /* Clear the screen          */
+ call write( addr(term_buffer)+2, length(term_buffer) );
+ term_buffer = '1B'x || '[1;1H'; /* Cursor to(1,1)            */
+ call write( addr(term_buffer)+2, length(term_buffer) );
+ call disp(1) task(t1) event(e1); 
+ call disp(2) task(t2) event(e2);
+ call disp(3) task(t3) event(e3);
+ call disp(4) task(t4) event(e4);
+ call timer   task(t5) event(e5);
+ do while('1'b);                 /* Endless loop with delay   */
+   delay(1500);
+   end;                          /* Loop terminated by ^C     */
+ return;
+
+ /*-----------------------------------------------------------*/
+ /* The ATTENTION On-Unit transfers control to this point.    */
+ /*-----------------------------------------------------------*/
+exit:
+ /* clear screen */
+ term_buffer = '1B'x || '[2J';   /* Clear the screen          */
+ call write( addr(term_buffer)+2, length(term_buffer) );    /**/
+ term_buffer = '1B'x || '[1;1H'; /* Cursor to(1,1)            */
+ call write( addr(term_buffer)+2, length(term_buffer) );    /**/
+ /* Note that the FINISH condition for the subtasks           */
+ /* WILL NOT be raised until completion of this thread,       */
+ /* unless an error occurs in the subtask thread.             */
+ display( 'PL/I multitasking test ended by ATTENTION.' );
+ display( 'Subtask 1 status ' || status(e1) );
+ display( 'Subtask 2 status ' || status(e2) );
+ display( 'Subtask 3 status ' || status(e3) );
+ display( 'Subtask 4 status ' || status(e4) );
+ display( 'Subtask 5 status ' || status(e5) );
+
+ return;
+
+ /*-----------------------------------------------------------*/
+ /* Timer procedure: Display elapsed time in column one       */
+ /*   of the bottom line of the screen, updating              */
+ /*   approximately once every second.                        */
+ /*-----------------------------------------------------------*/
+ timer: proc;
+   dcl    term_buffer         char(256) varying;
+   dcl   (ctime,etime)        char(6);
+   dcl    p                   pic'99';
+   dcl    row                 pic '99';
+   dcl    col                 pic '99';
+   dcl   (start_time,curr_time,elapsed_time,n)
+                              fixed bin(31);
+   dcl    delay               fixed bin(31);
+
+   ctime = time;
+   start_time = substr(ctime,1,2)*3600 +
+                substr(ctime,3,2)*60   +
+		substr(ctime,5,2);
+   curr_time = start_time;
+   row = disp_row;
+   col = 1;
+   /* NOTE: multiple assign of start_time and curr_time             */
+   /*       generates error in REGX                                 */
+   do while('1'b);
+     n = curr_time - start_time;
+     p = n/3600;
+     substr(etime,1,2) = p;
+     n = mod(n,3600);
+     p = n/60;
+     substr(etime,3,2) = p;
+     p = mod(n,60);
+     substr(etime,5,2) = p;
+     /* Move the cursor to the specified position and display       */
+     /* the elapsed time.                                           */
+     term_buffer =  '1B'x || '['  || row ||';' || col || 'f'
+                 || substr(etime,1,2) || ':'   
+                 || substr(etime,3,2) || ':'   
+                 || substr(etime,5,2);         
+     call write( addr(term_buffer)+2, length(term_buffer) );
+     delay = (60 - substr(ctime,5,2))*25;             /* max 1.5 sec*/
+     delay(delay);
+     if status(e1)^=0 | status(e2)^=0 | status(e3)^=0 | status(e4)^=0
+     then return;     
+     ctime = time;
+     curr_time = substr(ctime,1,2)*3600 +
+                 substr(ctime,3,2)*60   +
+		 substr(ctime,5,2);
+     end; /* do */
+     
+   end timer; 
+
+ /*-----------------------------------------------------------*/
+ /* Display procedure: Display a colored block character at   */
+ /*   a randomly-selected location on the screen.  The colors */
+ /*   are assigned as follows:                                */
+ /*     Task 1: Red                                           */
+ /*     Task 2: Green                                         */
+ /*     Task 3: Blue                                          */
+ /*     Task 4: Yellow                                        */
+ /*   Each task updates at approximately 1/4 sec intervals.   */
+ /*-----------------------------------------------------------*/
+ disp: proc(f);
+   dcl    f                   fixed dec(7);       /* Color    */ 
+   dcl    term_buffer         char(256) varying;
+   dcl   (cp,rp,xp)           pic'99';
+   dcl    r                   float;
+   dcl    pr                  pic'999999';
+   dcl  (row,col)             fixed bin(7);
+   dcl    seed                fixed bin(31)  static init(-6);
+   
+   cp = 30 + f;               /* Color (31,32,33,34)                 */
+   /* task 1 = red, task 2 = green, task 3=blue, task 4=yellow       */
+   do while('1'b); 
+     call mutex_wait( addr(mux1) );
+/*   r = ran1(seed); */
+     r = random();                                            /*1.0.0*/
+     call mutex_post( addr(mux1) );
+     pr = floor(r*1000000);
+     row = substr(pr,2,2); 
+     col = substr(pr,4,2);
+     rp = mod(row,disp_row)+1;
+     xp = mod(col,disp_col)+1;
+     if  rp<disp_row |
+        (rp=disp_row & xp>=10 & xp^=disp_col) then do;
+       term_buffer =  '1B'x || '[1' || 'm'        /* bright          */
+                   || '1B'x || '['  || cp || 'm'  /* Select color    */
+                   || '1B'x || '['  || rp ||';'
+                   ||  xp || 'f';                 /* cursor pos      */
+       /* char 'DB'x                */
+       term_buffer = term_buffer || 'DB'x 
+                     || '1B'x || '[1;1f' || '1B'x || '[0m';
+       call write( addr(term_buffer)+2, length(term_buffer) );
+       delay(250);                                            /*1.0.0*/
+       end;
+     end; /* do */
+     
+   end disp; 
+  
+ /*-----------------------------------------------------------*/
+ /* Print procedure: All output to screen is via PUT to       */
+ /*   SYSPRINT.  This procedure is locked with a mutex        */
+ /*   to ensure that the output of a single task              */
+ /*   is completely written.                                  */
+ /*-----------------------------------------------------------*/
+ write: proc(p,l);
+   dcl p ptr, c char(1) based(p);
+   dcl l fixed bin(31);
+   dcl i fixed bin(31);
+
+   call mutex_wait( addr(mux2) );
+   do i=1 to l;
+     write file(sysprint) from(c);
+     p = p+1;
+     end;
+   call mutex_post( addr(mux2) );
+   end write;
+
+ end task;
+

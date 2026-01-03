@@ -1,0 +1,228 @@
+ /* _pli_CBS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CBS (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CBS  Generalized bit string compare.    */
+ /*                                                                  */
+ /*      Function:      Compare bit strings of arbitrary alignment   */
+ /*                     and length.                                  */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence: (not user-callable)                       */
+ /*                     DCL CBS entry( pSrc, pDSrc, pSrc1, pDSrc1)   */
+ /*                                ext( '_pli_CBS' )                 */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     call CBS( addr(source_string),               */
+ /*                               addr(source_descriptor),           */
+ /*                               addr(source1_string),              */
+ /*                               addr(source1_descriptor) );        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                     If the source and source1 strings have the   */
+ /*                     same offset, the compare should be done by   */
+ /*                     comparing leading bits up to byte boundary,  */
+ /*                     doing a character compare up to trailing     */
+ /*                     byte boundary, then comparing trailing bits. */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ CBS: proc( xpSrc, xpDSrc, xpSrc1, xpDSrc1 )
+         returns( fixed bin(31) )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_CBS' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xpSrc               ptr;                /* ->Source string  */
+ dcl     xpDSrc              ptr;                /* ->Source descript*/
+ dcl     xpSrc1              ptr;                /* ->Source1 string */
+ dcl     xpDSrc1             ptr;                /* ->Source1 descrip*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pSrc                ptr;                /* ->Source string  */
+ dcl     pDSrc               ptr;                /* ->Source descript*/
+ dcl     pSrc1               ptr;                /* ->Source1 string */
+ dcl     pDSrc1              ptr;                /* ->Source1 descrip*/
+ dcl     sBit                fixed bin(7);       /* Src bit offset   */
+ dcl     dBit                fixed bin(7);       /* Src1 bit offset  */
+ dcl     sLen                fixed bin(31);      /* Src length       */
+ dcl     dLen                fixed bin(31);      /* Src1 length      */
+ dcl    (len1,len2)          fixed bin(31);      /* Lengths to comp. */
+ dcl    (b1,b2)              bit(8);             /* Bytes to compare */
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     Varying_String_Pfx  fixed bin(15)       based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     bNull               bit(8)    aligned   static
+                   init( '00'bx );
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,index,length,min,mod,stg,string,substr,sysnull)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Get Lengths and positions         */
+ /*-----------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ pSrc   = xpSrc;                       /* Copy parameters            */
+ pDSrc  = xpDSrc;
+ pSrc1  = xpSrc1;
+ pDSrc1 = xpDSrc1;
+ sBit   = pDSrc->ST_bo;                /* Get starting offsets       */
+ dBit   = pDSrc1->ST_bo;
+
+ if pDSrc->ST_id='20'x                 /* Is Source nonvarying?      */
+ then sLen = pDSrc->ST_len;            /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   sLen = length(pSrc->Varying_String);
+   pSrc = pSrc + stg( sysnull()->Varying_String );
+   end;
+ if pDSrc1->ST_id='20'x                /* Is Source1 nonvarying?     */
+ then dLen = pDSrc1->ST_len;           /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   dLen = length(pSrc1->Varying_String);
+   pSrc1 = pSrc1 + stg( sysnull()->Varying_String );
+   end;
+
+ len1 = min(sLen,dLen);                /* Bits to compare            */
+ len2 = max(sLen,dLen) - len1;         /* "must be zero" bits        */
+
+ /*-----------------------------------*/
+ /* Compare bits eight at a time      */
+ /*-----------------------------------*/
+ do while( len1>0 );
+   b1 = load_byte(pSrc,sBit,len1);     /* Load source byte           */
+   b2 = load_byte(pSrc1,dBit,len1);    /* Load source1 byte          */
+   if b1<b2 then return(-1);
+   if b1>b2 then return(+1);
+   len1 = len1-8;                      /* Adjust lengths             */
+   end;
+
+ /*-----------------------------------*/
+ /* Compare any extra bits to zeroes  */
+ /*-----------------------------------*/
+ b1,b2='00'bx;
+ do while( len2>0 );                   /* Move padding bits          */
+   if sLen>dLen
+   then b1 = load_byte(pSrc,sBit,len2);
+   else b2 = load_byte(pSrc1,dBit,len2);
+   if b1<b2 then return(-1);
+   if b1>b2 then return(+1);
+   len2 = len2-8;                      /* Adjust length              */
+   end; /* do while */
+
+ return(0);                            /* Strings are equal          */
+
+ /********************************************************************/
+ /* SUBSTR references with non-constant lengths generate calls       */
+ /* calls to MBS, which is obviously undesirable here,               */
+ /* hence all calls to SUBSTR are made with constant lengths.        */
+ /********************************************************************/
+
+ /*------------------------------------------------------------------*/
+ /* Load 'l' (up to 8) bits of data from address 'p' and offset 'o'. */
+ /* Output is ALIGNED.                                               */
+ /*------------------------------------------------------------------*/
+ load_byte: proc(p,o,l) returns( bit(8) );
+   dcl   p                   ptr;
+   dcl   o                   fixed bin(7);
+   dcl   l                   fixed bin(31);
+   dcl   lx                  fixed bin(31);
+   dcl   b                   bit(8)    aligned;
+
+   lx = min(l,8);                      /* Compute length to load     */
+   b = this_byte(p,o,lx);
+   select(lx);
+     when(1) b = b & '80'bx;
+     when(2) b = b & 'C0'bx;
+     when(3) b = b & 'E0'bx;
+     when(4) b = b & 'F0'bx;
+     when(5) b = b & 'F8'bx;
+     when(6) b = b & 'FC'bx;
+     when(7) b = b & 'FE'bx;
+     otherwise /* continue */ ;
+     end; /* select */
+   call adjust_offset(p,o,lx);         /* Parms 'p' and 'o' updated  */
+   return( b );
+
+   end load_byte;
+
+ /*------------------------------------------------------------------*/
+ /* Extract eight bits of data from address 'p' and offset 'o'.      */
+ /* Output may contain extra trailing 'garbage' bits.                */
+ /* Input alignment is not assumed, output is aligned.               */
+ /*------------------------------------------------------------------*/
+ this_byte: proc(p,o,l) returns( bit(8) );
+   dcl   p                   ptr;
+   dcl   o                   fixed bin(7);
+   dcl   l                   fixed bin(31);
+   dcl   lx                  fixed bin(31);
+   dcl   b                   bit(8)    aligned;
+   dcl   b16                 bit(16)   aligned;
+   dcl   bx                  bit(16)   aligned   based;
+
+   lx = min(l,8);                      /* Compute length to load     */
+   /* The following prevents references to non-existant storage.     */
+   if o+lx<=8 then b16 = substr(p->bx,1,8); /* Extract the byte(s)   */
+   else            b16 = substr(p->bx,1,16);/*  with desired bits.   */
+   select( o );                        /* Shift result left 'o' bits */
+     when( 0 ) b = substr(b16,1,8);
+     when( 1 ) b = substr(b16,2,8);
+     when( 2 ) b = substr(b16,3,8);
+     when( 3 ) b = substr(b16,4,8);
+     when( 4 ) b = substr(b16,5,8);
+     when( 5 ) b = substr(b16,6,8);
+     when( 6 ) b = substr(b16,7,8);
+     otherwise b = substr(b16,8,8);
+     end; /* select */
+   return( b );
+
+   end this_byte;
+
+ /*-----------------------------------*/
+ /* Bump bit offset 'o' by 'n' bits   */
+ /* and adjust byte address 'p' if    */
+ /* necessary.                        */
+ /*-----------------------------------*/
+ adjust_offset: proc(p,o,n);
+   dcl   p                   ptr;
+   dcl   o                   fixed bin(7);
+   dcl   n                   fixed bin(31);
+   o = o+n;                            /* Bump offset                */
+   if o>7 then do;                     /* Adj byte addr if necessary */
+     p = p+(n/8);
+     o = mod(o,8);
+     end;
+   end adjust_offset;
+
+ %page;
+ %include DESC;
+
+ end CBS;

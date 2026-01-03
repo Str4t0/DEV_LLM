@@ -1,0 +1,78 @@
+ /* _pli_GetDateTime                                                 */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_DTM (PL/I runtime)                      */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GetDateTime  [DATETIME() BIF]           */
+ /*                                                                  */
+ /*      Function:      Implement datetime builtin function.         */
+ /*                     Calls Operating-System-Dependent procedure   */
+ /*                     OSGetDateTime to get the current date and    */
+ /*                     time information.                            */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                                                                  */
+ /*      Calling sequence: Called with no arguments, returns the     */
+ /*                     appropriate character string result.         */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2011-02-06: Correct milliseconds calculation         0.9.5*/
+ /*        2011-06-11: Fix hundredths of sec. calculation       0.9.2*/
+ /*        2009-12-17: Corrected 'Hundredths' to 'Millisec'.     0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_DTM: proc returns( character(17) )
+               options( linkage(system) )
+               ext( '_pli_GetDateTime' );
+
+ /*------------------------------------------------------------------*/
+ /* DATETIME() Result string yyyymmddhhmmssttt                       */
+ /*------------------------------------------------------------------*/
+ dcl   1 rDateTime,
+         5 Year              pic'9999',
+         5 Month             pic'99',
+         5 Day               pic'99',
+         5 Hours             pic'99',
+         5 Minutes           pic'99',
+         5 Seconds           pic'99',
+         5 Hundredths        pic'999';                        /*0.9.2*/
+
+ /*-----------------------------------*/
+ /* System OSGetDateTime Function     */
+ /*-----------------------------------*/
+ dcl     OSGetDateTime       entry(ptr,ptr)
+                             external( '_pli_OSGetDateTime' )
+                             returns( fixed bin(31) ) /* unsigned */
+                             options( asm linkage(system) );
+
+ dcl   1 datetime            like tm;
+ dcl     usec                fixed bin(31);
+
+ dcl     retcode             fixed bin(31) /* unsigned */ ;
+
+ dcl    (addr,string)        builtin;
+
+ retcode = OSGetDateTime( addr(datetime), addr(usec) );
+ /*rDateTime = os2_datetime, by name;*/
+ rDateTime.Year       = datetime.tm_year+1900;
+ rDateTime.Month      = datetime.tm_mon+1;
+ rDateTime.Day        = datetime.tm_mday;
+ rDateTime.Hours      = datetime.tm_hour;
+ rDateTime.Minutes    = datetime.tm_min;
+ rDateTime.Seconds    = datetime.tm_sec;
+ /* Convert microseconds to milliseconds                             */
+ rDateTime.Hundredths = usec/1000;     /* 10**-6 ==> 10**-3     0.9.5*/
+ return( string(rDateTime) );
+
+ %include tm;
+
+ end pli_DTM;

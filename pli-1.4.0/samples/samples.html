@@ -1,0 +1,102 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Iron Spring PL/I 1.4.0 Sample Programs</title>
+</head>
+<body>
+<h1>Iron Spring PL/I 1.4.0 Sample Programs</h1>
+
+This is a brief description of the sample files distributed with Iron Spring
+PL/I Version 1.4.0.  The samples are distributed free of any licenses or 
+restrictions.  Unless otherwise indicated all sample programs will compile 
+and run on Linux and OS/2.
+<p>
+The comments in each program contain information on using the program. In 
+the following, "&lt;PLI&gt;" is the name of the directory where you have
+unpacked the compiler and library, for example "pli-1.4.0".
+
+<h2>Linux</h2>
+<ol>
+<li>Test the sample programs.  In this release only static linking is supported.
+CD to the "samples" directory
+and type "make -f Makefile.Linux" without the quotes, case is significant..
+The sample programs "isub", "numwrd", "filedump", "libver", "print_listing", 
+and "task" build to executables, the remainder should  generate object files.
+<li>Test numwrd. Enter "./numwrd 123".  The program should display
+the result "one hundred twenty-three".
+<li>You might want access to the %INCLUDE files in "pli-1.4.0/lib/include"
+or "pli-1.4.0/samples" for your own programming.
+</ol>
+
+<h2>OS/2</h2>
+<p>
+Each program should have run instructions in the comments in header in the source.
+<p>
+
+<h2>List of sample programs</h2>
+<table border=0>
+<tr><td valign="top"><a href="area.pli">area.pli</a></td><td>Test AREA functionality</td></tr>
+<tr><td valign="top"><a href="encard.pli">encard.pli</a></td><td>Convert text file to ENV(F RECSIZE(80)).</td></tr>
+<tr><td valign="top"><a href="filedump.pli">filedump.pli</a></td><td>Program to dump a ENV(VARLS) file in hex and characters.</td></tr>
+<tr><td valign="top"><a href="hanoi.pli">hanoi.pli</a></td><td>"Towers of Hanoi" batch version.</td></tr>
+<tr><td valign="top"><a href="hexdump.pli">hexdump.pli</a></td><td>Callable procedure to print a hex/character dump of a 
+selected area of memory.</td></tr>
+<tr><td valign="top"><a href="isub.pli">isub.pli</a></td><td>Sample of iSub-defined arrays</td></tr>
+<tr><td valign="top"><a href="keysamp.pli">keysamp.pli</a></td><td>Sample program to create and read a KEYED file</td></tr>
+<tr><td valign="top"><a href="libver.pli">libver.pli</a></td><td>Program to display the current version of the PL/I library.</td></tr>
+<tr><td valign="top"><a href="numwrd.pli">numwrd.pli</a></td><td>Command-line program to print a number in words.</td></tr>
+<tr><td valign="top"><a href="print_listing.pli">print_listing.pli</a></td><td>Sample program to print a PL/I compiler listing on a PCL printer.</td></tr>
+<tr><td valign="top"><a href="readu.pli">readu.pli</a></td><td>Example of reading a file declared with ENVIRONMENT(U).</td></tr>
+<tr><td valign="top"><a href="refsamp.pli">refsamp.pli</a></td><td>Example of use of self-defining structure.</td></tr>
+<tr><td valign="top"><a href="ReferTest.dat">ReferTest.dat</a></td><td>Data file for refsamp.</td></tr>
+
+
+<tr><td valign="top"><a href="samples.html">samples.html</a></td><td>This file.</td></tr>
+<tr><td valign="top"><a href="sorttest.pli">sorttest.pli</a></td><td>Procedure to test PLISRTD</td></tr>
+<tr><td valign="top"><a href="sort.dat">sort.dat</a></td><td>Test data for sorttest</td></tr>
+<tr><td valign="top"><a href="task.pli">task.pli</a></td><td>Example of PL/I multitasking.  The OS/2 version runs in a VIO window,
+the Linux version <u>must</u> run in a Linux console, not an xterm.</td></tr>
+<tr><td valign="top"><a href="vfile.dat">vfile.dat</a></td><td>Sample input for filedump</td></tr>
+
+<tr><td valign="top colspan=2">&nbsp;</td></tr>
+<tr><td valign="top colspan=2">Linux only samples</td></tr>
+<tr><td valign="top"><a href="spawn.pli">spawn.pli</a></td><td>Procedure to FORK and EXEC a child process.</td></tr>
+<tr><td valign="top"><a href="spawntest.pli">spawntest.pli</a></td><td>Test program for spawn.</td></tr>
+<tr><td valign="top"><a href="loadsamp.pli">loadsamp.pli</a></td><td>Sample program to load an ISAM file.<br>
+ Sample creates two files DIREC.I and DIREC.D in the samples directory.</td></tr>
+<tr><td valign="top"><a href="loadsamp.dat">loadsamp.dat</a></td><td>Sample data for loadsamp.</td></tr>
+<tr><td valign="top"><a href="updtsamp.pli">updtsamp.pli</a></td><td>Sample program to update an ISAM file.</td></tr>
+<tr><td valign="top"><a href="updtsamp.dat">updtsamp.dat</a></td><td>Sample data for updtsamp.</td></tr>
+<tr><td valign="top"><a href="Makefile.isam">Makefile.isam</a></td><td>Makefile to compile and run ISAM sample programs].</td></tr>
+<tr><td valign="top"><a href="Makefile.Linux">Makefile.Linux</a></td><td>Makefile to build all Linux PL/I sample programs.</td></tr>
+
+<tr><td valign="top colspan=2">&nbsp;</td></tr>
+<tr><td valign="top colspan=2">OS/2 only samples</td></tr>
+<tr><td valign="top"><a href="filefind.pli">filefind.pli</a></td><td>OS/2 program to locate the directory entry for a file.</td></tr>
+<tr><td valign="top"><a href="pmhanoi.pli">pmhanoi.pli</a></td><td>"Towers of Hanoi" as an OS/2 presentation manager program.</td></tr>
+<tr><td valign="top"><a href="sample.def">sample.def</a></td><td>OS/2 module definition file used for all sample programs except pmhanoi.</td></tr>
+<tr><td valign="top"><a href="pm.def">pm.def</a></td><td>OS/2 module definition file used for the pmhanoi sample program.</td></tr>
+<tr><td valign="top"><a href="bse.inc">bse.inc</a></td><td><u>Some</u> PL/I declarations for OS/2 system calls.
+ Additions always welcomed.</td></tr>
+
+<tr><td valign="top colspan=2">&nbsp;</td></tr>
+<tr><td valign="top colspan=2">Makefiles and miscellaneous</td></tr>
+<tr><td valign="top"><a href="LC_make">LC_make</a>, <a href="LCC_make">LCC_make</a>, <a href="SA_make">SA_make</a></td><td>Sample makefiles for Linux giving examples
+of compiling and linking a PL/I program.  LC_make links the compiled program
+with libc, but uses PL/I's malloc and free.  LCC_make links with libc and uses 
+libc's malloc and free.  SA_make links a PL/I program without libc.</td></tr>
+<tr><td valign="top"><a href="Makefile.OS2DLL">Makefile.OS2DLL</a></td><td>Makefile to build all OS/2 PL/I sample programs using
+the PL/I runtime DLL.</td></tr>
+<tr><td valign="top"><a href="Makefile.OS2Static">Makefile.OS2Static</a></td><td>Makefile to build all OS/2 PL/I sample programs using
+the statically-linked PL/I runtime.</td></tr>
+
+</table>
+
+<hr width="25%">
+<p>
+Iron Spring PL/I version 1.4.0, 15 26 May, 2025<br> 
+[36 files]
+
+</body>
+</html>
+

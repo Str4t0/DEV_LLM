@@ -1,0 +1,86 @@
+ /* _pli_RevC                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.7         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_RevC (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2015                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_RevC  [REVERSE(<char>) builtin]         */
+ /*                                                                  */
+ /*      Function:      Implement REVERSE for character argumant     */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL Reverse e entry(pSrc,pRet)               */
+ /*                                   options( LINKAGE(SYSTEM) );    */
+ /*                     CALL Reverse  ( addr(src_loc_desc),          */
+ /*                                     addr(result_data) );         */
+ /*                                                                  */
+ /*                     All data must be character strings.          */
+ /*                                                                  */
+ /*                     This is actually a standard PL/I calling     */
+ /*                     sequence that we treat as LINKAGE(SYSTEM)    */
+ /*                     to gain access to the descriptors.           */
+ /*                     Each address points to a character-string    */
+ /*                     Locator/Descriptor.                          */
+ /*                                                                  */
+ /*                     The source string and the result string      */
+ /*                     must have identical lengths.                 */
+ /*                                                                  */
+ /*      To Do:       . Since FIXED BINARY UNSIGNED is not yet       */
+ /*                     implemented this procedure is written for    */
+ /*                     signed.  This is a relatively small hit.     */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ Reverse:   proc( pSrc, pRet )                     
+            options( LINKAGE(SYSTEM) )
+            ext( '_pli_RevC' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    (pSrc,pRet)           ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pI,pO)              ptr;
+ dcl    (i,j)                fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     OneC                char(1)             based;
+ 
+ /*-----------------------------------*/
+ /* Initialize Result field           */
+ /*-----------------------------------*/
+ pI = pSrc->pData;                     /* Address of source string   */
+ pO = pRet;                            /* Address of result string   */
+ if pSrc->pDesc->ST_id='10'x           /* Is Src fixed-length?       */
+ then i=pSrc->pDesc->ST_len;           /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   i = length(pI->Varying_String);
+   pI = pI + stg( sysnull()->Varying_String );
+   end;
+ if i=0 then return;                   /* Source is null string      */
+ pO = pO+i-1;                          /* ->End of dest string       */                    
+ do j=1 to i;
+   pO->Onec = pI->OneC;
+   pI = pI+1;
+   pO = pO-1;
+   end; /* do j */
+
+ %page;
+ %include LOCDESC;
+ %include DESC;
+ 
+ end Reverse;

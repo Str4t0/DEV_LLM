@@ -1,0 +1,137 @@
+ /* _pli_AftC                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.7         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_AftC (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2015                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_AftC  [AFTER|BEFORE(<char>) builtin]    */
+ /*                                                                  */
+ /*      Function:      Implement REVERSE for character argumant     */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL After     entry(iFun,pS,pC,pR)           */
+ /*                                   options( LINKAGE(SYSTEM) );    */
+ /*                     CALL After    ( function,                    */
+ /*                                     addr(s_loc_desc),            */  
+ /*					addr(c_loc_desc),            */
+ /*                                     addr(r_loc_desc) );          */
+ /*                                                                  */
+ /*                         function=0: After                        */
+ /*                         function=1: Before                       */
+ /*                                                                  */
+ /*                     All data must be character strings.          */
+ /*                                                                  */
+ /*                     This is actually a standard PL/I calling     */
+ /*                     sequence that we treat as LINKAGE(SYSTEM)    */
+ /*                     to gain access to the descriptors.           */
+ /*                     Each address points to a character-string    */
+ /*                     Locator/Descriptor.                          */
+ /*                                                                  */
+ /*                     The source string and the result string      */
+ /*                     must have identical maximum lengths.         */
+ /*                                                                  */
+ /*      To Do:       . Since FIXED BINARY UNSIGNED is not yet       */
+ /*                     implemented this procedure is written for    */
+ /*                     signed.  This is a relatively small hit.     */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2015-09-18: After - length calculation incorrect  0.9.10*/
+ /*                                                                  */
+ /********************************************************************/
+
+ After: Before:   
+            proc( fun, pS, pC, pR )                     
+            options( LINKAGE(SYSTEM) )
+            ext( '_pli_AftC' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     fun                 fixed bin(31);
+ dcl    (pS,pC,pR)           ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pSD,pCD,pRD)        ptr;
+ dcl    (lenC,lenS)          fixed bin(31);
+ dcl    (i,j)                fixed bin(31);
+ dcl     p                   ptr;
+ dcl     first               char(1);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     OneC                char(1)             based;
+ 
+ /*-----------------------------------*/
+ /* Initialize Result field           */
+ /*-----------------------------------*/
+ pSD = pS->pData;                      /* Address of S string        */
+ if pS->pDesc->ST_id='10'x             /* Is S fixed-length?         */
+ then lenS=pS->pDesc->ST_len;          /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lenS = length(pSD->Varying_String);
+   pSD = pSD + stg( sysnull()->Varying_String );
+   end;
+ pCD = pC->pData;                      /* Address of C string        */
+ if pC->pDesc->ST_id='10'x             /* Is C fixed-length?         */
+ then lenC=pC->pDesc->ST_len;          /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lenC = length(pCD->Varying_String);
+   pCD = pCD + stg( sysnull()->Varying_String );
+   end;
+ pRD = pR->pData;                      /* Address of result string   */
+ pR->pDesc->ST_len = 0;                /* Initialize result length   */
+ if lenS=0 then return;                /* S is the null string       */
+ if lenC=0 then do;                    /* C is the null string       */
+   if fun=1 then return;               /* Before - Result is null str*/
+   pR->pDesc->ST_len = lenS;           /* After - set result length  */
+   call plimove( pRD, pSD, lenS );     /* Result is S                */
+   return;
+   end;
+    
+ /*-----------------------------------*/
+ /*  Find C in S                      */
+ /*-----------------------------------*/
+ i = lenS;
+ first = pCD->OneC;                    /* First character of C       */
+ p = pSD;
+ s: do j = 1 to lenS;
+   if i<lenC then return;              /* Not found, R is null string*/
+   if p->OneC = first then do;
+     if compare(p,pCD,lenC)=0 then leave s; /* Found                 */
+     end; /* first char hit */
+   p = p+1;
+   i = i-1;
+   if i=0 then return;  
+   end;
+    
+ /*-----------------------------------*/
+ /*  Found, do Before or After        */
+ /*  p->Start of string C in S        */
+ /*-----------------------------------*/
+ if fun=0 then do;                     /* After                      */
+   i = LenS - (p-pSD) - lenC;          /* Remaining length     0.9.10*/
+   p = p+lenc;                         /* Compute address      0.9.10*/
+   pR->pDesc->ST_len = i;              /* set result length          */
+   if i>0 then call plimove( pRD, p, i );
+   end; /* AFTER */
+ else do;                              /* Before                     */
+   i = p-pSD;                          /* Compute length             */
+   pR->pDesc->ST_len = i;              /* set result length          */
+   if i>0 then call plimove( pRD, pSD, i );
+   end; /* BEFORE */
+
+ %page;
+ %include LOCDESC;
+ %include DESC;
+ 
+ end After;

@@ -1,0 +1,61 @@
+ /* spawntest.pli                                                    */
+ /********************************************************************/
+ /*                                                                  */
+ /* Module:        spawntest                                         */
+ /*                                                                  */
+ /* Function:      Iron Spring PL/I sample program                   */
+ /*                Test Linux 'spawn' procedure.                     */
+ /*                                                                  */
+ /*                This program is intended as an example of using   */
+ /*                the sample 'spawn' procedure to create a child    */
+ /*                process.                                          */
+ /*                                                                  */
+ /*                In this simple example the system sort is invoked */
+ /*                                                                  */
+ /*                to sort this source file and display the result.  */
+ /*                                                                  */
+ /*                In this example no PID address (second  argument) */
+ /*                is passed to spawn, so the parent will wait       */
+ /*                for the child process to complete.                */
+ /*                If no wait is desired, the second argument should */
+ /*                be addr(ChildPid) instead of sysnull(), and this  */
+ /*                procedure should wait for child completion.       */
+ /*                                                                  */
+ /*                See comments in 'spawn' for a description of the  */
+ /*                calling sequence.                                 */
+ /*                                                                  */
+ /* Usage:         ./spawntest                                       */
+ /*                This will EXEC /usr/bin/sort to sort the source   */
+ /*                of this file and print the sorted data on stdout. */
+ /*                                                                  */
+ /*                Your system may use /bin/sort, change the call to */
+ /*                spawn accordingly.                                */
+ /*                                                                  */
+ /* Modifications:                                                   */
+ /*     2023-01-22: Change from /bin/sort to /usr/bin/sort      1.0.0*/
+ /*                 (apparently someone moved sort command)     1.0.0*/
+ /*                                                                  */
+ /********************************************************************/
+
+sp: proc options(main);
+
+  /*------------------------*/
+  /* Automatic Data         */
+  /*------------------------*/
+  dcl     ChildPID            fixed bin(31);
+	  
+  dcl     RC                  fixed bin(31);
+
+  /*------------------------*/
+  /* Static Data            */
+  /*------------------------*/
+
+  /*------------------------*/
+  /* External entries       */
+  /*------------------------*/
+  dcl     spawn               entry
+                              returns( fixed bin(31) );
+			     
+  RC = spawn( '/usr/bin/sort', sysnull(), 'spawntest.pli', 0 ); /*1.0.0*/
+ 
+  end sp;

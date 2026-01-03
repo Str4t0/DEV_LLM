@@ -1,0 +1,872 @@
+ /* _pli_PutX                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_PutX (PL/I runtime)                     */
+ /*      Version:       3.0                                          */
+ /*      Date:          Dec, 2003                                    */
+ /*                     Version 2.0 Sep, 2004                        */
+ /*                     Version 3.0 Sep, 2006                        */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_PutX                                    */
+ /*                                                                  */
+ /*      Function:      Put is the stream output executor.           */
+ /*                                                                  */
+ /*      PutX is called from Put or PutS once per data element       */
+ /*      to be written.  It is passed a single argument, the         */
+ /*      'GET/PUT STRING BLOCK' (GPSB) built by the caller.          */
+ /*      PutX will process until:                                    */
+ /*        1) Last data element processed.                           */
+ /*        2) Output buffer (string) full                            */
+ /*        3) Control format item (PAGE,SKIP,etc.) encountered.      */
+ /*      In cases 2 and 3 it will call a procedure indicated by      */
+ /*      the caller to take appropriate action.                      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I descriptor formats.                     */
+ /*                     ENTRY VARIABLE format.                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2024-07-07: Add arguments to calls to aggio.         1.3.1*/
+ /*        2024-02-21: Pass data needed for iSub arrays         1.2.1*/
+ /*        2024-01-26: Blank if no dataname passed              1.2.1*/
+ /*        2023-11-16: (550)Not passing names to aggio, need to 1.2.1*/
+ /*                    make copy of descriptor before converting1.1.1*/
+ /*        2023-02-12: Rewrite 'put_bits' for bit output        1.0.1*/
+ /*        2020-10-01: (464)Space for DATA/LIST (sp after pr) 0.9.10d*/
+ /*        2020-09-24: Correct scaling for bin to dec conv.   0.9.10d*/
+ /*        2015-07-23: Fix DATA(structure) again for minor str  0.9.9*/
+ /*        2015-05-25: Fix tabbing.                             0.9.8*/
+ /*        2015-05-19: Change to call 'FmtSub',                 0.9.8*/
+ /*                    rework PUT DATA(structure)               0.9.8*/
+ /*        2014-10-17: FIXED DEC OPTIONS(IBM)                   0.9.6*/
+ /*        2011-09-20: PUT LIST(array), PUT EDIT(array)         0.9.3*/
+ /*        2011-04-01: Fix reference to PLITABS                 0.9.2*/
+ /*        2009-10-27: FLOAT BIN to FLOAT DEC conversion.        0.8d*/
+ /*        2009-09-01: Add conversion of FLOAT DEC to CHAR       0.8c*/
+ /*                    for LIST- and DATA-directed output.       0.8c*/
+ /*        2009-07-23: 'convert_to_fixed_dec' not handling negative  */
+ /*                    scale factors correctly.                  0.8c*/ 
+ /*        2008-05-27: Access to PLITABS from DLL.               0.6a*/
+ /*                     Fix problem of cursor already at tabstop 0.6a*/
+ /*        2006-02-15: Bin->Dec conversion for pic output            */
+ /*                     converts to prec and scale of pic.           */
+ /*        2004-09-08: Break up Put into Put (stream output driver)  */
+ /*                     and PutX (executor), so that PutX can also   */
+ /*                     be called from PutS (PUT STRING) (V2.0).     */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_PutX: proc( xpParm )
+               ext( '_pli_PutX' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xpParm              ptr;      /* -> PUTX parameter list     */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     Blanks              char(32)  static    init('');
+ dcl     UNIMPLEMENTED       condition;                    /*20060901*/
+ dcl     no_name             char(1)   static var init('');   /*1.2.1*/
+
+ /* PUT statement option bits (from GIO)        */
+ dcl     bEdit               bit(32)   static    init('00004000'bx);
+ dcl     bData               bit(32)   static    init('00002000'bx);
+ dcl     bList               bit(32)   static    init('00001000'bx);
+ /* A few constants for formatting              */
+ dcl     equal               char(1)   static    init( '=' );
+ dcl     semicolon           char(1)   static    init( ';' );
+ dcl     quote               char(1)   static    init( "'" ); /*1.3.2*/
+ dcl     b                   char(1)   static    init( 'B' );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pParm               ptr;      /* -> Parameter List          */
+ dcl   1 PL                  like SPL   based(pParm);
+
+ dcl     pData               ptr;      /* -> Data element            */
+ dcl     pDesc               ptr;      /* -> Data descriptor         */
+ dcl     pName               ptr;      /* -> Data name       20080409*/
+ dcl     pSRB                ptr;      /* -> SRB                     */
+ dcl     pSBB                ptr;      /* -> SBB                     */
+ dcl     Count               fixed bin(31);
+ dcl     char_workarea       char(64);
+         /* This field needs to be as long as the largest possible   */
+         /* converted data-element.                                  */
+         /* 64 is a made-up placeholder.                             */
+ dcl     dec_workarea     (2)fixed dec(18);
+ dcl     desc_workarea       char(16);
+         /* This field needs to be as long as the largest possible   */
+         /* converted descriptor.                                    */
+         /* 16 is a made-up placeholder.                             */
+ dcl     bPrint              bit(1);   /* 'PRINT' attribute          */
+	   
+ %include plitabs;                                            /*0.9.3*/
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18) based;
+ dcl     FB31                fixed bin(31) based;
+ dcl     FB15                fixed bin(15) based;
+ dcl     FB7                 fixed bin(7)  based;
+ dcl     pVoid               ptr           based;
+ dcl     VarStr              char(0)       based varying;
+ dcl     Desc                bit(32)       based;
+ dcl     B8                  bit(8)        based;
+ dcl     C1                  char(1)       based;
+ dcl     name                char(64)      based varying;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      SetFlags            entry( bit(16) )
+                              ext( '_pli_SetFlags' )
+                              options( linkage(system) );
+ dcl      Format              entry( ptr )
+                              external( '_pli_Fmt' );
+ dcl      PutE                entry( ptr, ptr, ptr, ptr )   /*0.9.10b*/
+                              external( '_pli_PutE' );     /*20060901*/
+ dcl      CAC                 entry( ptr, ptr, ptr )
+                              options( linkage(system) )
+                              external( '_pli_CAC' );
+ dcl      CLC                 entry( ptr, ptr, ptr )           /*0.8c*/
+                              options( linkage(system) )       /*0.8c*/
+                              external( '_pli_CLC' );          /*0.8c*/
+ dcl      CBA                 entry( ptr, fixed bin(31), fixed bin(31) )
+                              returns( fixed bin(31) )
+                              options( linkage(system) )
+                              external( '_pli_CBA' );
+ dcl      CBD                 entry( ptr, ptr, ptr, ptr )
+                              options( linkage(system) )
+                              external( '_pli_CBD' );
+ dcl      CCA                 entry( ptr, ptr, ptr, ptr, ptr )
+                              options( linkage(system) )
+                              external( '_pli_CCA' );
+ dcl      FIBM                entry( ptr, ptr )               /*0.9.6*/
+                              returns( fixed dec(18) )        /*0.9.6*/
+			      options( linkage(system) )      /*0.9.6*/
+			      external( '_pli_FrIBMDec' );    /*0.9.6*/
+ dcl      NPI                 entry( ptr, ptr )               /*0.9.4*/
+                              returns( fixed dec(18) )        /*0.9.4*/
+                              options( linkage(system) )      /*0.9.4*/
+                              external( '_pli_NPI' );         /*0.9.4*/
+ dcl      NPO                 entry( ptr, bit(32), ptr, ptr )
+                              options( linkage(system) )
+                              external( '_pli_NPO' );
+ dcl      GetGbl              entry                            /*0.6a*/
+                              returns( ptr )                   /*0.6a*/
+                              options( linkage(system) )       /*0.6a*/
+                              external( '_pli_GetGbl' );       /*0.6a*/
+ dcl      AggIO               entry( ptr, ptr, ptr, entry,   /*0.9.10*/
+                              /* optional*/    ptr, ptr )     /*1.2.1*/
+                              ext( '_pli_AggIO' );           /*0.9.10*/
+
+ dcl    (
+         addr,length,max,min,null,                         /*20060901*/
+         plimove,ptrvalue,
+         stg,string,substr,
+         sysnull
+        )                    builtin;
+ 
+ /*------------------------------------------------------------------*/
+ /* Procedure entry, save a few items for efficiency.                */
+ /*------------------------------------------------------------------*/
+ pParm  = xpParm; 
+ pSRB   = pParm->PL.SPL_pSRB;/* -> Stream Request Block              */
+ pSBB   = pParm->PL.SPL_pSBB;/* -> Stream Buffer Block               */
+ bPrint = substr(pParm->PL.SPL_bFlg,32,1);    /* PRINT file      0.5e*/
+ pData  = pSRB->SRB_pData;   /* -> Data Element or SYSNULL           */
+ pDesc  = pSRB->SRB_pDesc;   /* -> Data Descriptor or SYSNULL        */
+ pName  = pSRB->SRB_pName;   /* -> Data Name or SYSNULL      20080409*/
+ /* NOTE: Removed for 1.3.1. This is a nice idea, but now GIO sets   */
+ /*       pName only for GET/PUT DATA, and for structures, aggio     */
+ /*       depends on this being sysnull for LIST and EDIT.           */
+ /*if pName=sysnull then pName=addr(no_name);                 /*1.2.1*/
+
+ /*------------------------------------------------------------------*/
+ /* COMMENT: If the last data item transmitted is an iterative       */
+ /*          (TYPE3-DO) specification we don't know when the last    */
+ /*          element has been transmitted until we're actually done. */
+ /*          In this case we unfortunately need to do an extra call  */
+ /*          for PUT DATA in order to print the trailing semicolon.  */
+ /*          The following bit will only be set if all of this       */
+ /*          is true.                                                */
+ /*------------------------------------------------------------------*/
+ if (pSRB->SRB_bOPT&'10000000'bx)^='00000000'bx then do;      /*0.9.8*/
+   call move_to_buffer( addr(semicolon), 1 );                 /*0.9.8*/
+   return;                                                    /*0.9.8*/
+   end;                                                       /*0.9.8*/
+ PL.SPL_Count = 0;           /* Initialize COUNT for this PUT        */
+   
+ /*------------------------------------------------------------------*/
+ /* COMMENT: Set the condition flags in the DSA so that any          */
+ /*          called routines will have the correct values.           */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = pSRB->SRB_condmask;    /* Callers enabled cond. */
+ call SetFlags( string(cond_mask) );        /* Set for called rtns   */
+    
+ /*---------------------------------------------*/
+ /* Check for DATA, EDIT, or LIST               */
+ /*---------------------------------------------*/
+ if (pSRB->SRB_bOpt&bData)ª='00000000'bx         /* PUT DATA         */
+ then call Data;
+ if (pSRB->SRB_bOpt&bEdit)ª='00000000'bx         /* PUT EDIT         */
+ then call Edit;
+ if (pSRB->SRB_bOpt&bList)ª='00000000'bx         /* PUT LIST         */
+ then call List;
+ return;
+
+ /*---------------------------------------------*/
+ /* X Format-Item                               */
+ /*---------------------------------------------*/
+ x: proc(n);                 /* X[(n)]                               */
+   dcl   n                   fixed bin(31);
+   dcl  (i,j)                fixed bin(31);
+   i = n;
+   do while( i>0 );          /* move spaces in chunks of up to 32b   */
+     j = min( i, stg(Blanks) );                            /*20060901*/
+     call move_to_buffer( addr(Blanks), j );
+     i = i-j;
+     end; /* do while */
+   end x;
+
+ /*---------------------------------------------*/
+ /* Move data to line buffer                    */
+ /*---------------------------------------------*/
+ move_to_buffer: proc(where,howmuch);
+   dcl   where               ptr;
+   dcl   howmuch             fixed bin(31);
+   dcl  (i,n)                fixed bin(31);
+   dcl   p                   ptr;
+   i = howmuch;
+   p = where;
+   /* Each iteration of this loop will move as much data as will fit */
+   /* in the space remaining on the current line.                    */
+   /* Full lines are written as we go.                               */
+   do while( i>0 );
+     if pSBB->SBB_col >= pSBB->SBB_lnsize /* This line is full       */
+     then call PL.SPL_LineEnd(0,0);       /*  so write it out        */
+     n = pSBB->SBB_lnsize - pSBB->SBB_col;/* Space left in buffer    */
+     if i<n then n=i;                     /* n=min(i,n)              */
+     call plimove(pSBB->SBB_pline,p,n);   /* Move data that fits     */
+     i = i-n;                             /* Adjust addr and count   */
+     p = p+n;
+     pSBB->SBB_pline  = pSBB->SBB_pline+n;/* Bump line ptr           */
+     pSBB->SBB_col    = pSBB->SBB_col+n;  /* Bump col position       */
+     end; /* do while */
+   end move_to_buffer;
+
+ %page;
+ /*----------------------------------------------------------20080409*/
+ /*                     PUT DATA                             20080409*/
+ /* IBM: "... the names appearing in the data-list, together with    */
+ /*       their values, are transmited in the form of a list of      */
+ /*       element assignments separated by blanks and terminated     */
+ /*       by a semicolon. (For PRINT files, items are separated      */
+ /*       according to program tab settings... A semicolon is        */
+ /*       written into the data stream after the last item           */
+ /*       transmitted by each PUT statement." - SC26-3114-01, p.267  */
+ /*----------------------------------------------------------20080409*/
+ Data: proc;
+   dcl   last                bit(1);
+   last = substr(pSRB->SRB_bOpt,3,1);  /* Save 'last' bit            */
+   substr(pSRB->SRB_bOpt,3,1)='0'b;    /* Clear it                   */
+   if pDesc->XB_id = '30'x             /* Is this list item an array?*/ 
+   then call data_array;                                     /*0.9.10*/
+   else if pDesc->XB_id = '80'x        /* Structure?                 */
+   then call data_struct;                                     /*0.9.8*/
+   else call data_element(pData,pDesc,pName);                 /*0.9.8*/
+   if last then call move_to_buffer( addr(semicolon), 1 );
+   substr(pSRB->SRB_bOpt,3,1)=last;
+
+ /*----------------------------------*/
+ /* PUT DATA(array) including        */
+ /* arrays of structures.            */
+ /*----------------------------------*/
+ data_array: proc;                                           /*0.9.10*/
+   /* AggIO will process the array and call data_element once for    */
+   /* each array element                                             */
+   call AggIO(pDesc,pData,pName,data_element,                /*0.9.10*/
+              pSRB->SRB_P1, pSRB->SRB_P2);                    /*1.3.1*/
+ 
+   end data_array;
+
+ /*----------------------------------*/
+ /* PUT DATA(structure)              */
+ /*----------------------------------*/
+ data_struct: proc;                                          /*0.9.10*/
+   /* AggIO will process the structure and call data_elem once for   */
+   /* each structure element                                         */
+   call AggIO(pDesc,pData,pName,data_element,                 /*1.3.1*/
+              pSRB->SRB_P1, pSRB->SRB_P2);                    /*1.3.1*/
+
+   end data_struct;
+
+ /*----------------------------------*/
+ /* PUT DATA(element)                */
+ /*----------------------------------*/
+ data_element: proc(pDat,pDsc,pN);                            /*0.9.8*/
+   dcl   pDat                 ptr;      /* ->Data                    */
+   dcl   pDsc                 ptr;      /* ->Descriptor              */
+   dcl   pN                   ptr;      /* ->Name (and subscript info*/
+   dcl  (pData,pDesc)         ptr;
+   dcl   pName                ptr;      /* ->Name                    */
+   dcl   data_width          fixed bin(31);
+   dcl   namelen             fixed bin(31);
+   dcl   StringData          bit(1)    init( '0'b );
+   dcl   BitData             bit(1)    init( '0'b );
+
+   pData  = pDat;                           /* Save parameter values */
+   pDesc  = pDsc;
+   pName = pN;
+   if pDesc->SD_id='80'x |                  /* Ignore major struct   */
+      pDesc->SD_id='85'x then return;       /* Ignore minor struct   */
+   /*---------------------------------*/
+   /* Convert data to CHARACTER       */
+   /*---------------------------------*/
+   select;
+     when( pDesc->ST_id = '50'x ) do;       /* Program control0.9.10c*/
+       data_width = 0;                                      /*0.9.10c*/
+       end;                                                 /*0.9.10c*/
+     when( pDesc->ST_id = '10'x,            /* Nonvarying CHAR       */
+           pDesc->ST_id = '20'x ) do;       /* Nonvarying BIT        */
+       data_width = pDesc->ST_len;
+       StringData='1'b;                     /* Indicate non-numeric  */
+       end; /* nonvarying string */
+     when( pDesc->ST_id = '11'x,            /* VARYING CHAR          */
+           pDesc->ST_id = '21'x ) do;       /* VARYING BIT           */
+       data_width = length( pData->VarStr );
+       StringData='1'b;                     /* Indicate non-numeric  */
+       pData = pData + stg( sysnull->VarStr );
+       /* Bump the data pointer over the VARYING string prefix.      */
+       /* To allow 4-byte lengths, set a bit in the descriptor       */
+       /* and test it here to determine what to add.                 */
+       end; /* VARYING string */
+     when( pDesc->NP_id = '45'x )           /* Fixed PIC             */
+       data_width = pDesc->NP_size;
+     when( pDesc->CP_id = '46'x )           /* Float PIC             */
+       data_width = pDesc->CP_size;
+     when( pDesc->NP_id = '47'x )           /* Character PIC data    */
+       data_width = pDesc->NP_size;
+     otherwise call convert_to_char(        /* Coded arithmetic      */
+                          pDesc,
+                          pData,
+                          addr(char_workarea),
+                          data_width );
+     end; /* select */
+   if pDesc->ST_id = '20'x |                /* Nonvarying BIT        */
+      pDesc->ST_id = '21'x                  /* VARYING BIT           */
+   then BitData = '1'b;                     /* Set bit flag          */
+
+   /*---------------------------------*/
+   /* Space before printing           */
+   /*---------------------------------*/
+   call space;
+
+   /*---------------------------------*/
+   /* Print the name+data             */
+   /*---------------------------------*/
+   if pName = SYSNULL() then namelen=0;    /* Expression, etc.       */
+   else do;
+     namelen = length(pName->VarStr);
+     pName = pName + stg(null()->VarStr);
+     end;
+   call move_to_buffer( pName, namelen );
+   call move_to_buffer( addr(equal), 1 );
+   if StringData then call move_to_buffer( addr(quote), 1 );
+   /* Need to double any quotes in character string */
+   if BitData                          /* Is this bit string?    0.5e*/
+   then call put_bits(pData,data_width,pDesc->ST_bo);          /*0.5e*/
+   else call put_char(pData,data_width);                       /*0.5e*/
+   if StringData then call move_to_buffer( addr(quote), 1 );
+   if BitData                          /* Is this bit string?    0.5e*/
+   then call move_to_buffer( addr(b), 1 ); /* Yes, move trailing B   */
+   call x(1);                          /* Space after print   0.9.10d*/
+     
+   /*-----------------------*/
+   /* Update COUNT          */
+   /*-----------------------*/
+   PL.SPL_Count = PL.SPL_Count+1;
+
+   end data_element;
+
+   end Data;                                               /*20080409*/
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /*                     PUT EDIT                                     */
+ /*------------------------------------------------------------------*/
+ Edit: proc;
+ dcl     pFmtItem            ptr;      /* Infinite loop stopper      */
+ /*-------------------------*/
+ /* 'Fmt' Parameter List    */
+ /*-------------------------*/
+ dcl   1 FmtParm,
+         5 fp_ppFmt          ptr,           /* -> addr( Format_addr )*/
+         5 fp_paFmt          ptr,           /* -> addr( Format_chain)*/
+         /* Note double-indirection.  These are the address of the   */
+         /*      address of the current format item, and the         */
+         /*      address of the address of the R format chain.       */
+         5 fp_pDSA           ptr,           /* -> addr( Current_DSA )*/
+         5 fp_fmtid          fixed bin(7),  /* Base format id        */
+         5 fp_nond           fixed bin(7),  /* 1=non-data item       */
+         5 fp_np_real        fixed bin(7),  /* Real parameter count  */
+         5 fp_np_imag        fixed bin(7),  /* Imag parameter count  */
+         5 fp_fmtid_real     fixed bin(7),  /* Real part of C format */
+         5 fp_fmtid_imag     fixed bin(7),  /* Imag part of C format */
+         /* The significance of the operands varies by format id,    */
+         /* they represent widths, positions, scale factors, etc.    */
+         5 fp_opnd_real   (4)fixed bin(31), /* Variable dep. on fmt  */
+         5 fp_opnd_imag   (4)fixed bin(31), /* Variable dep. on fmt  */
+         5 fp_end            char(0);       /* End of FmtParm block  */
+
+   /*-------------------------------------------*/
+   /* Set up workarea for format processor.     */
+   /*-------------------------------------------*/
+   fp_ppFmt = addr( pSRB->SRB_pFmt );  /* **Double-Indirect**        */
+   fp_paFmt = addr( pSRB->SRB_aFmt );  /* **Double-Indirect**   0.9.1*/
+   fp_pDSA  = pSRB->SRB_pDSA;
+   /*----------------------------------------------------------------*/
+   /* For GET/PUT of a structure or array, each element receives a   */
+   /* separate format item.                                          */
+   /*----------------------------------------------------------------*/
+   if pDesc->AR_id = '30'x             /* Array?                     */
+   then call edit_array;               /* Yes                        */
+   else if pDesc->SD_id = '80'x        /* Structure?                 */
+   then call edit_struct;              /* Yes                        */
+   else call edit_element(pData,pDesc,sysnull());            /*0.9.10*/
+   return;
+
+ /*---------------------------------------------*/
+ /* PUT EDIT Structure                          */
+ /*---------------------------------------------*/
+ edit_struct: proc;
+   /* AggIO will process the structure and call list_elem once for   */
+   /* each structure element                                         */
+   call AggIO(pDesc,pData,pName,edit_element,                 /*1.2.1*/	           
+              pSRB->SRB_P1, pSRB->SRB_P2 );                   /*1.3.1*/
+   end edit_struct;
+ 
+ /*---------------------------------------------*/
+ /* PUT EDIT Array                              */
+ /*---------------------------------------------*/
+ edit_array: proc;
+   /* AggIO will process the array and call list_elem once for       */
+   /* each array element                                             */
+   call AggIO(pDesc,pData,pName,edit_element,                 /*1.2.1*/	           
+              pSRB->SRB_P1, pSRB->SRB_P2 );                   /*1.3.1*/
+   end edit_array;
+
+ /*---------------------------------------------*/
+ /* PUT EDIT Element                            */
+ /*---------------------------------------------*/
+ edit_element: proc(pData,pDesc,pName);                      /*0.9.10*/
+   dcl  (pData,pDesc,pName)  ptr;                            /*0.9.10*/
+   call Format( addr(FmtParm) );       /* Retrieve next format item  */
+   pFmtItem = fp_ppFmt->pVoid;         /* Stopper for format loop    */
+   do while( fp_nond=1 );              /* Process non-data items     */
+     /* Process the format-spec.  This may be COLUMN, LINE, PAGE, X, */
+     /* or SKIP.  R is processed within 'Format' and not seen here.  */
+     select( fp_fmtid );
+       /* Field-width required for these items */
+       when( 3) call PL.SPL_LineEnd( 1, fp_opnd_real(1) );/* COL(n)  */
+       when( 7) call PL.SPL_LineEnd( 2, fp_opnd_real(1) );/* LINE(n) */
+       when( 9) call PL.SPL_LineEnd( 3, 0 );              /* PAGE    */
+       when(11) call PL.SPL_LineEnd( 4, fp_opnd_real(1) );/* SKIP(n) */
+       when(12) call x( fp_opnd_real(1) );                /* X(n)    */
+       end; /* select */
+     call Format( addr(FmtParm) );     /* Retrieve next format item  */
+     if pFmtItem = fp_paFmt->pVoid     /* If this occurs the en0.9.10*/
+     then signal ERROR;                /* FORMAT has been processed  */
+                                       /* with no data format-items. */
+     end; /* do while */
+
+   pSRB->SRB_pData = pData;                                  /*0.9.10*/
+
+   if pDesc->ST_id = '50'x             /* Program-control data       */
+   then signal ERROR;                  /* Is this what we want to do?*/
+
+   /*----------------------------------*/
+   /* Handle C-format items here       */
+   /*----------------------------------*/
+   if fp_fmtid=2 then do;              /* C-format item      20090824*/
+     /* COMMENT: If this is character-string data, convert to        */
+     /*          arithmetic here (may be complex).  Call PUTE once   */
+     /*          with the real component.  If the data is complex,   */
+     /*          call PUTE again with the imaginary component,       */
+     /*          otherwise call PUTE the second time with '0'.       */
+
+     /* Temporary code                */                   /*TEMP*/
+     dcl ast char(5) static init( '*****' );               /*TEMP*/
+     call move_to_buffer( addr(ast),stg(ast));             /*TEMP*/
+     signal UNIMPLEMENTED;                                 /*TEMP*/
+     /* End temporary code            */                   /*TEMP*/
+
+     end; /* C-format */                                   /*20090824*/
+   else call PutE( pParm, addr(FmtParm),    /* Put the data  20060901*/
+                   pDesc, pData );                          /*0.9.10b*/
+   end edit_element;
+
+   end Edit;
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /*                     PUT LIST                                     */
+ /* IBM: "A blank separates successive values transmitted.           */
+ /*       (For PRINT files, items are separated according to program */
+ /*       tab settings...)                                           */
+ /*       ... Bit strings are converted to character strings.  The   */
+ /*       character string is enclosed in quotation marks and        */
+ /*       followed by the letter B. ...                              */
+ /*       Character strings are written out as follows:              */
+ /*       . If the file does not have the attribute PRINT,           */
+ /*         enclosing quotation marks are supplied, and contained    */
+ /*         single quotation marks or apostrophes are replaced by    */
+ /*         two quotation marks. ...                                 */
+ /*       . If the file has the attribute PRINT, enclosing quotation */
+ /*         marks are not supplied."   - SC26-3114-01, p.264         */
+ /* As of 0.5e we can now tell if this is a PRINT file because the   */
+ /* FCB address is passed in the SPL (SYSNULL for PUT STRING).       */
+ /*------------------------------------------------------------------*/
+ List: proc; 
+   if pDesc->AR_id = '30'x             /* Array?                     */
+   then call list_array;                                     /*0.9.10*/
+   else if pDesc->SD_id = '80'x        /* Structure?                 */
+   then call list_struct;                                    /*0.9.10*/
+   else call list_element(pData,pDesc,sysnull());            /*0.9.10*/
+
+ /*---------------------------------------------*/
+ /* PUT LIST Structure                          */
+ /*---------------------------------------------*/
+ list_struct: proc;
+   /* AggIO will process the structure and call list_elem once for   */
+   /* each structure element                                         */
+   call AggIO(pDesc,pData,pName,list_element,                 /*1.2.1*/	           
+              pSRB->SRB_P1, pSRB->SRB_P2 );                   /*1.3.1*/
+   end list_struct;
+
+ /*---------------------------------------------*/
+ /* PUT LIST Array                              */
+ /*---------------------------------------------*/
+ list_array: proc;
+   /* AggIO will process the array and call list_elem once for       */
+   /* each array element                                             */
+   call AggIO(pDesc,pData,pName,list_element,                 /*1.2.1*/	           
+              pSRB->SRB_P1, pSRB->SRB_P2 );                   /*1.3.1*/
+   end list_array;
+ 
+ /*---------------------------------------------*/
+ /* PUT LIST Element                            */
+ /*---------------------------------------------*/
+ list_element: proc(pData,pDesc,pName);                      /*0.9.10*/
+   dcl  (pData,pDesc,pName)  ptr;                            /*0.9.10*/
+   dcl   data_width          fixed bin(31);
+   dcl   StringData          bit(1)    init( '0'b );
+   dcl   BitData             bit(1)    init( '0'b );           /*0.5e*/
+   /* Conversion routines may modify descriptor. Make local copy1.2.1*/
+   /* here. Largest element descriptor should be 8              1.2.1*/
+   dcl   local_desc          char(16);                        /*1.2.1*/
+
+   /*---------------------------------*/
+   /* Convert data to CHARACTER       */
+   /*---------------------------------*/
+  select;
+     when( pDesc->ST_id = '50'x ) do;       /* Program control0.9.10c*/
+       data_width = 0;                                      /*0.9.10c*/
+       end;                                                 /*0.9.10c*/
+     when( pDesc->ST_id = '10'x,            /* Nonvarying CHAR       */
+           pDesc->ST_id = '20'x ) do;       /* Nonvarying BIT        */
+       data_width = pDesc->ST_len;
+       StringData='1'b;                     /* Indicate non-numeric  */
+       end; /* nonvarying string */
+     when( pDesc->ST_id = '11'x,            /* VARYING CHAR          */
+           pDesc->ST_id = '21'x ) do;       /* VARYING BIT           */
+       data_width = length( pData->VarStr );
+       StringData='1'b;                     /* Indicate non-numeric  */
+       pData = pData + stg( sysnull->VarStr );
+       /* Bump the data pointer over the VARYING string prefix.  */
+       /* To allow 4-byte lengths, set a bit in the descriptor   */
+       /* and test it here to determine what to add.             */
+       end; /* VARYING string */
+     when( pDesc->NP_id = '45'x )           /* Fixed pic        1.3.1*/
+       data_width = pDesc->NP_size;                           /*1.3.1*/
+     when( pDesc->NP_id = '46'x )           /* Float pic             */
+       data_width = pDesc->NP_size;
+     when( pDesc->CP_id = '47'x )           /* Character pic         */
+       data_width = pDesc->CP_size;                           /*0.9.7*/
+     otherwise do;
+       /* Copy descriptor here */                             /*1.2.1*/
+       call plimove(addr(local_desc),pDesc,stg(local_desc));  /*1.2.1*/
+       call convert_to_char(                /* Coded arithmetic      */
+                             addr(local_desc),                /*1.2.1*/
+                             pData,
+                             addr(char_workarea),
+                             data_width );
+       end; /* Otherwise */                                   /*1.2.1*/              
+     end; /* select */
+   if pDesc->ST_id = '20'x |                /* Nonvarying BIT    0.5e*/
+      pDesc->ST_id = '21'x                  /* VARYING BIT       0.5e*/
+   then BitData = '1'b;                     /* Set bit flag      0.5e*/
+
+   /*---------------------------------*/
+   /* Space before printing           */
+   /*---------------------------------*/
+   call space;
+
+   /*---------------------------------*/
+   /* Print the data                  */
+   /*---------------------------------*/
+   /* IBM: "Bit strings are converted to character strings.  The     */
+   /*       character string is enclosed in quotation marks and      */
+   /*       followed by the letter B.                                */
+   /*                                                                */
+   /*       Character strings are written out as follows:            */
+   /*       . If the file does not have the atribute PRINT,          */
+   /*         enclosing quotation marks are supplied, and contained  */
+   /*         single quotation marks or apostrophes arr replaced by  */
+   /*         two quotation marks.  The field width is the current   */
+   /*         length of the string plus the number of added          */
+   /*         quotation marks.                                       */
+   /*       . If the file has the attribute PRINT, enclosing         */
+   /*         quotation marks are not supplied, and contained        */
+   /*         single quotation marks or apostrophes are unmodified.  */
+   /*         The field width is the current length of the string."  */
+   /*                                    SC26-3114-01, p.264         */
+   if BitData | ªbPrint then call move_to_buffer( addr(quote), 1 );
+   if BitData                          /* Is this bit string?    0.5e*/
+   then call put_bits(pData,data_width,pDesc->ST_bo);          /*0.5e*/
+   else if StringData & ªbPrint        /* Need to double quotes? 0.5e*/
+   then call put_char(pData,data_width);                       /*0.5e*/
+   else call move_to_buffer( pData, data_width );
+   if BitData | ªbPrint then call move_to_buffer( addr(quote), 1 );
+   if BitData                          /* Is this bit string?    0.5e*/
+   then call move_to_buffer( addr(b), 1 ); /* Yes, move trailing B   */
+   call x(1);                          /* Space after print   0.9.10d*/
+
+   /*-----------------------*/
+   /* Update COUNT          */
+   /*-----------------------*/
+   PL.SPL_Count = PL.SPL_Count+1;
+
+   end list_element;
+   
+   end List;
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /* Space before printing LIST or DATA item                          */
+ /*------------------------------------------------------------------*/
+ space: proc;
+   dcl   j                   fixed bin(7);
+   if pSBB->SBB_col >= pSBB->SBB_lnsize   /* This line is full       */
+   then call PL.SPL_LineEnd(0,0);         /*  so write it out        */
+   if pSBB->SBB_col ª= 0 then do;         /* Not start of line       */
+     if ªbPrint then do;                  /* Not a PRINT file    0.5e*/
+       call x(1);                         /* Single space        0.5e*/
+       return;                                                 /*0.5e*/
+       end;                                                    /*0.5e*/
+ tabloop:
+     do j=1 to plitabs.no_of_tabs;        /* Find next tabstop       */
+       if plitabs.tab(j) > pSBB->SBB_col                      /*0.9.8*/
+       then do;
+          call x(plitabs.tab(j)-pSBB->SBB_col-1);             /*0.9.8*/
+          pSBB->SBB_col = plitabs.tab(j)-1;                   /*0.9.8*/
+          leave tabloop;
+          end;
+        end tabloop;
+     /* If no tabs defined, each LIST item will begin on a new line. */
+     if j > plitabs.no_of_tabs            /* No more tabs            */
+     then call PL.SPL_LineEnd(0,0);       /*  so start new line      */
+     end; /* not start of line */
+   /* COMMENT: We probably should add an ENVIRONMENT option 'TABS'   */
+   /*          to tell PUTX to use tab characters rather than spaces.*/
+   end space;
+
+ /*------------------------------------------------------------------*/
+ /* Convert Coded Arithmetic data to CHARACTER for printing          */
+ /*------------------------------------------------------------------*/
+ convert_to_char: proc( pDesc, pData, pWork, lWork );
+   dcl   pDesc               ptr;
+   dcl   pData               ptr;
+   dcl   pWork               ptr;
+   dcl   lWork               fixed bin(31);
+
+   /* Convert FIXED BINARY data to DECIMAL  */
+   if pDesc->XB_id = '41'x then do;    /* FIXED BINARY               */
+     call convert_to_fixed_dec(pDesc,pData,
+             1 + B2D(pDesc->XB_prec),                      /*20051208*/
+             B2D(pDesc->XB_scale) );                       /*20051208*/
+     end; /* FIXED BINARY  */
+   /* Convert IBM packed decimal      */                      /*0.9.6*/
+   if pDesc->XD_id = '48'x then do;    /* FIXED DEC OPTONS(IBM) 0.9.6*/
+     call convert_to_fixed_dec(pDesc,pData,                   /*0.9.6*/
+             pDesc->XD_prec,                                  /*0.9.6*/
+             pDesc->XB_scale );                               /*0.9.6*/
+     end; /* OPTIONS(IBM)  */                                 /*0.9.6*/
+   if pDesc->XB_id = '42'x then do;    /* FIXED DECIMAL              */
+     pWork = addr(char_workarea);
+     call CAC( pData, pDesc, pWork );
+     lWork = length(pWork->VarStr);    /* Return string length       */
+     pData = pWork+stg(pWork->VarStr); /*   and address              */
+     end; /* FIXED DECIMAL */
+   if pDesc->XB_id = '43'x then do;    /* FLOAT BINARY               */
+     call convert_to_float_dec(pDesc,pData);
+     end; /* FLOAT BINARY  */
+   if pDesc->XB_id = '44'x then do;    /* FLOAT DECIMAL              */
+     pWork = addr(char_workarea);                              /*0.8c*/
+     call CLC( pData, pDesc, pWork );                          /*0.8c*/
+     lWork = length(pWork->VarStr);    /* Return string length   0.8c*/
+     pData = pWork+stg(pWork->VarStr); /*   and address          0.8c*/
+     end; /* FLOAT DECIMAL */
+
+   end convert_to_char;
+
+ /*------------------------------------------------------------------*/
+ /* Convert FIXED BINARY or FIXED DEC OPTIONS(IBM) to FIXED DECIMAL  */
+ /* Output in dec_workarea and desc_workarea                         */
+ /*------------------------------------------------------------------*/
+ convert_to_fixed_dec: proc( pDesc, pData, prec, scale );  /*20051208*/
+   dcl   pDesc               ptr;                /* -> Desc (In/Out) */
+   dcl   pData               ptr;                /* -> Data (In)     */
+   dcl   prec                fixed bin(7);       /* Precision20051208*/
+   dcl   scale               fixed bin(7);       /* Scale factor     */
+   dcl   pWork               ptr;                /* -> Workarea (In) */
+   dcl   local_desc_workarea char(16);           /* Local wor20060215*/
+   dcl   p                   ptr;
+
+   p = addr(local_desc_workarea); /* Build output descriptor 20060215*/
+   p->XD_id    = '42'x;           /* FIXED DECIMAL                   */
+   p->XD_cplx  = pDesc->XB_flgs&'80'bx;  /* REAL/COMPLEX             */
+   p->XD_prec  = prec;                                     /*20051208*/
+   p->XD_scale = scale;                                    /*20090723*/
+   if pDesc->XD_id = '48'x then do;  /* FIXED DEC OPTIONS(IBM)  0.9.6*/
+     dec_workarea(1) = FIBM(pData,pDesc);                     /*0.9.6*/
+     end; /* OPTIONS(IBM) */                                  /*0.9.6*/
+   else do;                                                   /*0.9.6*/  
+     call CBD( pData, pDesc,
+               addr(dec_workarea(1)), p );                 /*20060214*/
+     end;	                                              /*0.9.6*/       
+   call plimove( addr(desc_workarea), p,                   /*20060215*/
+                 stg(sysnull()->pli_ded_XD) );             /*20060620*/
+   pDesc = addr(desc_workarea);   /* Addr(returned_descriptor)       */
+   pData = addr(dec_workarea(1)); /* Addr(returned_data)     20060214*/
+
+   end convert_to_fixed_dec;
+
+ /*------------------------------------------------------------------*/
+ /* Convert FLOAT BINARY to FLOAT DECIMAL                            */
+ /*------------------------------------------------------------------*/
+ convert_to_float_dec: proc( pDesc, pData );
+   dcl   pDesc               ptr;
+   dcl   pData               ptr;
+   dcl   p                   ptr;
+
+   p = addr(desc_workarea);                                /*20091027*/
+   call plifill( p, '00'x, stg(desc_workarea) );           /*20091027*/
+   p->LD_id    = '44'x;           /* FLOAT DECIMAL           20091027*/
+   p->LD_cplx  = pDesc->LD_cplx;                           /*20091027*/
+   p->LD_prec  = B2D(pDesc->LB_prec);                      /*20091027*/
+   pDesc = p;                                              /*20091027*/
+
+   end convert_to_float_dec;
+
+ /*--------------------------------------------------------------0.5e*/
+ /* Convert a bit string to character and print                  0.5e*/
+ /* (rewitten to avoud SUBSTR)                                  1.0.1*/
+ /*--------------------------------------------------------------0.5e*/
+ put_bits: proc(pData,len,off);
+   dcl   pData               ptr;
+   dcl   pD                  ptr;
+   dcl  (len,off)            fixed bin(31);
+   dcl  (l,i)                fixed bin(31);
+   dcl   b                   bit(8);
+   dcl   b1                  bit(1);
+   dcl   c                   char(1);
+   dcl   bb             (0:7)bit(8) aligned static init(      /*1.0.1*/
+                                '80'bx,'40'bx,'20'bx,'10'bx,  /*1.0.1*/
+                                '08'bx,'04'bx,'02'bx,'01'bx );/*1.0.1*/
+
+   pD = pData;
+   b = pD->B8;                         /* Get first byte             */
+   i = off;                            /* Get initial offset         */
+   l = len;                            /* Get length in bits         */
+   do while(l>0);
+     if i=8 then do;                   /* Next byte             1.0.1*/
+       i=0;                                                   /*1.0.1*/
+       pD = pD+1;                                             /*1.0.1*/
+       b=pD->b8;                                              /*1.0.1*/
+       end;                                                   /*1.0.1*/
+     b1 = (b&bb(i))^=0;                /* See if this bit is '1'b    */
+     i = i+1;
+     l = l-1;                          /* Count this bit             */
+     c = '0';                          /* Assume '0'b                */
+     if b1='1'b then c='1';            /*   or set if '1'b           */
+     call move_to_buffer( addr(c), 1 );/* Print this character       */
+     end; /* do while */
+   end put_bits;                                               /*0.5e*/
+
+ /*--------------------------------------------------------------0.5e*/
+ /* Print a character string with all quotes doubled             0.5e*/
+ /*--------------------------------------------------------------0.5e*/
+ put_char: proc(pData,len);     
+   dcl   pData               ptr;
+   dcl   pD                  ptr;
+   dcl   len                 fixed bin(31);
+   dcl   l                   fixed bin(31);
+   dcl   c                   char(1);
+
+   pD = pData;
+   l = len;
+   do while(l>0 );
+     c = pD->C1;                                           /*20090917*/
+     call move_to_buffer( addr(c), 1 );/* Print this character       */
+     if c=''''                         /* Need to double quote?      */
+     then call move_to_buffer( addr(c), 1 );/* Print another quote   */
+     pD = pD+1;
+     l = l-1;
+     end; /* do while */
+   end put_char;                                               /*0.5e*/
+
+ /*------------------------------------------------------------------*/
+ /* B2D: Convert number of binary digits to number of decimal digits */
+ /*------------------------------------------------------------------*/
+ B2D: proc(n) returns( fixed bin(7) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end; 
+   do i=1 to 33;
+     if w<n_3dot32(i) then leave;                             /*0.9.3*/
+     end;
+   if neg then i=-i;
+   return(i);
+   end B2D;
+   
+ %page;
+
+ %include SRB;
+ %include LOCDESC;
+ %include DESC;
+ %include N3DOT32;
+ %include FCB;
+ %include GBL;
+
+ end pli_PutX;

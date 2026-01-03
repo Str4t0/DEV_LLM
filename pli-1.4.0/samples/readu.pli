@@ -1,0 +1,43 @@
+ /* readu                                                 */
+ /*********************************************************/
+ /*                                                       */
+ /* Module:     readu                                     */
+ /*             Peter Flass -- Nov 2007                   */
+ /*                                                       */
+ /* Function:   Read and print a text file as ENV(U)      */
+ /*                                                       */
+ /* Usage:      readu                                     */
+ /*                                                       */
+ /* Procedure: This program will read itself and print    */
+ /*            itself on SYSPRINT.  Input records have    */
+ /*            no maximum length.                         */
+ /*                                                       */
+ /* Dependencies:                                         */
+ /*                                                       */
+ /* To Do:                                                */
+ /*                                                       */
+ /*********************************************************/
+ readu: proc options(main);
+   dcl   input               record input env(U);
+   dcl   buffer              char(80) varying;
+   dcl   i                   fixed bin;
+   dcl   c                   char(1);
+   on endfile(input) goto eof;
+   open file(input) title('readu.pli');
+
+   /* Read the file in maximum 80-byte chunks   */
+   /* until ENDFILE is raised.  Each chunk      */
+   /* except the last should be exactly 80 bytes*/
+   /* Print one character at a time             */
+   do while( '1'b );
+     read file(input) into(buffer);
+     do i=1 to length(buffer);
+       c = substr(buffer,i,1);
+       /* This echoes printable characters only */
+       /* except for linefeeds.                 */
+       if c = '0A'x then put skip;
+       else if c>=' ' then put edit(c)(a);
+       end; /* do i */
+     end; /* do while */
+ eof:
+   end readu;

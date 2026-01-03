@@ -1,0 +1,237 @@
+ /* _pli_CCA                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CCA (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2005                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CCA                                     */
+ /*                                                                  */
+ /*      Function:      Convert character string to coded arithmetic.*/
+ /*                     Result attributes are passed as argument.    */
+ /*                                                                  */
+ /*      Dependencies:  Too numerous to list.                        */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                    +16 | -> FILE or SYSNULL (for ONFILE)      |  */
+ /*                        +--------------------------------------+  */
+ /*                    +12 | -> Output descriptor                 |  */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Output area                       |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Source descriptor                 |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Source string                     |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      The syntax for a valid arithmetic constant is:              */
+ /*        [<sign>] [<digit>...] [.] [digit...]                      */
+ /*            [ E [<exp_sign>] <exp_dig...> ] [B] [I]               */
+ /*                                                                  */
+ /*      Output:        Converted value returned in EAX              */
+ /*                                                                  */
+ /*      Errors         CONVERSION.                                  */
+ /*                     FIXEDOVERFLOW, OVERFLOW, SIZE may be raised  */
+ /*                     by called routines.                          */
+ /*                                                                  */
+ /*                     The input descriptor must reference a        */
+ /*                     scalar element.                              */
+ /*                                                                  */
+ /*      Called from:   Compiled code.  Not in PGT because hopefully */
+ /*                     will not be needed in all programs.          */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*        * Enhance to convert arrays.                              */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2025-03-14: Allow for array descriptors passed.    1.3.3*/
+ /*                      (but not yet actual array arguments)   1.3.3*/
+ /*          2017-07-30: Change in 0.9.9b assumed result was   0.9.10*/
+ /*                      FIXED DEC.                          /*0.9.10*/
+ /*          2011-08-31: 'saveit' signal error if SNO occurs.   0.9.3*/
+ /*          2008-03-18: BINARY conversion.                      0.5e*/
+ /*          2008-02-11: FLOAT conversions.                      0.5e*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CCA: proc(pStr,pSDesc,pRes,pRDesc,pFile)
+          external( '_pli_CCA' )
+          options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pStr                ptr;      /* -> Source string           */
+ dcl     pSDesc              ptr;      /* -> Source descriptor       */
+ dcl     pRes                ptr;      /* -> Result area             */
+ dcl     pRDesc              ptr;      /* -> Result descriptor       */
+ dcl     pFile               ptr;      /* -> ONFILE or SYSNULL       */
+
+ /*-------------------------*/
+ /* Automatic Storage       */
+ /*-------------------------*/
+ dcl     pSrc                ptr;
+ dcl     p                   ptr;
+ dcl    (WPrec,WScale)       fixed bin(31);
+ dcl   1 WA                  aligned,       /* Conversion workarea   */
+         5 WRes              char(20),
+         5 WDesc             char(4);
+
+ %include condmask;
+
+ /*-------------------------*/
+ /* Static Storage          */
+ /*-------------------------*/
+ dcl     zero             (2)fixed dec(18)  static    init( (2)0 );
+                             /* FIXED DECIMAL(18,0)                  */
+ dcl     zdesc               char(4)        static           /*0.9.10*/    
+                             init( '42000018'x);             /*0.9.10*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     fb7                 fixed bin(7)        based;
+ dcl     fb15                fixed bin(15)       based;
+ dcl     fb31                fixed bin(31)       based;
+ dcl     fd18                fixed dec(18)       based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( linkage(system) );
+ dcl     SetFlags            entry( bit(16) )
+                             ext( '_pli_SetFlags' )
+                             options( linkage(system) );
+ dcl     NumVal              entry( ptr, ptr, ptr, ptr, ptr )  /*0.7c*/
+                             ext( '_pli_NumVal' )              /*0.7c*/
+                             options( linkage(system) );       /*0.7c*/
+ dcl     Cnvt                entry( ptr, ptr, ptr, ptr )       /*0.7c*/
+                             ext( '_pli_Cnvt' )                /*0.7c*/
+                             options( linkage(system) );       /*0.7c*/
+
+ dcl    (
+          abs,
+          addr,
+          dec,
+          hbound,
+          index,
+          length,
+          null,
+          stg,
+          string,
+          substr
+                           ) builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure Entry                                                  */
+ /*------------------------------------------------------------------*/
+ on overflow begin;                                           /*0.9.8*/
+   revert overflow;                                           /*0.9.8*/
+   if M_overflow then signal OVERFLOW;                        /*0.9.8*/
+   return;                                                    /*0.9.8*/
+   end;                                                       /*0.9.8*/
+ on fixedoverflow begin;                                      /*0.9.8*/
+   revert fixedoverflow;                                      /*0.9.8*/
+   if M_Fixedoverflow then signal FIXEDOVERFLOW;              /*0.9.8*/
+   return;                                                    /*0.9.8*/
+   end;                                                       /*0.9.8*/
+   
+ string(cond_mask) = GetFlags();       /* Get enabled condition mask */
+ M_LibMod = '1'b;                      /* Indicate 'Library'     0.7c*/
+ call SetFlags( string(cond_mask) );   /* Set for called rtns        */
+
+ /*------------------------------------------------------------------*/
+ /* We currently only handle scalar elements, so if the         1.3.3*/
+ /* arguments are arrays, only look at the first scalar element.1.3.3*/    
+ /* The caller is responsible for ensuring that array dimensions1.3.3*/
+ /* and bounds match.                                           1.3.3*/ 
+ /*------------------------------------------------------------------*/
+ if pSDesc->AR_id = '30'x then do;                            /*1.3.3*/
+   pSDesc = pSDesc + stg(pli_ded_ARR) +                       /*1.3.3*/ 
+              (pSDesc->AR_dim-1)*stg(pli_ded_Dim);            /*1.3.3*/       
+   end; /* Source array */                                    /*1.3.3*/
+ if pRDesc->AR_id = '30'x then do;                            /*1.3.3*/
+   pRDesc = pRDesc + stg(pli_ded_ARR) +                       /*1.3.3*/ 
+              (pRDesc->AR_dim-1)*stg(pli_ded_Dim);            /*1.3.3*/       
+   end; /* Result array */                                    /*1.3.3*/
+ 
+ /*-----------------------------------*/
+ /* Initialize Result                 */
+ /*-----------------------------------*/
+ call saveit( addr(zero), addr(zdesc), pRes, pRDesc );       /*0.9.10*/
+
+ /*------------------------------*/
+ /* Convert character input      */
+ /*------------------------------*/
+ call plifill( addr(WA), '00'x, stg(WA) );
+ call NumVal(pStr,psDesc,addr(WRes),addr(WDesc),pFile);
+ pSrc   = addr(WRes);                  /* ->Converted source         */
+ pSDesc = addr(WDesc);                 /*   and descriptor           */
+ call saveit(pSrc,pSDesc,pRes,pRDesc); /* Save result and bump ptr   */
+
+ return;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* Move conversion result, converting to target attributes.         */
+ /*------------------------------------------------------------------*/
+ saveit: proc(pS,pDS,pD,pDD);
+   dcl  (pS,pD)              ptr;           /* ->Source/target       */
+   dcl  (pDS,pDD)            ptr;           /* ->Descriptors         */
+   dcl   pDesc               ptr;
+   dcl   desc_work           char(4);
+
+   /*--------------------------------------*/
+   /* Get source address and update        */
+   /* input pointer                        */
+   /*--------------------------------------*/
+   /* Currently, 'NumVal' returns a maximum-precision result.        */
+   /* Do we want to keep it this way?                                */
+   desc_work = pDS->XB_id || '000000'x;     /* Init descriptor       */
+   pDesc = addr(desc_work);
+   select(pDS->XB_id);                      /* Get source value      */
+     when( '41'x ) do;                      /* FIXED BINARY          */
+       pDesc->XB_prec  = 31;
+       end; /* FIXED BINARY */ 
+     when( '42'x ) do;                      /* FIXED DECIMAL         */
+       pDesc->XD_prec  = 18;
+       end; /* FIXED DECIMAL */ 
+     when( '43'x ) do;                      /* FLOAT BINARY          */
+       pDesc->LB_prec  = 64;
+       end; /* FLOAT BINARY */ 
+     when( '44'x ) do;                      /* FLOAT DECIMAL         */
+       pDesc->LB_prec  = 20;
+       end; /* FLOAT DECIMAL */
+     otherwise do;                                           /*0.9.10*/
+       signal ERROR;                                          /*0.9.3*/
+       end;                                                  /*0.9.10*/
+     end; /* select */
+     pDesc->XB_scale = pDS->XB_scale;
+     pDesc->XB_flgs  = pDS->XB_flgs;
+
+   /*--------------------------------------*/
+   /* Put result value and update          */
+   /* output pointer                       */
+   /*--------------------------------------*/
+   call Cnvt( pS, pDesc, pRes, pDD ); 
+
+   end saveit;
+
+ %include twopower;
+ %include tenpower;
+ %include desc;
+ %include oncode;
+ %include n3dot32;
+ %include intflt;
+
+ end pli_CCA;

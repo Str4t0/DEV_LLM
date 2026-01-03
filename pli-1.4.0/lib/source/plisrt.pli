@@ -1,0 +1,1079 @@
+ /* PLISRT                                                          */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version               */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        PLISRT                                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          July, 2009.                                  */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      PLISRT is a sort interface routine           */
+ /*                     documented in the IBM _PL/I for MVS and VM   */
+ /*                     Programming Guide_ (SC26-3113-01, pp.484ff)  */
+ /*                                                                  */
+ /*                     The current version intercafaces only to     */
+ /*                     a Shellsort routine supplied.                */
+ /*                     Only the entry point PLISRTD is currently    */
+ /*                     provided.                                    */
+ /*                                                                  */
+ /*      Entry Points:  PLISRTD                                      */
+ /*                                                                  */
+ /*      Calling Sequence:                                           */
+ /*                     CALL PLISRTD( sort_statement,                */
+ /*                                   record_statement,              */
+ /*                                   storage_size,                  */
+ /*                                   return_code,                   */
+ /*                                   input_procedure,               */
+ /*                                   output_procedure,              */
+ /*                                   dataset_prefix,                */
+ /*                                   message_level,                 */
+ /*                                   sort_technique );              */
+ /*                                                                  */
+ /*      Parameters:                                                 */
+ /*          sort_statement:   character(*) varying contains SORT    */
+ /*                            statement.  The format is:            */
+ /*                            'bSORTbFIELDS=(s1,l1,f1,seq1          */
+ /*                             [,s2,l2,f2,seq2...]),other_optionsb' */
+ /*                             (b represents one or more blanks,    */
+ /*                             only blanks shown are allowed).      */
+ /*                           . 'fn' indicates the format of the     */
+ /*                             data in this field.                  */
+ /*                             'CH' - ASCII character data 1-4096b. */
+ /*                             'BI' - Binary unsigned - 1, 2, or 4b.*/
+ /*                             'FI' - Binary signed - 1, 2, or 4b.  */
+ /*                             'ZD' - Numeric character data with   */
+ /*                                    sign over low-order - 1-4096b.*/
+ /*                             'FL' - Floating point signed 4, 8,   */
+ /*                                    or 10b.                       */
+ /*                             'PD' - BCD signed, 10b.              */
+ /*                           . 'seqn' is 'A' for ascending sort,    */
+ /*                                       'D' for descending.        */
+ /*                           . 'other options' are ignored,         */
+ /*                             useful options will be:              */
+ /*                             . FILSZ=y or FILESZ=Ey - y is an     */
+ /*                               estimate of the number of records. */
+ /*                             . EQUALS | NOEQUALS - EQUALS specifie*/
+ /*                               that the ordering of records with  */
+ /*                               equal keys will be the same as inpu*/
+ /*                                                                  */
+ /*          record_statement: character(*) varying contains RECORD  */
+ /*                            statement.  The format is:            */
+ /*                            'bRECORDbTYPE=x,LENGTH=(l1[,...])b'   */
+ /*                            . TYPE (x) is F for fixed-length      */
+ /*                              records, V or D for variable.       */
+ /*                            . LENGTH (l1) is the constant or      */
+ /*                              maximum record length.  For TYPE=V  */
+ /*                              files this will be the maximum      */
+ /*                              length plus four.  IBM sort used    */
+ /*                              other length fields for optimiz-    */
+ /*                              ation, they are allowed here for    */
+ /*                              compatibility, but are ignored.     */
+ /*                                                                  */
+ /*          storage_size: fixed bin(31) currently ignored.          */
+ /*                                                                  */
+ /*          return code: (output) fixed bin(31) field in which      */
+ /*                       PLISRTD will store a value when it's       */
+ /*                       finished to indidate the status:           */
+ /*                        0 = sort successful                       */
+ /*                       16 = sort failed                           */
+ /*                                                                  */
+ /*          input_routine: entry constant or variable for the PL/I  */
+ /*                       procedure which will provide input to SORT.*/
+ /*                       (usually called Exit E15 in IBM terminology*/
+ /*                                                                  */
+ /*          output_routine: entry constant or variable for the PL/I */
+ /*                       procedure which will receive sorted records*/
+ /*                       (usually called Exit E35 in IBM terminology*/
+ /*                                                                  */
+ /*                       See the descriptions below where the input */
+ /*                       and output routines are called for a       */
+ /*                       description of the interface.              */
+ /*                                                                  */
+ /*          dataset_prefix, message_level, sort_technique:          */
+ /*                       unused optional parameters.  If supplied   */
+ /*                       they will be char(*) varying.              */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2016-10-08: Change minimum rec length from 14 to 1  0.9.10*/
+ /*                                                                  */
+ /********************************************************************/
+ 
+ PLISRT: package exports( PLISRTD );
+ 
+ /* In order to implement the sort routines as a package the         */
+ /* anchor block is allocated in static storage.  This unfortunately */
+ /* limits us to having only one sort active at a time.              */
+ /* If we need to have more than one this should be an allocated     */
+ /* block chained off an anchor.                                     */
+ dcl   1 anchor_block        static,   /* Sort control information   */
+         /* Information from SORT statement                          */
+         5 ab_nkeys          fixed bin(31), /* Number of sort keys   */
+         5 ab_filesz         fixed bin(31), /* File size est         */
+         5 ab_skiprec        fixed bin(31), /* Skip record count     */
+         5 ab_equals         fixed bin(7),  /* 1=EQUALS              */
+         5 fil               char(3),       /* Alignment             */
+         /* Information from RECORD statement                        */
+         5 ab_rec_type       fixed bin(31), /* Record type 0:F, 1:V  */
+         5 ab_rec_len        fixed bin(31), /* Record length         */
+         /* Other static information                                 */
+	 5 ab_key_len        fixed bin(31), /* Total key length      */
+	 5 ab_blk_len        fixed bin(31), /* Block length          */
+	 5 ab_inp_cnt        fixed bin(31), /* Input record count    */
+	 5 ab_out_cnt        fixed bin(31), /* Output record count   */
+	 5 ab_rc             fixed bin(31), /* Return code           */
+         5 ab_sortmsg_pres   bit(1),        /* SOPTMSG DD was supplie*/
+         5 ab_desc           char(8),       /* String Descriptor     */
+	 5 ab_loc_desc,                     /* Record buffer         */
+	   10 ab_pRec        ptr,
+	   10 ab_pDesc       ptr,
+	 5 ab_E15            entry options( linkage(system) ),
+	 5 ab_E35            entry options( linkage(system) ),
+         /* Pointers to allocated storage -- free when done          */
+	 5 ab_first          ptr,           /* ->First block         */
+	 5 ab_blk            ptr,           /* ->Curr block          */
+	 5 ab_record_buffer  ptr,           /* ->Single record buffer*/
+	 5 ab_pKey           ptr,           /* ->Key table           */
+	 5 ab_srt_tab        ptr,           /* ->Sort table          */
+         5 ab_end            char(0);
+
+ /* Data for key fields occurs 'ab_nkeys' times.                     */
+ dcl   1 key_data         (1)based(ab_pkey),
+         5 k_pos             fixed bin(31), /* Starting pos rel to 1 */
+         5 k_len             fixed bin(31), /* Length                */
+         5 k_fmt             fixed bin(7),  /* Format                */
+           /* 0: CH                                                  */
+           /* 1: BI                                                  */
+           /* 2: FI                                                  */
+           /* 3: ZD                                                  */
+           /* 4: FL                                                  */
+           /* 5: PD                                                  */
+           /* 6: FS                                                  */
+         5 k_seq             fixed bin(7),  /* Sequence              */
+           /* 0: A                                                   */
+           /* 1: D                                                   */
+         5 fil               char(2),       /* Unused - alignment    */
+         5 k_end             char(0);       /* End of key info       */
+
+ /* Internal record storage                                          */
+ dcl   1 data_blk            based(ab_blk), 
+         5 d_blk_next        ptr,           /* ->Next block or       */
+         5 d_blk_used        fixed bin(31), /* Bytes used            */
+	 5 d_blk_data        char(0);       /* Start of data         */
+
+ /* Sort table: Pointers to keys.  Table contains ab_inp_cnt entries */
+ dcl   1 sort_tbl            based(ab_srt_tab),
+         5 saddr          (1)ptr;           /* ->Record keys         */
+
+ /*------------------------*/
+ /* STATIC data            */
+ /*------------------------*/
+ dcl     field_fmt      (0:6)char(4)    static
+           init( 'CH', 'BI', 'FI', 'ZD', 'FL', 'PD', 'FS' );	   
+ dcl      digit          (0:9)char(1)   static
+           init( '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' );
+ dcl      op_pos         (0:9)char(1)   static
+           init( '{', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I' );
+ dcl      op_neg         (0:9)char(1)   static
+           init( '}', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R' );
+
+ /*------------------------*/
+ /* EXTERNAL data          */
+ /*------------------------*/
+ dcl     sortmsg_dd          ptr       external  init( sysnull() );
+ dcl     sortmsg_title       char(260) varying   based( sortmsg_dd );
+ dcl     sortmsg             print output env( v crlf );
+
+ /*------------------------*/
+ /* Prototypes             */
+ /*------------------------*/
+ dcl     VarStr              char(0)   varying   based;
+ dcl     NonvarStr           char(0)             based;
+ dcl     C1                  char(1)             based;
+ dcl     C16                 char(16)            based;
+ dcl     PTR                 ptr                 based;
+ dcl     FB31                fixed bin(31)       based;
+ 
+%page;
+
+ /********************************************************************/
+ /*  ENTRY POINT PLISRTD                                             */
+ /********************************************************************/
+ /*
+  * PLISRTD: procedure( sort_statement,
+  *                     record_statement,
+  *                     storage_size,
+  *                     return_code,
+  *                     input_procedure,
+  *                     output_procedure,
+  *                     dataset_prefix,
+  *                     message_level,
+  *                     sort_technique );
+  */
+ PLISRTD: procedure(p1,p2,p3,p4,p5,p6,p7,p8)
+          options(linkage(system))
+	  ext( '_pli_SRTD' );
+
+ dcl    (p1,p2,p3,p4,p5,p6,p7,p8)                ptr;
+ 	  
+ /*------------------------*/
+ /* AUTOMATIC data         */
+ /*------------------------*/
+ dcl     rc                  fixed bin(31);
+ dcl     p                   ptr;
+ 	  
+ /*------------------------*/
+ /* STATIC data            */
+ /*------------------------*/
+ dcl     banner              char(64)   varying   static
+           init( 'Iron Spring PLISRTD version 1.1, Nov, 2016.' );
+
+ %page;
+ /* Handle errors to make sure memory is freed                       */
+ on error begin;
+   if ab_sortmsg_pres
+   then put file(sortmsg) skip 
+            list('Sort aborted due to error' );
+   call set_rc(16);
+   goto cleanup;
+   end;
+
+ /*-----------------------------------*/
+ /* Start of Program                  */
+ /*-----------------------------------*/
+ p4->FB31 = 0;                         /* Prime caller's return code */   
+ call plifill( addr(anchor_block), '00'x, stg(anchor_block) );
+ if sortmsg_ddª=sysnull then do;
+   ab_sortmsg_pres = '1'b;
+   open file(sortmsg) title(sortmsg_title);
+   put file(sortmsg) skip list( banner );
+   end;
+ call plimove( addr(ab_E15), p5, stg(ab_E15) );/* Input procedure add*/
+ call plimove( addr(ab_E35), p6, stg(ab_E35) );/* Output procedure ad*/
+         
+ /*-----------------------------------*/
+ /* Parse the control records         */
+ /*-----------------------------------*/
+ rc = parse_sort_statement( p1 ); 
+ call set_rc(rc);
+ rc = parse_record_statement( p2 );                      
+ call set_rc(rc);
+ 
+ if ab_rc>4 then do;                   /* Exit if any errors         */
+   if ab_pKeyª=sysnull() then call plifree(ab_pkey);
+   if ab_sortmsg_pres 
+   then put file(sortmsg) skip 
+            edit( 'Sort terminated, return code=', ab_rc )(a);
+   p4->FB31 = ab_rc;                   /* Set return code for caller */   
+   return;                             /* No need for cleanup        */
+   end;
+
+ /*-----------------------------------*/
+ /* Setup for sort                    */
+ /*-----------------------------------*/
+ if ab_rec_type=1 then ab_rec_len = ab_rec_len+2; /* TYPE=V          */
+ ab_record_buffer = allocate(ab_rec_len); /* Single-record buffer    */
+ ab_blk_len = (ab_rec_len + ab_key_len)*100; /* Internal Block       */
+ 
+ /*-----------------------------------*/
+ /* Call the input procedure until    */
+ /* the user says 'no more records'.  */
+ /*-----------------------------------*/
+ rc = get_input;
+ if rc>4 then goto cleanup;
+ 
+ /*-----------------------------------*/
+ /* Build table of record addresses   */
+ /* and sort the data.                */
+ /*-----------------------------------*/
+ call build_rec_table;
+ call sort_the_data;
+
+ /*-----------------------------------*/
+ /* Call the output procedure         */
+ /*-----------------------------------*/
+ rc = put_output;
+ if rc>4 then goto cleanup;
+
+ /*-----------------------------------*/
+ /* Cleanup and exit                  */
+ /*-----------------------------------*/
+cleanup: ;
+ if ab_sortmsg_pres then do;
+   if rc=0 then put file(sortmsg)
+                    skip list( 'Sort ended successfully' );
+   else put file(sortmsg) skip
+            edit( 'Sort terminated, return code=', rc )(a,p'z9');
+   close file(sortmsg);
+   end;
+
+ /* Free allocated memory */
+ ab_blk = ab_first;
+ do while( ab_blk^=sysnull() );
+   p = ab_blk->d_blk_next;
+   call plifree(ab_blk);
+   ab_blk = p;
+   end;	
+ if ab_record_buffer^=sysnull()
+ then do; 
+   p = ab_record_buffer;
+   ab_record_buffer = sysnull();
+   call plifree(p);
+   end;
+ if ab_pKey^=sysnull()
+ then do; 
+   p = ab_pKey;
+   ab_pKey = sysnull();
+   call plifree(p);
+   end;
+ if ab_srt_tab^=sysnull()
+ then do; 
+   p = ab_srt_tab;
+   ab_srt_tab = sysnull();
+   call plifree(p);
+   end;
+ 
+ p4->FB31 = ab_rc;                      /* Set return code for caller*/
+
+ return;
+
+ end PLISRTD;
+ %page;
+
+ /********************************************************************/
+ /* Call User's exit E15 until done (user returns RC=12)             */
+ /********************************************************************/
+ get_input: proc returns( fixed bin(31) );
+   dcl   rc                  fixed bin(31);
+   dcl   rec_len             fixed bin(31);
+   dcl  (p,q)                ptr;
+   dcl   dummy               char(16);
+
+   /* This code builds a return locator/descriptor                   */
+   /* for the user's E15 procedure.                                  */
+   /* NOTE that the input procedure _must_ return a VARYING or       */
+   /* nonvarying string depending on whether the record type         */
+   /* is V or F.                                                     */
+   call plifill( addr(ab_desc), '00'x, stg(null()->pli_ded_str) );
+   if ab_rec_type=0                     /* TYPE=F                    */
+   then addr(ab_desc)->ST_id  = '10'x;
+   else addr(ab_desc)->ST_id  = '11'x;
+   addr(ab_desc)->ST_len = ab_rec_len;   
+   ab_pRec  = ab_record_buffer;
+   ab_pDesc = addr(ab_desc);
+   ab_first = allocate(ab_blk_len + stg(null()->data_blk) );
+   ab_blk   = ab_first;
+   d_blk_next = sysnull;
+   d_blk_used = 0;
+   
+   do while( '1'b );
+     /* Get next input record         */
+     call ab_E15( addr(ab_loc_desc), addr(dummy) );
+     rc = pliretv();                   /* Get user's return code     */
+     /* Return code 12 says this record is to be included in sort,   */
+     /* anything else terminates input.                              */
+     if rcª=12 then leave;             /* No more records or bad rc  */
+     
+     ab_inp_cnt = ab_inp_cnt+1;        /* Have a record              */
+     p = ab_pRec;
+     if ab_rec_type=0                  /* TYPE=F                     */
+     then rec_len = ab_rec_len;
+     else do;                          /* TYPE=V                     */
+       rec_len = length(ab_pRec->VarStr)+2;  /* Bump len to incl VRL */
+       p = p + stg( null()->VarStr );
+       end;
+
+     /*-------------------------------*/
+     /* Place record in table         */
+     /*-------------------------------*/	 
+     /* See if we need to allocate and chain another block           */
+     if d_blk_used+rec_len+ab_key_len > ab_blk_len then do;
+       p = allocate(ab_blk_len + stg(null()->data_blk) );
+       ab_first = p;       
+       p->d_blk_next = ab_blk;
+       ab_blk = p;
+       d_blk_used = 0;
+       end;
+       
+     q = addr(d_blk_data)+d_blk_used;   /* ->Available space         */
+     call plifill(q,'00'x,ab_key_len);  /* Zero out key              */
+     p = q+ab_key_len;                  /* Skip over key area        */
+     call plimove(p,ab_pRec,rec_len);
+     call build_sort_key(p,q,rec_len);  /* Build the sort key        */ 
+     d_blk_used = d_blk_used + rec_len + ab_key_len;
+     end; /* do while */
+
+   /* Input procedure returned 8, 16, or a bad return code:          */
+   /*   8 = last record already sent                                 */
+   /*  16 = sort failed                                              */
+   if rcª=8 then do;
+     rc = 16;	   
+     call set_rc(16);
+     end;
+   else rc = 0;
+
+   if ab_sortmsg_pres
+   then put file(sortmsg) skip edit( 'Records passed to sort ',
+                                     ab_inp_cnt )(a);
+
+   return(rc);
+   
+ /*------------------------------------------------------------------*/
+ /* Build the sort key for each record                               */
+ /*------------------------------------------------------------------*/
+ build_sort_key: proc(pRec,pKey,rec_len);
+   dcl   (pKey,pRec)          ptr;
+   dcl    rec_len             fixed bin(31);
+   dcl   (i,j)                fixed bin(31);
+   dcl   (p,q)                ptr;
+   
+   p = pKey;
+   do i = 1 to ab_nkeys;
+     q = pRec+(k_pos(i)-1);             /* Position in record        */
+     if ab_rec_type = 1                 /* TYPE=V                    */   
+     then q = q + stg(null()->VarStr);  /* .. skip over VRL          */
+     call move_key(p,q,i,rec_len);      /* Build the key             */
+     p = p + k_len(i);                  /* Bump pos in key           */
+     end; /* do i */
+   if ab_equals=1 then do;              /* 'EQUALS'                  */
+     call plimove(p,addr(ab_inp_cnt),4);/* Use record number         */
+     call bsw(p,4);                     /* Format big-endian         */
+     end; /* equals */
+   end build_sort_key; 
+   
+ move_key: proc(pDst,pSrc,key#,rec_len);
+   dcl   (pDst,pSrc)          ptr;
+   dcl   (key#,rec_len)       fixed bin(31);
+   dcl   (l,t,s)              fixed bin(31);
+   dcl   curr_key_adj         fixed bin(31);
+   l = k_len(key#);
+   t = k_fmt(key#);
+   s = k_seq(key#);
+   
+   /* Make sure all of key is within bounds of input record          */
+   /* Compute number of characters in current key that are           */ 
+   /* beyond the end of the current record.                          */ 
+   curr_key_adj = rec_len - k_pos(key#) + k_len(key#) +1;
+   if curr_key_adj<0 then l = l + curr_key_adj;
+   if l>0
+   then call plimove(pDst,pSrc,l);      /* Move the field            */
+   if (t=0 | t=1 ) & s=0                /* CH, BI, ZD , ascending    */   
+   then return; 
+   /* Otherwise we have to massage the key                           */                    
+   if t=0 | t=1 then do;                /* Fixed (FI)                */
+     if ab_sortmsg_pres                                       /*0.9.9*/
+      then put file(sortmsg) skip                             /*0.9.9*/
+               list( 'CH/BI descending not supported' );      /*0.9.9*/
+     end; /* 0,1 */
+   if t=2 then do;                      /* Fixed (FI)                */
+     call fixed_key(pDst,l,s);
+     end; /* 2 */
+   if t=3 then do;                      /* Zoned Decimal (ZD)        */
+     if ab_sortmsg_pres                                       /*0.9.9*/
+      then put file(sortmsg) skip                             /*0.9.9*/
+               list( 'ZD not supported' );                    /*0.9.9*/
+     end; /* 3 */
+   if t=4 then do;                      /* Floating point (FL)       */
+     if ab_sortmsg_pres                                       /*0.9.9*/
+      then put file(sortmsg) skip                             /*0.9.9*/
+               list( 'FL not supported' );                    /*0.9.9*/
+     end; /* 4 */
+   if t=5 then do;                      /* Packed decimal            */
+     call rev_packed(pDst);
+     end; /* 5 */  
+   if t=6 then do;                      /* Fixed/ leading sign (FS)  */
+     if ab_sortmsg_pres                                       /*0.9.9*/
+      then put file(sortmsg) skip                             /*0.9.9*/
+               list( 'FS not supported' );                    /*0.9.9*/
+     end; /* 6 */
+   end move_key;    
+
+ /* FIXED BINARY key: convert the value to a positive string in      */
+ /* big-endian format.  If the number is already positive,           */
+ /* set the high-order bit so that positive sorts higher than        */
+ /* negative                                                         */
+ fixed_key: proc(pDst,length,seq); 
+   dcl    pDst                ptr;
+   dcl   (length,seq)         fixed bin(31);
+   dcl  1 workarea            cell,
+          2 wfb31             fixed bin(31),
+	  2 fil1,
+	    3 wfb15           fixed bin(15),
+	    3 fil11           char(2),
+	  2 fil2,
+	    3 wfb7            fixed bin(7),
+	    3 fil21           char(3),
+	  2 wb32              bit(32);
+   dcl    bSign               bit(1)    init( '1'b );
+   	   
+   wfb31 = 0;   
+   call plimove(addr(wfb31),pDst,length);
+   select(length);
+     when(1) do;
+       if wfb7<0 then do;
+         wfb7 = 128+wfb7;
+	 bSign = '0'b;
+	 end;
+       end;
+     when(2) do;
+       if wfb15<0 then do;
+         wfb15 = 32768+wfb15;
+         bSign = '0'b;
+         end;
+       end;
+     otherwise do;
+       if wfb31<0 then do;
+         /* Can't specify 2147483648 (2**31) */
+         /* OPT: Currently addition of the two constants is not     */
+         /*      performed at compile time. Cave Canem!             */
+(nofixedoverflow): wfb31 = 2147483647+wfb31+1;
+         bSign = '0'b;
+         end;
+       end;    
+     end; /* select */
+
+   if seq^=0 then do;                   /* Descending         0.9.10*/
+     if bSign                                               /*0.9.10*/
+     then wb32 = ^wb32;                 /* One's complement   0.9.10*/
+     bSign = ^bSign;                    /* Invert sign        0.9.10*/
+     end; /* Descending */  
+
+   call bsw(addr(wfb31),length);        /* Convert to big-endian    */
+   substr(wb32,1,1)=bSign;              /* '0'b is neg, '1'b pos    */
+   call plimove(pDst,addr(wfb31),length); 
+   end fixed_key;  
+      
+   end get_input;
+  %page;
+
+ /*------------------------------------------------------------------*/
+ /* Build table of record addresses                                  */
+ /*------------------------------------------------------------------*/
+ build_rec_table: proc;
+   dcl    p                   ptr;
+   dcl    rec_len             fixed bin(31);
+   dcl    n                   fixed bin(31);
+   dcl    i                   fixed bin(31);
+
+   n=0;
+   ab_srt_tab = allocate(ab_inp_cnt * stg(null()->sort_tbl) );
+
+   ab_blk = ab_first;
+   do i=1 to ab_inp_cnt;
+     if n+ab_key_len>d_blk_used        /* Done with this block       */
+     then do;
+       ab_blk = d_blk_next;
+       n = 0;
+       end;
+     p = addr(d_blk_data)+n;           /* -> KEY                     */
+     /* Table the key address */
+     saddr(i) = p;                     /* Put entry in table         */
+     p = p + ab_key_len;               /* Point to record            */
+     if ab_rec_type=0                  /* TYPE=F                     */
+     then rec_len = ab_rec_len;
+     else rec_len = length(p->VarStr)+2; /* Get length from VRL      */
+     n = n + ab_key_len + rec_len;     /* Data used                  */
+     end; /* do i */
+     
+   end build_rec_table;
+
+ /********************************************************************/
+ /* Execute Shellsort to sort the data                               */
+ /* This procedure uses Hibbard's Modification of Shellsort from     */
+ /*   Rich, Robert P.                                                */
+ /*   _Internal Sorting Methods Illistrated with PL/1 Programs_      */
+ /*   Prentice-Hall, 1972.   p.73                                    */
+ /********************************************************************/
+ sort_the_data: proc;
+   dcl   (i,j,m,n)           fixed bin(31);
+   dcl   (pX,pY)             ptr;
+   n = ab_inp_cnt;
+   if n<2 then return;               /* nothing to sort              */	
+   m = 4;                            /* choose first divisor         */
+   do i=1 to n while(m<n);
+     m = m+m;
+     end;
+   m = m-1;
+ srtf:
+   m = m/2;
+   do j=1 to n-m;
+     pY = saddr(j+m);                /* ->'Y' key                    */
+     do i=j to 1 by -m;
+       pX = saddr(i);                /* ->'X' key                    */
+       if compare(pX,pY,ab_key_len)<0
+       then leave;
+       saddr(i+m) = pX;              /* Swap records                 */
+       end; /* do i */
+     saddr(i+m) =  pY;
+     end; /* do j */
+   if m>1 then goto srtf;
+   end sort_the_data;
+   %page;
+
+ /********************************************************************/
+ /* Call User's exit E35 until done (all records processed or        */
+ /* user returns RC=16)                                              */
+ /********************************************************************/
+ put_output: proc returns( fixed bin(31) );
+   dcl    rc                  fixed bin(31);
+   dcl    p                   ptr;
+   dcl    i                   fixed bin(31);
+   dcl    dummy               char(16);
+   
+   addr(ab_desc)->ST_id = '10'x;        /* Always nonvarying output  */
+   do i = 1 to ab_inp_cnt+1;
+
+     /*-------------------------------*/
+     /* Call output procedure         */
+     /*-------------------------------*/
+     ab_out_cnt = ab_out_cnt + 1;
+     p = saddr(i);                      /* ->Record                  */
+     p = p + ab_key_len;
+     
+     /* "The record passed to the routine by the Sort is a           */
+     /* character-string parameter.  If you specified the            */
+     /* record type as F in the second argument in the call to       */
+     /* PLISRTx, you should declare the parameter with the length    */
+     /* of the record.  If you specified the record type as V,       */
+     /* you should declare the parameter as adjustable"              */
+     /*                                -SC26-3113-01, p.364          */
+     
+     addr(ab_desc)->ST_len = ab_rec_len;
+     if ab_rec_type = 1 then do;       /* TYPE=V                     */   
+       addr(ab_desc)->ST_len = length(p->VarStr);
+       p = p + stg(null()->VarStr);
+       end;
+     ab_pRec = p;                      /* Put rec addr in locator    */
+     
+     call ab_E35( addr(ab_loc_desc), addr(dummy) );    
+     rc = pliretv();
+     if rc^=4 then leave;              /* Terminated by user         */
+     
+     if i=ab_inp_cnt                    /* EOF                       */
+     then leave;          
+
+     end; /* do while */
+
+   if rc^=4 then do;         
+     rc = 16;	   
+     call set_rc(16);
+     end;
+   else rc=0;
+   if ab_sortmsg_pres         
+   then put file(sortmsg) skip edit( 'Records passed from sort ',       
+                                     ab_out_cnt )(a);
+
+   return(rc);
+
+   end put_output;   
+ %page;
+
+ /********************************************************************/
+ /*         C O N T R O L   C A R D   P A R S E                      */
+ /********************************************************************/
+
+ /*------------------------------------------------------------------*/
+ /* Parse the SORT control statement                                 */
+ /*------------------------------------------------------------------*/
+ parse_sort_statement: proc(pLocDesc) returns( fixed bin(31) );
+   dcl   pLocDesc            ptr;
+   
+   dcl   pStmt               ptr;
+   dcl   lStmt               fixed bin(31);
+   dcl   pS                  ptr;
+   dcl   lS                  fixed bin(31);
+   dcl   save_pS             ptr;
+   dcl   save_lS             fixed bin(31);
+   dcl  (l,m,n,z)            fixed bin(31);
+   dcl   char8               char(16);
+   dcl   char4               char(4);
+   dcl   key#                fixed bin(31);
+
+   if pLocDesc->pDesc->ST_id = '10'x    /* nonvarying character      */
+   then do;
+     pStmt = pLocDesc->pData;
+     lStmt = pLocDesc->pDesc->ST_len;
+     end; /* nonvarying */
+   else do;
+     lStmt = length(pLocDesc->pData->VarStr); 
+     pStmt = pLocDesc->pData+stg(null()->VarStr);
+     end; 
+   if ab_sortmsg_pres 
+   then put file(sortmsg) skip 
+            edit( substr(pStmt->NonvarStr,1,lStmt) )(a);
+   pS = pStmt;
+   lS = lStmt;
+
+   /* Check for leading 'bSORTb'      */
+   if lS<16 | pS->C1ª=' '
+   then return( print_error(pStmt,pS) );
+   call skipsp(pS,lS);
+   if lS<16 | substr(pS->C16,1,5)ª='SORT '
+   then return( print_error(pStmt,pS) );
+   pS = pS+4;                          /* Skip over 'SORT'           */
+   lS = lS-4;
+   call skipsp(pS,lS);
+
+   /* Check for 'FIELDS=('            */
+   if lS<10 | substr(pS->C16,1,8)ª='FIELDS=('
+   then return( print_error(pStmt,pS) );
+   pS = pS+8;                          /* Skip over 'FIELDS=('       */
+   lS = lS-8;
+
+   /* Count the number of FIELD subparameters                        */
+   m = 0;
+   save_pS = pS;                       /* Save start-of-field        */
+   save_lS = lS;
+   do while( lS>0 );
+     n = fieldlen(pS,lS);
+     if n<1 then return( print_error(pStmt,pS) );
+     m = m+1;                          /* Count one subparameter     */
+     pS = pS+n;                        /* Skip this field            */
+     lS = lS-n;
+     if lS<1 then return( print_error(pStmt,pS) );
+     if pS->C1 = ')' then leave;       /* Last subparam scanned      */
+     if pS->C1 ª=','                   /* Else comma separates       */
+     then return( print_error(pStmt,pS) );
+     pS = pS+1;                        /* Skip comma                 */
+     lS = lS-1;
+     end; /* do while */
+   if mod(m,4)ª=0                      /* Fields in sets of 4        */
+   then return( print_error(pStmt,pS) );
+   if m=0 then return( print_error(pStmt,pS) );
+   ab_nkeys = m/4;                     /* Save number of keys        */
+
+   /* Now parse 'OTHER OPTIONS'       */
+   pS = pS+1;                          /* Skip over ')'              */
+   lS = lS-1;
+   do while( lS>0 );
+     if lS<2        then leave;        /* We're done                 */
+     if pS->C1ª=',' then leave;        /* No 'other options'         */
+     pS = pS+1;                        /* Skip over ','              */
+     lS = lS-1;
+     n = fieldlen(pS,lS);              /* Scan next field            */
+     if n<1 then return( print_error(pStmt,pS) );
+     if n>8 then char8 = substr(pS->C16,1,8); /* Isolate field       */
+     else        char8 = substr(pS->C16,1,n);
+     if substr(char8,1,7)='FILESZ=' then do;
+       pS = pS+7;
+       lS = lS-7;
+       n = fieldlen(pS,lS);            /* Scan next field            */
+       if n>1 & pS->C1='E' then do;    /* Check for est size         */
+         pS = pS+1;
+         lS = lS-1;
+         n = n-1;
+         end;
+       m = numval(pS,n);               /* Get the numeric value      */ 
+       if m<1 then return( print_error(pStmt,pS) );
+       ab_filesz = m;
+       pS = pS+n;
+       lS = lS-n;  
+       end; /* FILESZ */
+     else if substr(char8,1,8)='SKIPREC=' then do;
+       pS = pS+8;
+       lS = lS-8;
+       n = fieldlen(pS,lS);            /* Scan next field            */
+       m = numval(pS,n);               /* Get the numeric value      */ 
+       if m<1 then return( print_error(pStmt,pS) );
+       ab_skiprec = m;
+       pS = pS+n;
+       lS = lS-n;  
+       end; /* SKIPREC */
+     else if substr(char8,1,6)='EQUALS' then do;
+       pS = pS+6;
+       lS = lS-6;
+       ab_equals = 1;
+       end; /* EQUALS */
+     else if substr(char8,1,8)='NOEQUALS' then do;
+       pS = pS+8;
+       lS = lS-8;
+       ab_equals = 0;
+       end; /* NOEQUALS */
+     else if substr(char8,1,8)='DYNALLOC' then do;
+       pS = pS+n;
+       lS = lS-n;
+       n = fieldlen(pS,lS);            /* Scan ',n'                  */
+       pS = pS+n+1;                    /* Skip over ')'              */
+       lS = lS-n-1;
+       /* This should do it for now.  */
+       end; /* DYNALLOC */
+     else do;
+       pS = pS+n;
+       lS = lS-n;
+       end; /* else */
+     end; /* do while */
+
+   /* Allocate storage for key table  */
+   n = stg(null()->key_data(1)) * ab_nkeys;
+   ab_pkey = allocate( n );
+   call plifill( ab_pKey, '00'x, n );                        /*0.9.10*/
+
+   /* Re-scan the FIELDS= information and extract key_data           */
+   pS = save_pS;                       /* Reset pointers for parse   */
+   lS = save_lS;
+   key# = 1;
+   l = 0;
+   do while( key#<=ab_nkeys );
+     if lS<=0 then return( print_error(pStmt,pS) );
+     n = fieldlen(pS,lS);
+     if n<1 then return( print_error(pStmt,pS) );
+     l = l+1;                          /* Count one subparameter     */
+     if l>4 then do;
+       l=1;
+       key# = key#+1;                  /* Advance to next FIELD      */
+       end;
+     select( l );
+       when(1) do;                     /* Subparameter 0: position   */
+         z = numval(pS,n);             /* Get the numeric value      */ 
+         if z<1 then return( print_error(pStmt,pS) ); 
+         k_pos(key#) = z;
+         end; /* position */
+       when(2) do;                     /* Subparameter 1: length     */
+         z = numval(pS,n);             /* Get the numeric value      */ 
+         if z<1 then return( print_error(pStmt,pS) );
+         k_len(key#) = z;
+         end; /* length */   
+       when(3) do;                     /* Subparameter 2: format     */
+         if n>4 then char4 = substr(pS->C16,1,4); /* Isolate field   */
+         else        char4 = substr(pS->C16,1,n);
+         do z=0 to hbound(field_fmt,1);
+           if field_fmt(z)=char4 then leave;
+           end; /* do z */
+         if z>hbound(field_fmt,1)
+         then return( print_error(pStmt,pS) );
+         k_fmt(key#)=z;
+	 if z=4 then do;                /* Floating point            */
+           put file(sortmsg) skip edit( 
+	     '***** FL data not supported')(a);
+	     k_len(key#) = 10;
+	     k_fmt(key#) = 1;
+	     call print_error(pStmt,pS);
+	     end;
+	 if z=5 then do;                /* Packed Decimal            */
+	   if k_len(key#)^=10 then do;
+	     k_len(key#) = 10;
+	     call print_error(pStmt,pS);
+             if ab_sortmsg_pres
+             then put file(sortmsg) skip edit( 
+	       '***** Length of PD field must be 10')(a);
+	     end;
+	   end; /* packed */ 
+         ab_key_len = ab_key_len + k_len(key#);  
+         end; /* format */  
+       when(4) do;                     /* Subparameter 3: seq        */
+         k_seq(key#)=0;                /* Redundant            0.9.10*/        
+         if pS->C1 = 'D' then k_seq(key#)=1; /* Descending           */
+         end; /* seq */      
+       end; /* select */
+     pS = pS+n;                        /* Skip this field            */
+     lS = lS-n;
+     if lS<1 then return( print_error(pStmt,pS) );
+     if pS->C1 = ')' then leave;       /* Last subparam scanned      */
+     if pS->C1 ª=','                   /* Else comma separates       */
+     then return( print_error(pStmt,pS) );
+     pS = pS+1;                        /* Skip comma                 */
+     lS = lS-1;
+     end; /* do while */
+     
+     if ab_equals then ab_key_len = ab_key_len+4;
+
+   return(0);                          /* All OK                     */
+
+   end parse_sort_statement;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* Parse the RECORD control statement                               */
+ /*------------------------------------------------------------------*/
+ parse_record_statement: proc(pLocDesc) returns( fixed bin(31) );
+   dcl   pLocDesc            ptr;
+   
+   dcl   pStmt               ptr;
+   dcl   lStmt               fixed bin(31);
+   dcl   pS                  ptr;
+   dcl   lS                  fixed bin(31);
+   dcl  (m,n)                fixed bin(31);
+   dcl   key#                fixed bin(31);
+
+   if pLocDesc->pDesc->ST_id = '10'x    /* nonvarying character      */
+   then do;
+     pStmt = pLocDesc->pData;
+     lStmt = pLocDesc->pDesc->ST_len;
+     end; /* nonvarying */
+   else do;
+     lStmt = length(pLocDesc->pData->VarStr); 
+     pStmt = pLocDesc->pData+stg(null()->VarStr);
+     end; 
+   pS = pStmt;
+   lS = lStmt;
+   if ab_sortmsg_pres 
+   then put file(sortmsg) skip 
+            edit( substr(pStmt->NonvarStr,1,lStmt) )(a);
+   
+   /* Check for leading 'bRECORDb'    */
+   if lS<16 | pS->C1ª=' '
+   then return( print_error(pStmt,pS) );
+   call skipsp(pS,lS);
+   if lS<16 | substr(pS->C16,1,7)ª='RECORD '
+   then return( print_error(pStmt,pS) );
+   pS = pS+6;                          /* Skip over 'RECORD'         */
+   lS = lS-6;
+   call skipsp(pS,lS);
+
+   /* Check for 'TYPE=x,'             */
+   if lS<7 | substr(pS->C16,1,5)ª='TYPE='
+   then return( print_error(pStmt,pS) );
+   pS = pS+5;                          /* Skip over 'TYPE='          */
+   lS = lS-5;
+   if pS->C1='V' | pS->C1='D'          /* Check type                 */
+   then ab_rec_type = 1;
+   else if pS->C1ª='F' then return( print_error(pStmt,pS) );
+   pS = pS+1;                          /* Skip over type             */
+   lS = lS-1;
+
+   /* Check for ',LENGTH=(l1'         */
+   call skipsp(pS,lS);
+   if lS<10 | substr(pS->C16,1,9)ª=',LENGTH=('
+   then return( print_error(pStmt,pS) );
+   pS = pS+9;                          /* Skip over ',LENGTH=('      */
+   lS = lS-9;
+   n = fieldlen(pS,lS);
+   m = numval(pS,n);                   /* Get the numeric value      */   
+   ab_rec_len = m;                     /* Get the length value       */
+   if ab_rec_type=1                    /* Adjust for TYPE=V          */
+   then ab_rec_len = ab_rec_len-4;
+   if ab_rec_len<1 | ab_rec_len>32760  /* Verify valid length  0.9.10*/
+   then return( print_error(pStmt,pS) );
+   
+   return(0);                          /* All OK                     */
+    
+   /* no need to check more, we're done */
+   
+   end parse_record_statement;
+ %page;
+ 
+ /*------------------------------------------------------------------*/
+ /* Miscellaneous internal routines                                  */
+ /*------------------------------------------------------------------*/
+
+ /* Skip a number of spaces in string */
+ /* Return addr(first non-blank)      */
+ /*   and updated length              */
+ skipsp: proc(pStr,lStr);
+   dcl   pStr                ptr;
+   dcl   lStr                fixed bin(31);
+   do while( lStr>0 );
+     if pStr->C1ª=' ' then return;
+     pStr = pStr+1;
+     lStr = lStr-1;
+     end; /* do while */
+   end skipsp;
+
+ /* Find the length of a field in str */
+ /* Return length or -1 if error      */
+ fieldlen: proc(pStr,lStr) returns( fixed bin(31) );
+   dcl   pStr                ptr;
+   dcl   lStr                fixed bin(31);
+   dcl   pS                  ptr;
+   dcl   lS                  fixed bin(31);
+   pS = pStr;                          /* Save argument values       */
+   lS = lStr;
+   do while( lS>0 );
+     if pS->C1=',' | pS->C1=')' | pS->C1=' '
+     then return( pS-pStr );           /* Return field length        */
+     pS = pS+1;
+     lS = lS-1;
+     end; /* do while */
+   return(-1);                         /* Error                      */
+   end fieldlen;
+
+ /* Get a positive numeric value      */
+ /* return -1 if error                */
+ numval: proc(pStr,lStr) returns( fixed bin(31) );
+   dcl   pStr                ptr;
+   dcl   lStr                fixed bin(31);
+   dcl   n                   fixed bin(31);
+   dcl   num_field           char(9);
+   n = lStr;
+   if n<1 | n>9 then return(-1);       /* Bad syntax or missing field*/
+   num_field = (9)'0';
+   substr(num_field,length(num_field)-n+1,n) = substr(pStr->C16,1,n);
+   n = verify( num_field, '0123456789' ); /* Prevent CONVERSION      */
+   if nª=0 then return(-1);            /* Error                      */
+   n = num_field;                      /* Get the value              */
+   return(n);                          /* and get out                */
+   end numval;
+
+ /* Print a control-card error        */
+ /* return code                       */
+ print_error: proc(pSt,pCur) returns( fixed bin(31) );;
+   dcl  (pSt,pCur)           ptr;
+   dcl   rc                  fixed bin(31);
+   dcl   col                 fixed bin(31);
+   col = pCur-pSt;                     /* Column number for error    */
+   if ab_sortmsg_pres then do;         /* Message dataset missing    */
+     rc=16;                            /* Fatal error                */
+     col = pCur-pSt+1;                 /* Column number for error    */
+     put file(sortmsg) skip edit( '|' )(col(col),a);
+     end;
+   return(rc);
+   end print_error;
+
+ /* Set highest return code           */
+ set_rc: proc(rc);
+   dcl   rc                  fixed bin(31);
+   if rc>4 & ^ab_sortmsg_pres           /* Message file missing      */
+   then rc = 20;
+   if rc>ab_rc then ab_rc = rc;
+   end set_rc;
+   
+ /* swap bytes in a word or dword     */                               
+ bsw: proc(p,size);
+   dcl   p                   ptr;
+   dcl   size                fixed bin(7);
+   dcl   char_1           (4)char(1)   based(p);
+   dcl   tmp                 char(1);
+   if size=2 then do;
+     tmp = char_1(1);
+     char_1(1) = char_1(2);
+     char_1(2) = tmp;
+     end; /* size=2 */
+   else if size=4 then do;
+     tmp = char_1(1);
+     char_1(1) = char_1(4);
+     char_1(4) = tmp;
+     tmp = char_1(3);
+     char_1(3) = char_1(2);
+     char_1(2) = tmp;
+     end; /* size=4 */
+ end bsw;      
+   
+ /* swap bytes in a packed value      */                               
+ rev_packed: proc(p);
+   dcl   p                   ptr;
+   dcl   size                fixed bin(7);
+   dcl   char_1          (0:9)char(1)   based(p);
+   dcl   tmp                 char(1);
+   dcl   i                   fixed bin(7);
+   /* Swap bytes in number               */  
+   do i=0 to 4;
+     tmp = char_1(i);
+     char_1(i) = char_1(9-i);
+     char_1(9-i) = tmp;
+     end;
+   /* Reverse sign so negatives sort low */  
+   if char_1(0)   = '80'x
+   then char_1(0) = '00'x ;
+   else char_1(0) = '80'x;
+   end rev_packed;      
+ 
+ %include desc;
+ %include locdesc;
+ %include entry;
+ 
+ end PLISRT;
+

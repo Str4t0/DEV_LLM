@@ -1,0 +1,111 @@
+
+ /* _pli_OSGetEnv                                                    */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        OSGetEnv (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSGetEnv                                */
+ /*                                                                  */
+ /*      Function:      Operating system dependent code for          */
+ /*                     'get environment' function.                  */
+ /*                     Analog of C's 'getenv()' function.           */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     OS/2: DosScanEnv                             */
+ /*                     Linux: This code uses the pointer to the     */
+ /*                            list of addresses of environment      */
+ /*                            variables stored in the  PGT by 'init'*/
+ /*                                                                  */
+ /*      Called From:   user code.                                   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL name char(*); /* null-terminated         */
+ /*                     DCL pval ptr;     /* ->null-terminated value */
+ /*                     DCL OSGetEnv entry( ptr )                    */
+ /*                             returns(ptr)                         */
+ /*                             options( linkage(system) )           */
+ /*                             ext( '_pli_OSGetEnv' );              */
+ /*                     pval = OSGetEnv( addr(name) )                */
+ /*                                                                  */
+ /*      Returns:       Pointer to null-terminated value for         */
+ /*                     environment variable 'name', if 'name'       */
+ /*                     is found, or sysnull() if not.               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ OSGetEnv: proc(pName) 
+           returns(ptr)
+           options( linkage(system) )
+           external( '_pli_OSGetEnv' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      pName               ptr;      /* ->Null-terminated name     */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     (pEnvp,pEnv)         ptr;
+ dcl      pDSA                ptr;
+ dcl      pGbl                ptr;
+ dcl     (i,len)              fixed bin(31);
+ dcl      p                   ptr;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      global       (0:127)ptr       based(pGbl);		   
+ dcl      PTR                 ptr       based;
+ dcl      C                   char(1)   based;
+ 
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      getdsa              entry returns(ptr)
+                              options( linkage(system) )
+		              ext( '_pli_GetDSA');
+ dcl      sysnull             builtin;
+
+ /*---------------------------------------------*/
+ /* Get length of Envirionment Variable name    */
+ /*---------------------------------------------*/
+ p = pName;
+ do len=0 by 1 while(p->C^='00'x);
+   p = p+1;
+   end;
+
+ /*---------------------------------------------*/
+ /* Scan Environment String                     */
+ /*---------------------------------------------*/
+ pDSA  = GetDSA();
+ pGbl  = pDSA-4;              /* addr(PGT_addr) */
+ pGbl  = pGbl->PTR;           /* addr(PGT)      */
+ pEnvp = global(125);         /* addr(envp[0])  */
+ do while( pEnvp->PTR^=sysnull);
+   p,pEnv = pEnvp->PTR;
+   do while(p->C^='00'x);
+     if p->C='=' then do;
+       i = p-pEnv;            /* Length of variable */
+       if i=len then do;
+       if compare(pEnv,pName,len)=0
+       then return(p+1);
+       end; /* length */
+     end; /* '=' */
+     p = p+1;
+     end; /* do while */
+   pEnvp= pEnvp + stg(sysnull()->PTR);
+   end;
+ return(sysnull);             /* Not found   */
+
+ end OSGetEnv;
+

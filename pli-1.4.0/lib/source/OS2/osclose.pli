@@ -1,0 +1,75 @@
+ /* _pli_OSClose                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSClose (PL/I runtime) [OS/2]           */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSClose                                 */
+ /*                                                                  */
+ /*      Function:      Operating system dependent close logic.      */
+ /*                                                                  */
+ /*      This is a revised version of 'OSClose' that uses a more     */
+ /*      C-like interface.  OS/2's DosClose provides a similar level */
+ /*      of abstraction that's missing on bare-metal Linux.          */
+ /*      This routine will either call DosRead or the Linux system   */
+ /*      service.                                                    */
+ /*                                                                  */
+ /*      OSClose is called by the close mainline (_pli_Close) to     */
+ /*      perform an operating system close after all other           */
+ /*      processing has been completed.                              */
+ /*                                                                  */
+ /*      The return code from Close is passed back to the caller.    */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Linux: SYSCALL                               */
+ /*                     OS/2:  DosClose                              */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = _pli_OSClose( hFile );                  */
+ /*                     hFile   = OS File Descriptor                 */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSClose: proc(hFile)
+              returns( fixed bin(31) )
+	      options( linkage(system) )
+              ext( '_pli_OSClose' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     hFile               fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DOSClose            entry( fixed bin(31) )   /* hFile       */
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DosClose' );
+
+ dcl    (addr,length,stg,substr,sysnull)
+                             builtin;
+
+ RC = DOSClose( hFile );
+ return( RC );
+
+ end pli_OSClose;

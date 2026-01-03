@@ -1,0 +1,1014 @@
+ /* _pli_Sig                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                      OS/2 version of SIG                      OS2*/
+ /*                                                                  */
+ /*      Module:        _pli_Sig (PL/I runtime)                      */
+ /*      Version:       1.1                                          */
+ /*      Date:          Jun, 2002                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Sig                                     */
+ /*                                                                  */
+ /*      Function:      PL/I condition handler.  All signals         */
+ /*                     translate to a call to this procedure        */
+ /*                     with a variable parameter list depending     */
+ /*                     on the condition being raised.               */
+ /*                                                                  */
+ /*                     _pli_Sig build the IRCB on the stack,        */
+ /*                     scans the DSA chain for an established       */
+ /*                     ON-Unit for the current condition and        */
+ /*                     invokes it if found.  Otherwise the implicit */
+ /*                     action for this condition is taken.          */
+ /*                                                                  */
+ /*                     The ATTENTION condition is processed         */
+ /*                     differently from IBM PL/I.  If an ON-unit    */
+ /*                     is established for it, the default action    */
+ /*                     on return from the ON-unit is 'continue      */
+ /*                     excution'.  If no ON-unit is established,    */
+ /*                     the default action is to display a message   */
+ /*                     and raise the FINISH condition.              */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     OS/2 Exception Handling Interface            */
+ /*                     PL/I Control blocks - IRCB, ONCB, DSA.       */
+ /*                                                                  */
+ /*      Calling sequence: (non-standard)                            */
+ /*                                                                  */
+ /*      Parameters: (variable)                                      */
+ /*          OS/2 system exceptions:                              OS2*/
+ /*                  1. Zero indicates system exception.          OS2*/
+ /*                  2. addr(ExceptionReportRecord)               OS2*/
+ /*                  3. addr(ContextRecord)                       OS2*/
+ /*                  4. addr(ATTENTION ONCB) or zero.             OS2*/
+ /*          PL/I SIGNAL statements:                                 */
+ /*                  1. PL/I ONCODE.                                 */
+ /*                  2. Variable number of parameters, depending     */
+ /*                     on ONCODE.  See documentation.               */
+ /*                                                                  */
+ /*      Restrictions:                                               */
+ /*                     Code is dependent on the format of the PL/I  */
+ /*                     stack frame.  It should never be called      */
+ /*                     from an assembler program unless the stack   */
+ /*                     frame format is retained.                    */
+ /*                                                                  */
+ /*      Output:        Messages to STDERR.                          */
+ /*                                                                  */
+ /*      Called from:   Compiled code via PGT.                       */
+ /*                     _pli_Trap for OS/2 system exceptions.        */
+ /*                                                                  */
+ /*      Note on floating point errors:                              */
+ /*                     The conditions OVERFLOW, UNDERFLOW, and      */
+ /*                     ZERODIVIDE may be raised by floating-point   */
+ /*                     exceptions.  Normal return from an on-unit   */
+ /*                     is to the point immediately following the    */
+ /*                     exception.  SIG is responsible for clearing  */
+ /*                     the FPU status in the context area and       */
+ /*                     zeroing FP(0).                               */
+ /*                                                                  */
+ /*                     Other conditions may be raised during the    */
+ /*                     course of evaluation of a floating point or  */
+ /*                     decimal expression.  The FPU state is        */
+ /*                     left unchanged so that evaluation can        */
+ /*                     continue.  In this case, compiled code is    */
+ /*                     responsible for cleaning up the FPU state.   */
+ /*                                                                  */
+ /*                     UNDERFLOW and OVERFLOW are not masked in     */
+ /*                     the FPU control word to eliminate compli-    */
+ /*                     cations involved in changing the FPUCW       */
+ /*                     when these conditions are enabled or         */
+ /*                     disabled.  When the FPU raises these         */
+ /*                     conditions and they are disabled, SIG has    */
+ /*                     to clear the exception, zero ST(0), and      */
+ /*                     return control to the point of the exception.*/
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . Separate into operating-system-dependent     */
+ /*                     portion and opsys-independent portion.       */
+ /*                   . FIXEDOVERFLOW for FIXED DECIMAL needs        */
+ /*                     further checks.                              */
+ /*                   . Enabled condition mask - probably should     */
+ /*                     back up to non-library procedure?            */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2023-06-20: Remove "recursive_abend" to correspond 1.1.0*/
+ /*                      with Linux version.                    1.1.0*/
+ /*          2022-03-12: STORAGE condition defaults           0.9.10e*/
+ /*          2017-08-17: Catch errors in this proc to avoid trp0.9.10*/
+ /*          2017-03-21: SIGFPE - stack fault is ERROR         0.9.10*/
+ /*          2015-02-05: Check sequence of DSAs and dump if err 0.9.8*/
+ /*                      Add 'emergency bailout' if DSA chain clob9.8*/
+ /*          2010-12-17: Change Exit logic for tasking.         0.9.2*/
+ /*          2009-12-14: Replace WriteLn with display            0.8d*/
+ /*          2009-11-18 Implicit action for ENDPAGE.             0.8d*/
+ /*          2009-10-07 Recovery from FPU exceptions.            0.8c*/
+ /*          2009-07-21 Add code to try to prevent trap in SIG from  */
+ /*                     causing recursive abends.                    */
+ /*          2006-11-01 Fixes resulting from having TRAP restore     */
+ /*                     DSA backchain.                               */
+ /*          2005-06-27 FIXEDOVERFLOW definition for FIXED DECIMAL.  */
+ /*                     Allow for disabled conditions.               */
+ /*          2005-01-11 'normal return' actions specified.           */
+ /*          2004-07-09 IRCB version 2.0.                            */
+ /*          2004-05-26 Work on ATTENTION condition, and interface   */
+ /*                     between OS/2 exception handler (_pli_Trap)   */
+ /*                     and PL/I conditions.                         */
+ /*          2004-03-31 CONVERSION -- SIG is passed the address of   */
+ /*                     a list of stuff, not the list itself.        */
+ /*          2004-01-20 ONFILE, unlock FCB for I/O cond.             */
+ /*          2003-07-16 Added 'STORAGE' condition, various changes.  */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Sig: proc(parmlist) external( '_pli_Sig' )
+                         options( LINKAGE(SYSTEM) );
+
+ /*-----------------------------------*/
+ /* Parameters                        */
+ /*-----------------------------------*/
+ dcl     parmlist            ptr;                     /* Dummy       */
+
+ /*-----------------------------------*/
+ /* AUTOMATIC Storage                 */
+ /*-----------------------------------*/
+ dcl     p                   ptr;
+ dcl     pDSA                ptr;
+ dcl     pONCB               ptr;
+ dcl     pFile               ptr;                              /*0.8d*/
+ dcl     pTCB                ptr;                             /*0.9.2*/
+ dcl     my_edi              ptr;
+ dcl     curr_oncb           ptr;                          /*20050105*/
+ dcl     curr_OnCode         fixed bin(15);
+ dcl     curr_Loc            fixed bin(31);
+ dcl     fmt_Loc             char(4);
+ dcl     fmt_OSErr           char(4)    init((4)'00'x);         /*OS2*/
+ dcl     want_trace          bit(1)     init( '0'b );       /*0.9.10b*/
+ dcl     isPLI               bit(1);                          /*0.9.9*/
+ dcl     curr_action         bit(8);
+ dcl     condmask            bit(16);                      /*20050627*/
+ dcl     i                   fixed bin(7);
+ dcl     line                char(80)  varying;
+ dcl     entry_name          char(64)  varying; /* max_len_ext_label */
+ dcl     FB31                fixed bin(31)        based;
+ dcl     aContext            ptr;
+ dcl     pSTT                ptr                  init(sysnull);/*9.9*/
+ dcl     curr_DSA            ptr;                             /*0.9.9*/
+ dcl    (my_start_addr,my_end_addr)                           /*1.1.0*/
+                             ptr;                             /*1.1.0*/
+ /* NOTE: The following should be in each task's TCB                 */
+ /* NOTE: All use of recursive_abend removed, because a GOTO out of  */
+ /*       an On-Unit would trigger it. Need a better system.         */
+ dcl     recursive_abend     bit(1)    static    init( '0'b );/*0.9.1*/
+
+ /*------------------------------------------------------------------*/
+ /*      Storage to build an IRCB on the stack.                      */
+ /*      This should be declared: 'CHAR( STG(NULL()->IRCB) )'        */
+ /*      The eyecatcher should be part of the structure.             */
+ /*------------------------------------------------------------------*/
+ dcl     IRCB_storage        char(64);
+ dcl     eyecatcher          char(4);                          /*0.6a*/
+
+ /*-----------------------------------*/
+ /*      ONCODES and actions          */
+ /*-----------------------------------*/
+ dcl     oncode_value    (25)fixed bin(15)       static   init(
+           4,   9,  10,  20,  40,  50,  70,  80,  90, 100,
+         150, 300, 310, 320, 330, 340, 350, 360, 400, 450, /*20030716*/
+         500, 510, 520, 600,   0  );
+ dcl     oncode_nm       (25)char(16)  varying   static    init(
+                   'FINISH',           'ERROR',
+                   'NAME',             'RECORD',
+                   'TRANSMIT',         'KEY',
+                   'ENDFILE',          'UNDEFINEDFILE',
+                   'ENDPAGE',          'PENDING',
+                   'STRINGSIZE',       'OVERFLOW',
+                   'FIXEDOVERFLOW',    'ZERODIVIDE',
+                   'UNDERFLOW',        'SIZE',
+                   'STRINGRANGE',      'AREA',
+                   'ATTENTION',        'STORAGE',          /*20030716*/
+                   'CONDITION',        'CHECK',
+                   'SUBSCRIPTRANGE',   'CONVERSION',
+                   'UNKNOWN' );
+ /* Implicit actions for each condition                              */
+ dcl     implicit_action (25)bit(8)    aligned   static    init(
+                   '08'bx,             '88'bx,
+                   'C2'bx,             '83'bx,
+                   '83'bx,             '83'bx,
+                   '83'bx,             '83'bx,
+                   '12'bx,             '42'bx,
+                   'C0'bx,             '81'bx,
+                   '81'bx,             '81'bx,
+                   'C0'bx,             '81'bx,
+                   '81'bx,             '81'bx,
+                   '88'bx,             '81'bx,             /*20050111*/
+                   'C0'bx,             '40'bx,
+                   '81'bx,             '81'bx,
+                   '81'bx );
+ /* Actions on normat return from ON-Unit                            */
+ dcl     normal_return   (25)bit(8)    aligned   static    init(
+                   '40'bx,             '88'bx,
+                   '42'bx,             '42'bx,
+                   '42'bx,             '42'bx,
+                   '42'bx,             '42'bx,
+                   '42'bx,             '42'bx,
+                   '40'bx,             '40'bx,
+                   '40'bx,             '40'bx,
+                   '40'bx,             '40'bx,
+                   '40'bx,             '40'bx,
+                   '40'bx,             '01'bx,              /*0.9.10e*/
+                   '40'bx,             '40'bx,
+                   '01'bx,             '01'bx,
+                   '81'bx );
+ /* Action bit settings:                                             */
+ /* '80'bx - Error Message                                           */
+ /* '40'bx - Continue Execution                                      */
+ /* '20'bx - (unused)                                                */
+ /* '10'bx - Endpage action                                          */
+ /* '08'bx - SIGNAL FINISH/Terminate execution                       */
+ /* '04'bx - (unused)                                                */
+ /* '02'bx - Indicates I/O Condition                                 */
+ /* '01'bx - Raise ERROR condition                                   */
+
+ /* DSA Condition Mask bit setting for condition (0=none)    20050627*/
+ /* Conditions which cannot be disabled have mask='0000'bx           */
+ dcl     cond_mask_bit   (25)bit(16)                       /*20050627*/
+                             aligned   static    init(     /*20050627*/
+            '0000'bx,           '0000'bx,                  /*20050627*/
+            '0000'bx,           '0000'bx,                  /*20050627*/
+            '0000'bx,           '0000'bx,                  /*20050627*/
+            '0000'bx,           '0000'bx,                  /*20050627*/
+            '0000'bx,           '0000'bx,                  /*20050627*/
+            '0400'bx,           '2000'bx,                  /*20050627*/
+            '4000'bx,           '0080'bx,                  /*20050627*/
+            '0100'bx,           '1000'bx,                  /*20050627*/
+            '0800'bx,           '0000'bx,                  /*20050627*/
+            '0000'bx,           '0000'bx,                  /*20050627*/
+            '0000'bx,           '0000'bx,                  /*20050627*/
+            '0200'bx,           '8000'bx,                  /*20050627*/
+            '0000'bx );                                    /*20050627*/
+
+ /*-----------------------------------*/
+ /* External Entries                  */
+ /*-----------------------------------*/
+ dcl     GetDSA              entry
+                             external( '_pli_GetDSA' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+ dcl     GetTCB              entry(fixed bin(31))	      /*0.9.2*/
+                             external( '_pli_GetTCB' )	      /*0.9.2*/
+                             returns( ptr )		      /*0.9.2*/
+                             options( LINKAGE(SYSTEM) );      /*0.9.2*/
+ dcl     PLI_IOStat          entry( ptr )
+                             returns( ptr )
+                             external( '_pli_IOStat' )
+                             options( LINKAGE(SYSTEM) );
+ dcl     TRACE               entry(ptr)                    /*20061101*/
+                             external( '_pli_Trace' )
+                             options( LINKAGE(SYSTEM) );
+ dcl     exit                entry                            /*0.9.2*/
+                             external( '_pli_Exit' )          /*0.9.2*/
+                             options( LINKAGE(SYSTEM) );      /*0.9.2*/
+ dcl     DosAcknowledgeSignalException                          /*OS2*/
+                             entry( fixed bin(31) )             /*OS2*/
+                             external( 'DosAcknowledgeSignalException' )
+                             returns( fixed bin(31) )           /*OS2*/
+                             options( ASM LINKAGE(SYSTEM) );    /*OS2*/
+ dcl     implicit_endpage    entry( ptr )                      /*0.8d*/
+                             options( LINKAGE(SYSTEM) )        /*0.8d*/
+                             external( '_pli_Endpage' );       /*0.8d*/
+ dcl     put_X87             entry( ptr )                     /*0.9.8*/
+                             options( LINKAGE(SYSTEM) )       /*0.9.8*/
+                             external( '_pli_PutX87' );       /*0.9.8*/
+
+ dcl    (addr,
+         hbound,                                              /*0.9.2*/
+         heximage,
+         null,
+         plifill,
+         ptrvalue,                                            /*0.9.2*/
+         stg,
+         string,
+         substr,
+         sysnull)                                              /*0.8c*/
+                             builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*      Entry Point                                                 */
+ /*------------------------------------------------------------------*/
+ sig_start:                                                /*20090721*/
+
+ /* Get starting and ending addresses of SIG code.  If a trap occurs */
+ /* in SIG, there's not much we can do but get out.                  */
+ /* NOTE: Forward reference to a label via addr(label)               */
+ /*       will be zero. (BUG#106)                                    */
+ my_start_addr = addr(sig_start);                          /*20090721*/
+ my_end_addr   = addr(sig_end)+6800;                       /*20090721*/
+ 
+ /* NOTE: Now we need to set 'condmask' from the caller's DSA.       */ 
+ p = addr(parmlist);                   /* p->Parameter List          */
+ pDSA   = GetDSA();                    /* pDSA->My EBP               */
+ pDSA   = pDSA - stg( sysnull()->dsa_below_ebp );
+ my_edi = pDSA->dsa_edi;               /* Save A(PGT)                */
+ pTCB   = GetTCB(0);		       /* Get my TCB address 20101217*/ 
+ call build_ircb(p);                   /* Build IRCB                 */
+
+ addr(IRCB_storage)->IRCBOnCode = curr_OnCode;
+
+ do while('1'b);                       /* Recursively process cond   */
+
+   /*----------------------------------------------------------------*/
+   /*      Identify condition and default action                     */
+   /*----------------------------------------------------------------*/
+   do i=1 to 25; /* to HBOUND(...) */
+     if oncode_value(i) = 0           then leave;  /* Error - SNO    */
+     if oncode_value(i) = curr_OnCode then leave;  /* Matched        */
+     end; /* do i */
+
+   /* Curently, if we don't exit FPU exceptions via the system       */
+   /* trap handler, the FPU state is not reset and remains in        */
+   /* the error condition.  This applies to the following code       */
+   /* when the condition is not enabled, and also to an abnormal     */
+   /* exit from an ON-unit.                                          */
+ 
+   /*--------------------------------------------------------20050627*/
+   /*      Check that condition is enabled                   20050627*/
+   /*--------------------------------------------------------20050627*/
+   call get_entry_name;                /* Get ent nm/mask    20050627*/
+   /* 'cond_mask_bit' = '0000'bx means condition is always enabled.  */
+   /* If condition is not enabled, just exit.                        */
+   if cond_mask_bit(i)^='0000'bx then do;                  /*20050627*/
+     if (condmask&cond_mask_bit(i))='0000'bx                  /*1.1.0*/
+     then return;                      /* Condition is disabled 50627*/
+     end; /* cond_mask_bit */                              /*20050627*/
+   curr_action = implicit_action(i);
+
+   /*----------------------------------------------------------------*/
+   /*       Check for ON-Unit                                        */
+   /* NOTE: Currently the STORAGE condition is not recoverable.      */
+   /*       Display error messages and exit.                         */
+   /*       Establishing an ON-Unit acquires heap storage, so we     */
+   /*       also need to be sure we don't execute any ON instructions*/    
+   /*----------------------------------------------------------------*/
+   curr_oncb = sysnull;
+   /* NOTE: Stop will execute "signal finish" which re-calls sig.    */
+   /*       Should probably execute "call osexit" here.              */    
+   if curr_oncode=450 then /*want_trace='1'b*/ stop;          /*1.1.1*/
+   else call find_oncb( pDSA );
+   if curr_oncb^=SYSNULL then do;      /* Enabled ON-Unit?           */
+     /* COMMENT: We're only checking for recursion within SIG.       */
+     /*          ABENDs in ON-Units should be handled by the user.   */
+     call process_oncb( curr_oncb );   /* Invoke the ON-Unit         */
+     /* On-statement with the 'system' keyword will cause the    0.8d*/
+     /* implicit action rather than the normal return action.    0.8d*/
+     if (curr_oncb->onc_flags&'02'bx)='00'bx /* Other than 'system'? */
+     then curr_action = normal_return(i);    /* 'normal return'      */
+     if curr_OnCode = oncode_conv &    /* CONVERSION         20050111*/
+        addr(IRCB_storage)->IRCBStatus^=0/* ONSOURCE,ONCHAR PV0050111*/
+     then curr_action = '40'bx;        /* Retry the conversio20050111*/
+     /* IBM: "If the ONSOURCE or ONCHAR pseudovariable is used,      */
+     /*      the program retries the conversion on return from       */
+     /*      the ON-unit."  -SC26-3114-02, p.313                     */
+     end;
+
+   /*----------------------------------------------------------------*/
+   /*      Take implicit or 'normal_return' action                   */
+   /*----------------------------------------------------------------*/
+   /*  curr_action '80'bx - Print error message                      */
+   if substr(curr_action,1,1)='1'b |   /* Error message?             */
+      want_trace                       /* (also print if SNAP)       */
+   then call display_msg;                                     /*0.9.9*/
+
+   if want_trace                       /* Print traceback if SNAP    */
+   then call TRACE( addr(IRCB_storage)->IRCBEBP );         /*20061101*/
+
+   /* Exit code modified for tasking support 0.9.2	     20101217*/
+   if curr_OnCode = oncode_finish      /* Normal return from FINISH  */
+   then do;						   /*20101217*/
+     pTCB->TCB_status = curr_OnCode;   /* Set error status   20110430*/    
+     goto pTCB->TCB_Exit;	       /* GOTO exit routine  20101217*/
+     end;						   /*20101217*/
+
+   /*  curr_action '40'bx - Continue execution                       */
+   if (curr_action&'40'bx)^='00'bx then return;  /* Cont/Retry  1.1.1*/
+
+   /*  curr_action '10'bx - Endpage processing if no ON-Unit         */
+   if (curr_action&'10'bx)^='00'bx then do;
+     call implicit_endpage( pFile );                           /*0.8d*/
+     return;                                                  /*1.1.1*/
+     end;
+
+   /*  curr_action '08'bx - Raise the FINISH condition               */
+   if (curr_action&'08'bx)^='00'bx then do;      /* Signal FINISH    */
+     curr_OnCode = oncode_finish;                /* (only main task) */
+     /* Signal FINISH for the main task.  Normal return from         */
+     /* FINISH in this case will terminate execution.                */
+     end;
+
+   /*  curr_action '01'bx - Raise the ERROR condition                */
+   if (curr_action&'01'bx)^='00'bx then do;
+     curr_OnCode = oncode_error;
+     end;
+
+   end; /* do while */
+   /*  (this loop never exits normally)                              */
+
+
+ /*------------------------------------------------------------------*/
+ /*      Get the entry name and enabled condition mask               */
+ /*      of procedure in error.                                      */
+ /*      This procedure does a lot of magic stuff.                   */
+ /*------------------------------------------------------------------*/
+ get_entry_name: proc;
+   dcl  (p,q)                ptr;                          /*20050627*/
+   dcl   x2                  char(2)             based;
+   dcl   f1                  fixed bin(7)        based;
+   dcl   c64                 char(64)            based;
+   dcl   l                   fixed bin(31);
+ 
+   /* COMMENT: Establishing an ON-Unit acquires heap storage for the */
+   /*          ONCB. If the STORAGE condition has been raised, there */
+   /*          may be no heap storage available.                     */
+   /*          There may be a way to finesse this.                   */
+   if curr_oncode^=450 then do;        /* 450=STORAGE         0.9.10e*/  
+     on error goto exit_get_entry_name;/* Handle SIGSEGV      0.9.10a*/
+     end;                                                   /*0.9.10e*/
+   entry_name = 'UNKNOWN';             /* Default if no entry        */
+   condmask   = '0000'bx;              /* Clear cond mask    20050627*/
+
+   /*----------------------------------------------------------------*/
+   /* COMMENT: pDSA points to current (SIG's) DSA.                   */
+   /*          if SIG was called by a SIGNAL statement, the prior    */
+   /*          DSA will be the calling procedure.  If SIG was        */
+   /*          called by the system trap handler, the prior DSA      */
+   /*          will be '_pli_Trap'.                                  */
+   /*----------------------------------------------------------------*/
+   isPLI = '0'b;                       /* Default = non-PL/I pgm0.9.9*/
+   p = pDSA->dsa_ebp;                  /* Load addr(prior DSA)       */
+   p = p - stg( sysnull()->dsa_below_ebp );
+   if addr(IRCB_storage)->IRCBExcRepRec^=SYSNULL() /* OS/2 except OS2*/
+   then do;                            /* Back up one DSA            */
+     p = p->dsa_ebp;
+     p = p - stg( sysnull()->dsa_below_ebp );
+     end;
+   if p->dsa_edi^=my_edi then return;  /* Not PL/I caller            */
+   addr(IRCB_storage)->IRCBOnLoc = p;  /* OnLoc->DSA here        0.7c*/
+   curr_DSA = p;                                              /*0.9.9*/
+   q = p->dsa_epa;                     /* Point to caller's ent050627*/
+   if q->x2^='FF17'x     then return;  /* Magic - instr at entr050627*/
+   isPLI = '1'b;                       /* This is PL/I program  0.9.9*/
+   /* NOTE: We should really address an entry to get this value      */
+   q = q-1;                            /* -> Length          20050627*/
+   l = q->f1;                          /*                    20050627*/
+   q = q-l;                            /* -> Entry name text 20050627*/
+   entry_name = substr(q->c64,1,l);    /* PL/I entry name    20050627*/
+   /* NOTE: Now we should back up to previous non-library procedure. */
+   condmask = p->dsa_msk;              /* Save cond mask     20050627*/
+   pSTT = p->dsa_stt;                  /* Save addr(STT)        0.9.9*/
+
+exit_get_entry_name:                                        /*0.9.10a*/
+   end get_entry_name;
+
+ /*------------------------------------------------------------------*/
+ /*      Initialize IRCB on stack                                    */
+ /*      This code is Intel and PL/I and OS/2 dependent.          OS2*/
+ /*                                                                  */
+ /*      The 'oncode' or zero will be the first argument (word,      */
+ /*      followed by a word of padding).                             */
+ /*                                                                  */
+ /*      If SIG was called by a PL/I SIGNAL statement, the oncode    */
+ /*      will be non-zero.  An optional second argument will point   */
+ /*      to a filename, condition name, etc..  The exception         */
+ /*      information will be on a standard PL/I stack.               */
+ /*                                                                  */
+ /*      The return address (trap address) is on the stack at        */
+ /*      Arglist-4.                                                  */
+ /*                                                                  */
+ /*      If SIG was called as a result of a system signal, the       */
+ /*      oncode will be zero, the second argument will be the        */
+ /*      address of the OS/2  EXCEPTIONREPORTRECORD,                 */
+ /*      and the third argument will be the                          */
+ /*      address of the context record.                              */
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ build_ircb: proc(p);
+   dcl   p                   ptr;
+   dcl   q                   ptr;
+   dcl   pf                  ptr;                             /*0.9.8*/
+   dcl   err_code            fixed bin(31);                /*20100224*/
+   dcl   RC                  fixed bin(31);
+   dcl   iFB31               fixed bin(31) based;
+   dcl   iFB15               fixed bin(15) based;
+   dcl   pVoid               ptr           based;
+   dcl   b16                 bit(16)       based;
+   dcl   thread              fixed bin(31);                     /*OS2*/
+   dcl   unk                 char(8) var   static init( 'UNKNOWN' );
+
+   eyecatcher = 'IRCB';                                        /*0.6a*/
+   call PLIFILL( addr(IRCB_storage), '00'x,      /* Clear IRCB       */
+                 stg(IRCB_storage) );
+   addr(IRCB_storage)->IRCBLen    = stg( sysnull()->IRCB );
+   p=p-stg(null()->iFB31);                       /* Back up to EIPOS2*/
+   curr_Loc = p->iFB31;                                         /*OS2*/
+   p=p+stg(null()->iFB31);                       /* Restore pointeOS2*/
+   /* The oncode is stacked as a word (2 bytes) followed by two      */
+   /* padding bytes                                                  */
+   curr_OnCode = p->iFB15;                       /* Set Oncode       */
+   p = p+stg(p);                                 /* ->Next ParametOS2*/
+
+   /*---------------------------------*/
+   /* System Signal                   */
+   /*---------------------------------*/
+   if curr_OnCode=0 then do;           /* Not a recursive error      */
+     curr_OnCode = oncode_error;
+     q = p->pVoid;                     /* A(ExceptionReportRecord)OS2*/
+     addr(IRCB_storage)->IRCBExcRepRec = q;                     /*OS2*/
+     addr(IRCB_storage)->IRCBError     = q->ExceptionNum;       /*OS2*/
+     q = addr(q->ExceptionAddress);                             /*OS2*/
+     curr_Loc = q->iFB31;                                       /*OS2*/
+     fmt_Loc = bsw( addr(curr_Loc) );            /* Swap bytes       */
+     fmt_OSErr = bsw( addr( addr(IRCB_storage)->IRCBError) );   /*OS2*/
+     p = p+stg(p);
+     q = p->pVoid;                     /* A(ContextRecord)           */
+     addr(IRCB_storage)->IRCBContext = q;
+     addr(IRCB_storage)->IRCBEBP = ptrvalue(q->ctx_RegEbp);/*20061101*/
+     q = addr( addr(IRCB_storage)->IRCBError );
+
+     /* Now check for defined errors:                                */
+     /*   XCPT_FLOAT_DIVIDE_BY_ZERO     'C0000095'x                  */
+     /*   XCPT_FLOAT_INEXACT_RESULT     'C0000096'x              0.8c*/
+     /*   XCPT_FLOAT_INVALID_OPERATION  'C0000097'x          20050627*/
+     /*   XCPT_FLOAT_OVERFLOW           'C0000098'x                  */
+     /*   XCPT_FLOAT_UNDERFLOW          'C000009A'x                  */
+     /*   XCPT_INTEGER_DIVIDE_BY_ZERO   'C000009B'x                  */
+     /*   XCPT_INTEGER_OVERFLOW         'C000009C'x                  */
+     /*   XCPT_PROCESS_TERMINATE        'C0010001'x                  */
+     /*   XCPT_ASYNC_PROCESS_TERMINATE  'C0010002'x                  */
+     /*   XCPT_SIGNAL                   'C0010003'x                  */
+     /*   (this should be a SELECT statement)                        */
+
+     /* Curently, if we don't exit FPU exceptions via the system     */
+     /* trap handler, the FPU state is not reset and remains in      */
+     /* the error condition.  This applies when the condition is not */
+     /* enabled, and also to an abnormal exit from an ON-unit.       */
+
+     /* FLOAT DIVIDE BY ZERO                                         */
+     if fmt_OSErr = 'C0000095'x /* XCPT_FLOAT_DIVIDE_BY_ZERO         */
+     then do;                                              /*20091007*/
+       /* Turn off the 'zdiv' bit in the saved FPU status word,      */
+       /* and if there are no other bits set, clear the error summary*/
+       q = addr(IRCB_storage)->IRCBContext;                /*20091007*/
+       q = addr(q->ctx_fpsw);   /* addr(status word)         20091007*/
+       substr(q->b16,8,1)='0'b; /* Turn off invalid op bit   20091007*/
+       if substr(q->b16,2,7)='0000000'b /* Any other errors? 20091007*/
+       then substr(q->b16,1,1)='0'b;  /* No, turn off summary20091007*/
+       curr_OnCode = oncode_zdiv;
+       end; /* XCPT_FLOAT_DIVIDE_BY_ZERO */                /*20091007*/
+
+     /* FLOAT OVERFLOW                                               */
+     if fmt_OSErr = 'C0000098'x /* XCPT_FLOAT_OVERFLOW               */
+     then do;                                              /*20091007*/
+       /* Turn off the 'overflow' bit in the saved FPU status word,  */
+       /* and if there are no other bits set, clear the error summary*/
+       curr_OnCode = oncode_ofl;                           /*20091007*/
+       q = addr(IRCB_storage)->IRCBContext;                /*20091007*/
+       pf = addr(q->ctx_fpsw);    /* addr(status word)          OSDEP*/
+       pf->b16 = pf->b16 & 'F7FF'bx;    /* Turn off overflow bit0.9.8*/
+       if (pf->b16&'7F00'bx)='0000'bx   /* Any other errors?    0.9.8*/
+       then pf->b16 = pf->b16 & '7FFF'bx;   /* No, turn off summary.8*/
+       call plifill( addr(q->ctx_stack), '00'x, 10 );         /*OSDEP*/
+       q->ctx_fpsw = pf->b16;
+       call Put_X87(q);                 /* Reset FPU status     0.9.8*/
+       end; /* OVERFLOW */                                 /*20091007*/
+
+     /* FLOAT UNDERFLOW                                              */
+     if fmt_OSErr = 'C000009A'x /* XCPT_FLOAT_UNDERFLOW              */
+     then do;                                              /*20091006*/
+       /* Turn off the 'underflow' bit in the saved FPU status word, */
+       /* and if there are no other bits set, clear the error summary*/
+       q = addr(IRCB_storage)->IRCBContext;                /*20091006*/
+       pf = addr(q->ctx_fpsw);                                /*OSEEP*/
+       call plifill( addr(pf->ctx_stack), '00'x, 10 );        /*OSDEP*/
+       pf = addr(q->ctx_fpsw);    /* addr(status word)          OSDEP*/
+       substr(pf->b16,4,1)='0'b;  /* Turn off underflow bit   0091007*/
+       if substr(pf->b16,2,7)='0000000'b  /* Any other errors?0091007*/
+       then substr(pf->b16,1,1)='0'b;   /* No, turn off summary091007*/
+       curr_OnCode = oncode_ufl;
+       if substr(pf->b16,7,1)='1'b     /* Denormalized operand  0.9.2*/
+       then curr_OnCode = oncode_error;                       /*0.9.2*/
+       end; /* UNDERFLOW */                                /*20091006*/
+
+      if fmt_OSErr = 'C0000096'x /* XCPT_FLOAT_INEXACT_RESULT         */
+     then do;
+      /*------------------------------------------------------------*/
+       /* COMMENT: This is debug code for XCPT_FLOAT_INEXACT_RESULT. */
+       /*          This exception is not an error.  Stupid INTEL     */
+       /*          generates this when an operation results in loss  */
+       /*          of precision, for example the CP Reference        */
+       /*          uses the example of 1.0/3.0 which generates .333..*/
+       /*          to any precision.  In this case the FPU truncates */
+       /*          the result and raises this exception.             */
+       /*          TRAP clears the FPU exception flags and continues */
+       /*          from the point of interruption without ever       */
+       /*          calling SIG, so this code will never be executed. */
+       /*          This is *not* the same as underflow.              */
+       /*                                                            */
+       /*          This condition is recognized and ignored bu Trap  */
+       /*                                                            */
+       /*------------------------------------------------------------*/
+       end; /* XCPT_FLOAT_INEXACT_RESULT */
+
+     /* FLOAT INVALID OPERATION                                      */
+     if fmt_OSErr = 'C0000097'x /* XCPT_FLOAT_INVALID_OPERATI20050627*/
+     then do;                                              /*20050627*/
+       /*------------------------------------------------------------*/
+       /* COMMENT: XCPT_FLOAT_INVALID_OPERATION can be generated by  */
+       /*          an FBSTP or FIST[P] if the source is too big      */
+       /*          to be represented in the target format.           */
+       /*          This is interpreted as FIXEDOVERFLOW.             */
+       /*          In all other cases it should be ERROR.            */
+       /*          The ContextRecord field 'ctx_env' contains the    */
+       /*          X87 environment as saved by FSTENV.  Bytes 16-17  */
+       /*          of this area contain the opcode that caused the   */
+       /*          exception.  See _IA-32 Intel Architecture         */
+       /*          Software Developer's Manual_ Vol 1, p.8-14.       */
+       /* NOTE:    ST(0) in ContextRecord should be zeroed.          */
+       /* NOTE: Need to check that this is an FBSTP instruction.     */
+       /*------------------------------------------------------------*/
+       /* Turn off the 'inv op' bit in the saved FPU status word,    */
+       /* and if there are no other bits set, clear the error summary*/
+       q = addr(IRCB_storage)->IRCBContext;                /*20091007*/
+       pf = addr(q->ctx_fpsw);  /* addr(status word)         20091007*/
+       pf->b16 = pf->b16 & 'FEFF'bx;    /* Turn off inv op bit  0.9.8*/
+       if (pf->b16&'4000'bx)='4000'bx   /* Stack fault?        0.9.10*/
+       then do;                                              /*0.9.10*/
+         curr_OnCode = oncode_error;                         /*0.9.10*/
+         return;                                             /*0.9.10*/
+         end;                                                /*0.9.10*/
+       if (pf->b16&'7F00'bx)='0000'bx   /* Any other errors?    0.9.8*/
+       then pf->b16 = pf->b16 & '7FFF'bx;   /* No, turn off summary.8*/
+       call plifill( addr(q->ctx_stack), '00'x, 10 );         /*OSDEP*/
+        curr_OnCode = oncode_fofl;                          /*20100304*/
+       end; /* XCPT_FLOAT_INVALID_OPERATION */             /*20050627*/
+
+     if fmt_OSErr = 'C000009B'x /* XCPT_INTEGER_DIVIDE_BY_ZERO       */
+     then curr_OnCode = oncode_zdiv;
+     if fmt_OSErr = 'C000009C'x /* XCPT_INTEGER_OVERFLOW             */
+     then curr_OnCode = oncode_fofl;                       /*20100304*/
+
+     /* XCPT_ASYNC_PROCESS_TERMINATE = killed by another thread.     */
+     if fmt_OSErr = 'C0010002'x /* XCPT_ASYNC_PROCESS_TERMINATE 0.9.1*/
+     then do;                                                 /*0.9.1*/
+       curr_oncode = oncode_finish;                           /*0.9.2*/
+       end; /* XCPT_ASYNC_PROCESS_TERMINATE */                /*0.9.1*/
+
+     if fmt_OSErr = 'C0010003'x /* XCPT_SIGNAL                       */
+     then do;
+       q = addr(IRCB_storage)->IRCBExcRepRec;    /* q->ExceptRepRec  */
+       /*------------------------------------------------------------*/
+       /* COMMENT: The OS/2 asynchronous signal process breaks the   */
+       /*          DSA backchain, so this can't be used to locate    */
+       /*          the active ATTENTION ONCB. Instead, the RTL       */
+       /*          routine for the ON statement maintains a chain    */
+       /*          of (only) ATTENTION ONCBs anchored in the         */
+       /*          ExecptionRegistrationRecord.  This address is     */
+       /*          passed ...                                        */
+       /*------------------------------------------------------------*/
+       if q->ExceptionInfo(1) = 1                /* Interrupt (³C)   */
+       then do;
+         curr_OnCode = oncode_attn;              /* SIGNAL ATTENTION */
+         p = p+stg(p);                           /* addr(ONCB_addr)  */
+         curr_oncb = p->pVoid;                   /* addr or SYSNULL  */
+         end;
+       /* The following signals are not processed:                   */
+       /*   ExceptionInfo(1)=3: XCPT_SIGNAL_KILLPROC                 */
+       /*   ExceptionInfo(1)=4: XCPT_SIGNAL_BREAK                    */
+       RC = DosAcknowledgeSignalException( q->ExceptionInfo(1) );
+       /* COMMENT: Need to acknowledge the signal here.  If the      */
+       /*          On-Unit exits with a GOTO all further signals     */
+       /*          would be blocked.                                 */
+       end; /* XCPT_SIGNAL */
+
+     return;
+
+     end; /* System Signal */
+
+   /*---------------------------------*/
+   /* PL/I Signal                     */
+   /*---------------------------------*/
+   fmt_Loc = bsw( addr(curr_Loc) );              /* Swap bytes       */
+   fmt_OSErr = (4)'00'x;
+
+   addr(IRCB_storage)->IRCBEBP = pDSA->dsa_ebp;  /* Caller's EBP61101*/
+   if curr_OnCode=oncode_cond then do; /* CONDITION                  */
+     addr(IRCB_storage)->IRCBCondition   = p->pVoid;
+     return;
+     end; /* CONDITION */
+   if curr_OnCode=oncode_name then do; /* NAME                       */
+     q = p->pVoid;                               /*          20040331*/
+     if q^=SYSNULL then do;                      /*          20040331*/
+       addr(IRCB_storage)->IRCBDataField = q->pVoid;       /*20040708*/
+       q = q+stg(q);
+       addr(IRCB_storage)->IRCBOnFile    = q->pVoid;
+       end; /* ^SYSNULL */                       /*          20040331*/
+     return;
+     end; /* NAME */
+   if curr_OnCode=oncode_conv then do; /* CONVERSION                 */
+     q = p->pVoid;                     /* Addr(parms)        20040331*/
+     if q^=SYSNULL then do;            /* Not 'SIGNAL CONV'  20040331*/
+       addr(IRCB_storage)->IRCBOnSource  = q->pVoid;       /*20040708*/
+       q = q+stg(q);
+       addr(IRCB_storage)->IRCBOnChar    = q->pVoid;
+       q = q+stg(q);
+       if q->pVoid ^= SYSNULL()                            /*20040708*/
+       then addr(IRCB_storage)->IRCBOnFile =               /*20040708*/
+                q->pVoid->FC_pName;                        /*20040708*/
+       end; /* ^SYSNULL */                                 /*20040331*/
+     return;
+     end; /* CONVERSION */
+   /* For I/O Conditions, p->FILE */
+   if curr_OnCode=oncode_name     |    /* I/O Condition              */
+      curr_OnCode=oncode_record   |
+      curr_OnCode=oncode_transmit |
+      curr_OnCode=oncode_key      |
+      curr_OnCode=oncode_endfile  |
+      curr_OnCode=oncode_undf     |
+      curr_OnCode=oncode_endpage  |
+      curr_OnCode=oncode_pending
+   then do;
+     pFile = p->pVoid;                                         /*0.8d*/
+     if pFile=sysnull()                                       /*0.9.3*/
+     then do;                                                 /*0.9.3*/
+       addr(IRCB_storage)->IRCBOnFile = addr(unk);            /*0.9.3*/
+       end;                                                   /*0.9.3*/
+     else do;                                                 /*0.9.3*/
+       addr(IRCB_storage)->IRCBOnFile = pFile->FC_pName;       /*0.8d*/
+       p = PLI_IOStat(pFile);          /* Get last status        0.8d*/
+       end;                                                   /*0.9.3*/
+     if p^=SYSNULL then do;                                /*20040420*/
+     /*
+      .NOTE: Need to set ONKEY data.
+      .addr(IRCB_storage)->IRCBOnKeyAddr = p->pVoid;
+      */
+       end;                                                /*20040420*/
+     end; /* I/O Condition */
+   return;
+
+   end build_ircb;
+
+ /*------------------------------------------------------------------*/
+ /*      Check for Active ON-statement                               */
+ /*------------------------------------------------------------------*/
+ find_oncb: proc(px);
+   dcl  (p,px)               ptr;
+   dcl   epp                 ptr;
+   dcl   name_len            fixed bin(7);
+   dcl   match               bit(1)              init( '0'b );
+   dcl   fb7                 fixed bin(7)        based;
+   dcl   entry               char(9)             based;
+   dcl   x2                  char(2)             based;
+
+ curr_oncb = SYSNULL;                                     /*20050105*/
+ on error goto exit_find_oncb;        /* Handle SIGSEGV      0.9.10c*/
+ /*-----------------------------------*/
+ /* Back up until we find a PL/I DSA  */
+ /* other than _pli_Trap.  If none    */
+ /* found, there is no On-Unit.       */
+ /*-----------------------------------*/
+ p = px;                               /* addr(DSA_for_Error)        */
+ find_pli_proc: do;
+   do while( '1'b );                   /* Locate last PL/I procedure */
+   p = p->dsa_ebp;                     /* Back up on stack           */
+
+   if p=SYSNULL then return;           /* Should not occur           */
+   p = p - stg( sysnull()->dsa_below_ebp ); /* -> DSA                */
+   
+   /* Error - DSA chain clobbered                                    */
+   if p<px then do;                    /* DSAs should be in desc0.9.8*/
+     /* User-provided emergency Bailout may be available        0.9.8*/
+     /* if all else fails. [Added for XPL]                      0.9.8*/
+     if pTCB->TCB_trap_DSA^=SYSNULL() then do;                /*0.9.8*/
+       p = pTCB->TCB_trap_DSA;                                /*0.9.8*/
+       p = p - stg( sysnull()->dsa_below_ebp ); /* -> DSA       0.9.8*/
+       leave find_pli_proc;            /* And so we have it   /*0.9.8*/
+       end;                                                   /*0.9.8*/
+     /* Otherwise there's nothing to be done                    0.9.8*/  
+     call plidump( 'tfshb', 'Storage corrupted' );          /*0.9.10d*/
+     call exit;                                               /*0.9.8*/
+     end;                                                     /*0.9.8*/
+     
+   /*---------------------------------*/
+   /* The following code checks to    */
+   /* see if a stack frame identifies */
+   /* a PL/I procedure not _pli_Trap. */
+   /* Same code in OnRev              */
+   /*---------------------------------*/
+ check_for_pli: do;
+     if p->dsa_edi ^= my_edi           /* Can't be PL/I              */
+     then leave check_for_pli;
+     epp = p->dsa_epa;                 /* Point to caller's entry    */
+     if epp->x2^='FF17'x               /* Magic - instr at entry pt  */
+     then leave check_for_pli;         /* Not PL/I                   */
+     /* NOTE: We should really address an entry to get this value    */
+     /* Check for 'special' entries, '_pli_Init' (end of chain),     */
+     /* '_pli_Trap (OS/2 exception handler), or                      */
+     /* '_pli_Thrd (begin_thread entry).                             */
+     epp = epp-1;                      /* -> Entry_name_length       */
+     name_len = epp->fb7;              /* Length(entry_name)         */
+     epp = epp-name_len;               /* Addr(entry_name)           */
+     if name_len=9 then do;            /* Check _pli_Init            */
+       if epp->entry = '_pli_Init' then return; /* Head of chain     */
+       if epp->entry = '_pli_Trap' then leave check_for_pli;
+       if epp->entry = '_pli_Thrd' then leave find_pli_proc;  /*0.9.4*/
+       end;
+     leave find_pli_proc;              /* This is a PL/I proc        */
+     end check_for_pli;
+   end; /* do while */
+ end find_pli_proc;
+
+   /*-------------------------------------------*/
+   /* Set the ONCB chain from the most recent   */
+   /* PL/I proc in case it's needed later.      */
+   /* Chase the ONCB chain.                     */
+   /*-------------------------------------------*/
+   p=p->dsa_chc;                                 /* ONCB chain       */
+   pDSA->dsa_chc = p;                            /*          20061102*/
+
+   do while( p^=SYSNULL );
+
+     if curr_OnCode = p->onc_cond then do;
+       if curr_OnCode = oncode_cond then do;     /* CONDITION        */
+         if p->onc_pname->onc_cname =
+             addr(IRCB_storage)->IRCBCondition->onc_cname
+         then match='1'b;
+         end; /* CONDITION */
+       else if (curr_action&'02'bx)^='00'bx      /* I/O Condition    */
+       then do;
+         if p->onc_pname->onc_cname =
+             addr(IRCB_storage)->IRCBOnFile->onc_cname
+         then match='1'b;
+         end; /* I/O Condition */
+       else match='1'b;                          /* Any other cond   */
+       end; /* oncode equal */
+     if match then do;
+       curr_oncb = p;                            /* -> ONCB          */
+       return;
+       end; /* match */
+     p = p->onc_next;
+
+exit_find_oncb:                                            /*0.9.10c*/
+   end; /* do while */
+
+   end find_oncb;
+
+ /*------------------------------------------------------------------*/
+ /*      Check for Active ON-statement                               */
+ /*------------------------------------------------------------------*/
+ process_oncb: proc(px);
+   dcl  (p,px)               ptr;
+
+   p = px;
+   /*---------------------------------*/
+   /* Check actions specified         */
+   /*---------------------------------*/
+   if (p->onc_flags&'01'bx)^='00'bx    /* SNAP                       */
+   then want_trace='1'b;
+   if (p->onc_flags&'02'bx)^='00'bx    /* SYSTEM                     */
+   then return;                        /* Take implicit action       */
+   if (p->onc_flags&'04'bx)^='00'bx    /* Null ON-Unit               */
+   then return;                        /* Take normal return         */
+
+   /*----------------------------------------------------------------*/
+   /* Now call the On-Unit and pass the address of the IRCB          */
+   /* as a parameter.  If On-Unit does not terminate with a GOTO     */
+   /* continue with the implicit action.                             */
+   /*----------------------------------------------------------------*/
+   call p->onc_unit( addr(IRCB_storage) );
+
+   return;
+
+   end process_oncb;
+ 
+ /*-------------------------------------------------------------0.9.9*/
+ /*      Display error messages                                 0.9.9*/
+ /*-------------------------------------------------------------0.9.9*/
+display_msg: proc;                                            /*0.9.9*/
+  /* See comment about handling STORAGE conditions */
+  if curr_oncode^=450 then do;                              /*0.9.10e*/
+    on error return;                     /* Handle SIGSEGV     0.9.10*/
+    end;                                                    /*0.9.10e*/
+  line = oncode_nm(i) || ' condition raised at address ' ||
+         heximage( addr(fmt_Loc), 4 );
+  display( line );
+  line =
+      '  in procedure with entry ' || entry_name;
+  display( line );
+  if pSTT^=sysnull() then do;             /* PL/I line numbers  0.9.9*/
+    call display_line_num;                                    /*0.9.9*/
+    end; /* PL/I */                                           /*0.9.9*/
+  line = '  Thread = ' || pTCB->TCB_tid;                      /*0.9.2*/
+  display( line );                                            /*0.9.2*/
+  if curr_OnCode=oncode_cond           /* CONDITION condition20040517*/
+  then do;
+    line = '  condition=' ||
+           addr(IRCB_storage)->IRCBcondition->onc_cname;
+    display( line );
+    end; /* cond */                                        /*20040517*/
+  if (curr_action&'02'bx)^='00'bx      /* I/O Condition      20040120*/
+  then do;
+    line =
+      '  ONFILE=' || addr(IRCB_storage)->IRCBOnFile->File_Name;
+    display( line );
+    end; /* I/O */                                         /*20040120*/
+  if fmt_OSErr^=(4)'00'x               /* System error code     OSDEP*/
+  then do;
+     line =
+       '  System Code=' || heximage(addr(fmt_OSErr),4) ||     /*OSDEP*/
+       ' ' || xcpt_name(fmt_OSErr);                           /*OSDEP*/
+     display( line );
+    end; /* System error */
+  return; /* TEMPORARY */  
+    
+  /* COMMENT: If this is an assembler or library program             */
+  /*          back up to calling user program                        */ 
+  if (curr_DSA->dsa_msk&'0001'bx)^='0000'bx then do;
+    display( 'is library module' );
+    call plidump('tcb', 'z' );
+    end;
+    
+  display_line_num: proc;
+    dcl   pName               ptr;
+    dcl   pIRCB               ptr;
+    dcl   p                   ptr;
+    dcl   mod_addr            fixed bin(31);
+    dcl   offset              fixed bin(31);
+    dcl   line                fixed bin(15);
+    /* COMMENT: The syntax atoms only use precision (15) for         */
+    /*          line numbers. so there's no point in using more here.*/
+    dcl   unknown             char(7)   varying   static
+            init( 'UNKNOWN' );
+    dcl   pic5                pic'zzzz9';            
+
+    mod_addr = BINVALUE(pSTT - pSTT->stt_off);
+    pName = addr(unknown);
+    if pSTT->stt_nm_off^=0 then pName = pSTT + pSTT->stt_nm_off;
+    offset = abs(curr_loc - mod_addr);
+    p = addr(pSTT->stt_end);
+    line = 0;
+    do while( '1'b );
+      if p->stt_stoff>offset then leave;
+      if p->stt_off=-1 then leave;
+      line = p->stt_line;
+      p = addr(p->stt_next);
+      end; 
+    pic5 = line;       
+    display( '  at line number' || pic5 ||                    /*0.9.9*/
+             ' in compile unit ' || pName->stt_name );        /*0.9.9*/
+    end display_line_num;
+         
+exit_display:                                               /*0.9.10a*/
+  end display_msg;                                            /*0.9.9*/
+
+ /*------------------------------------------------------------------*/
+ /*      Swap byte-order for display                                 */
+ /*------------------------------------------------------------------*/
+ bsw: proc(p) returns( char(4) );
+   dcl   p                   ptr;
+   dcl   cx               (4)char(1)   based(p);
+   dcl   cy               (4)char(1);
+   cy(4) = cx(1);            /* OR cy = reverse(cx)                  */
+   cy(1) = cx(4);
+   cy(3) = cx(2);
+   cy(2) = cx(3);
+   return( string(cy) );
+   end bsw;
+
+ /*------------------------------------------------------------------*/
+ /*      Look up System exception name                               */
+ /*------------------------------------------------------------------*/
+ xcpt_name: sig_name: proc(code) returns( char(30) varying );/*.9.10c*/
+   dcl   code                char(4);                           /*OS2*/
+   dcl   i                   fixed bin(7);                      /*OS2*/
+   do i=1 to hbound(os2_xcpt_code,1);                           /*OS2*/
+     if code = os2_xcpt_code(i) then leave;                     /*OS2*/
+     if code = 'FFFFFFFF'x      then leave;                     /*OS2*/
+     end; /* do i */                                            /*OS2*/
+     return( os2_xcpt_name(i) );                                /*OS2*/
+   end xcpt_name;
+
+ %page;
+
+ %include IRCB;
+ %include ONCB;
+ %include DSA;
+ %include EXRPTREC;
+ %include ONCODE;
+ %include FILE;
+ %include IOONC;
+ %include XCPT;
+ %include TCB;                                                  /*OS2*/
+ %include STT;                                                /*0.9.9*/
+ 
+ sig_end: ;                                                /*20090721*/
+ end pli_Sig;

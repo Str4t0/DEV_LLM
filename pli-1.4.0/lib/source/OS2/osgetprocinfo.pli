@@ -1,0 +1,111 @@
+ /* _pli_OSGetProcInfo                                               */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSGetProcInfo (PL/I Runtime)            */
+ /*      Version:       1.0                                          */
+ /*      Date:          Feb, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSGetProcInfo                           */
+ /*                                                                  */
+ /*      Function:      Retrieve various process information about   */
+ /*                     the current process and thread.              */
+ /*                                                                  */
+ /*                     This procedure is passed the address of a    */
+ /*                     pliprocinfo structure.  The first dword in   */
+ /*                     the structure is the area length.  As much   */
+ /*                     information is returned as will fit, and     */
+ /*                     the length field is set to the size of the   */
+ /*                     data returned.                               */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     OS/2  DosGetInfoBlocks                       */
+ /*                     Linux System Call interface.                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | ->pliprocinfo                        |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Returns the positive size of the returned    */
+ /*                     data.                                        */
+ /*                                                                  */
+ /*      Called from:   anywhere                                     */
+ /*                                                                  */
+ /*      Errors:        none                                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ getprocinfo: proc (pProcInfo)  
+              returns( fixed bin(31) )                                   
+              external( '_pli_OSGetProcInfo' )
+              options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pProcInfo            ptr;      /* ->caller's pliprocinfo     */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pTIB                ptr;
+ dcl     pPIB                ptr;
+ dcl     RC                  fixed bin(31);
+ dcl    (len,max_len)        fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl    1 PLIProcInfo         based,
+          5 pi_len            fixed bin(31),      /* Size of area    00*/
+	  5 pi_pid            fixed bin(31),      /* Process id      04*/
+	  5 pi_tid            fixed bin(31),      /* Thread id       08*/
+	  5 fil1              char(20),           /* Reserved        0C*/
+	  5 pi_uid            fixed bin(31),      /* User id         20*/
+	  5 pl_gid            fixed bin(31);      /* Group id        24*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosGetInfoBlocks    entry(ptr,ptr)
+                             external( 'DosGetInfoBlocks' )
+                             returns( fixed bin(31) ) /* unsigned */
+                             options( asm linkage(system) );
+
+ dcl      plifill             builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ len = pProcInfo->pi_len;               /* Initialize pliprocinfo    */
+ call plifill( pProcInfo, '00'x, len );
+ RC = DosGetInfoBlocks( addr(pTIB), addr(pPIB) );
+ max_len=4;                             /* length of data returned   */
+ if len>=8 then do;
+   max_len=8;
+   pProcInfo->pi_pid = pPib->pib_ulpid;
+   end;
+ if len>=12 then do;
+   max_len=12;
+   pProcInfo->pi_tid = pTIB->tib_ptib2->tib2_ultid;
+   end;
+ /* OS/2 has no gid or uid */
+ pProcInfo->pi_len = max_len;           /* Set returned length       */
+ return( max_len );                     /* Exit                      */
+
+ %include PIB;
+ %include TIB;
+
+ end getprocinfo;  

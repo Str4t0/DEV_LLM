@@ -1,0 +1,146 @@
+ /* _pli_KBS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_KBS (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2006                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_KBS  Generalized bit string concatenate.*/
+ /*                                                                  */
+ /*      Function:      Concatenate two bit strings of arbitrary     */
+ /*                     alignment and length.                        */
+ /*                                                                  */
+ /*      Dependencices: PL/I Descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence: (not user-callable)                       */
+ /*                     DCL KBS entry( pSrc1, pDSrc1, pSrc2, pDSrc2, */
+ /*                                    pDst, pDDst )                 */
+ /*                                ext( '_pli_KBS' )                 */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     call KBS( addr(source1_string),              */
+ /*                               addr(source1_descriptor),          */
+ /*                               addr(source2_string),              */
+ /*                               addr(source2_descriptor),          */
+ /*                               addr(target_string),               */
+ /*                               addr(target_descriptor) );         */
+ /*                                                                  */
+ /*      The following conditions are guaranteed:                    */
+ /*       .  Dest nonvarying ALIGNED                                 */
+ /*       .  Dest size large enough to hold the result.              */
+ /*       .  If either source string is the SUBSTR builtin,          */
+ /*          STRINGRANGE will have been already checked if enabled.  */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ KBS: proc( xpSrc1, xpDSrc1, xpSrc2, xpDSrc2, xpDst, xpDDst )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_KBS' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xpSrc1              ptr;                /* ->Source1 string */
+ dcl     xpDSrc1             ptr;                /* ->Source1 descr  */
+ dcl     xpSrc2              ptr;                /* ->Source2 string */
+ dcl     xpDSrc2             ptr;                /* ->Source2 descr  */
+ dcl     xpDst               ptr;                /* ->Target string  */
+ dcl     xpDDst              ptr;                /* ->Target descript*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pSrc1               ptr;                /* ->Src1 string    */
+ dcl     pDSrc1              ptr;                /* ->Src1 descript  */
+ dcl     pSrc2               ptr;                /* ->Src2 string    */
+ dcl     pDSrc2              ptr;                /* ->Src2 descript  */
+ dcl     pDst                ptr;                /* ->Target string  */
+ dcl     pDDst               ptr;                /* ->Target descript*/
+ dcl     target_descriptor   like pli_ded_STR;   /* Target descripror*/
+ dcl     src1_length         fixed bin(31);      /* Source lengths   */
+ dcl     src2_length         fixed bin(31);      /*   "       "      */
+ dcl     p                   ptr;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     b                   bit(8)              based;
+ dcl     Varying_String      char(0)   varying   based;
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     MBS                 entry( ptr, ptr, ptr, ptr )
+                             external( '_pli_MBS' )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,length,mod,plimove,stg,string)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Set up condition handling         */
+ /*-----------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+
+ /*-----------------------------------*/
+ /* Copy Arguments                    */
+ /*-----------------------------------*/
+ pSrc1  = xpSrc1;
+ pDSrc1 = xpDSrc1;
+ pSrc2  = xpSrc2;
+ pDSrc2 = xpDSrc2;
+ pDst   = xpDst;
+ pDDst  = xpDDst;
+
+ /*-----------------------------------*/
+ /* Make copy of target descriptor    */
+ /*   and clear the target field.     */
+ /*-----------------------------------*/
+ call plimove( addr(target_descriptor), pDDst,
+               stg(target_descriptor) );
+ p = pDst + (pDDst->pli_ded_STR.ST_len-1)/8;/* Addr(Last_target_byte)*/
+ p->b = '00'bx;                             /* Clear last byte       */
+
+ /*-----------------------------------*/
+ /* Get lengths of source strings     */
+ /*-----------------------------------*/
+ if pDSrc1->pli_ded_STR.ST_id = '20'x  /* Source1 fixed?             */
+ then src1_length = pDSrc1->pli_ded_STR.ST_len;
+ else src1_length = length(pSrc1->Varying_String);
+ if pDSrc2->pli_ded_STR.ST_id = '20'x  /* Source2 fixed?             */
+ then src2_length = pDSrc2->pli_ded_STR.ST_len;
+ else src2_length = length(pSrc2->Varying_String);
+
+ /*-----------------------------------*/
+ /* Move Source1 String               */
+ /*-----------------------------------*/
+ target_descriptor.ST_len = src1_length;
+ call MBS( pSrc1, pDSrc1, pDst, addr(target_descriptor) );
+
+ /*-----------------------------------*/
+ /* Move Source2 String               */
+ /*-----------------------------------*/
+ target_descriptor.ST_len = src2_length;
+ pDst = pDst + (src1_length/8);                  /* Adj target addr  */
+ target_descriptor.ST_bo  = mod(src1_length,8);  /*   and offset     */
+ call MBS( pSrc2, pDSrc2, pDst, addr(target_descriptor) );
+
+ return;
+
+ %page;
+ %include DESC;
+
+ end KBS;

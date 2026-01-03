@@ -1,0 +1,256 @@
+ /* _pli_MBS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_MBS (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Dec, 2005                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_MBS  Generalized bit string move.       */
+ /*                                                                  */
+ /*      Function:      Move bit string of arbitrary alignment       */
+ /*                     and length.                                  */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence: (not user-callable)                       */
+ /*                     DCL MBS entry( pSrc, pDSrc, pDst, pDDst )    */
+ /*                                ext( '_pli_MBS' )                 */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     call MBS( addr(source_string),               */
+ /*                               addr(source_descriptor),           */
+ /*                               addr(target_string),               */
+ /*                               addr(target_descriptor) );         */
+ /*                                                                  */
+ /*      Description: This is the lowest-level bit string move,      */
+ /*                   from which other functions may be built,       */          
+ /*                   so it only used short, fixed-length bit        */
+ /*                   strings.                                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   * It might be possible to rewrite this in      */
+ /*                     assembler once the algorithm is debugged.    */
+ /*                   * It might also be possible to generalize      */
+ /*                     this to dwords instead of bytes.             */
+ /*                   * If the source and target strings have the    */
+ /*                     same offset, the move should be done by      */
+ /*                     moving leading bits up to byte boundary,     */
+ /*                     doing a character move up to trailing        */
+ /*                     byte boundary, then moving trailing bits.    */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2023-03-19: Rewritten for 1.0.1                    1.0.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ MBS: proc( xpSrc, xpDSrc, xpDst, xpDDst )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_MBS' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xpSrc               ptr;                /* ->Source string  */
+ dcl     xpDSrc              ptr;                /* ->Source descript*/
+ dcl     xpDst               ptr;                /* ->Target string  */
+ dcl     xpDDst              ptr;                /* ->Target descript*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pSrc                ptr;                /* ->Source string  */
+ dcl     pDSrc               ptr;                /* ->Source descript*/
+ dcl     pDst                ptr;                /* ->Target string  */
+ dcl     pDDst               ptr;                /* ->Target descript*/
+ dcl     Sbo                 fixed bin(7);       /* Src bit offset   */
+ dcl     Dbo                 fixed bin(7);       /* Dst bit offset   */
+ dcl     NS                  fixed bin(31);      /* Src length       */
+ dcl     ND                  fixed bin(31);      /* Dst length       */
+ dcl     S                   fixed bin(31);      /* Src length       */
+ dcl     D                   fixed bin(31);      /* Src length       */
+ dcl     M                   fixed bin(31);      /* Length to move   */
+ dcl     b                   bit(8);             /* A byte to move   */
+ dcl     bus                 fixed bin(8) unsigned
+                             based( addr(b) );
+ dcl     bStringsize         bit(1);
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     Varying_String_Pfx  fixed bin(15)       based;
+ dcl     B8                  bit(8)              based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     nil                 bit(8)     static   init('00'bx);
+ dcl     b1             (0:7)bit(8)              static
+          init('80'bx,'40'bx,'20'bx,'10'bx,
+               '08'bx,'04'bx,'02'bx,'01'bx );
+dcl    masks               char(64)   static   init(
+       /* <--Length 1-8 -->                     */
+         ('80C0E0F0F8FCFEFF'x ||  /*   ^        */
+          '406070787C7E7F00'x ||  /*   |        */
+          '2030383C3E3F0000'x ||  /* Starting   */
+          '10181C1E1F000000'x ||  /*   pos      */
+          '080C0E0F00000000'x ||  /*   0-7      */
+          '0406070000000000'x ||  /*    |       */
+          '0203000000000000'x ||  /*    |       */
+          '0100000000000000'x)    /*    V       */
+         );
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,index,length,min,mod,stg,string,substr,sysnull)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Get Lengths and positions         */
+ /*-----------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ bStringsize='0'b;
+ pSrc  = xpSrc;                        /* Copy parameters            */
+ pDSrc = xpDSrc;
+ pDst  = xpDst;
+ pDDst = xpDDst;
+ Sbo  = pDSrc->ST_bo;                  /* Get starting offsets       */
+ Dbo  = pDDst->ST_bo;
+ if pDSrc->ST_id='20'x                 /* Is Source nonvarying?      */
+ then NS = pDSrc->ST_len;              /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   NS = length(pSrc->Varying_String);
+   pSrc = pSrc + stg( sysnull()->Varying_String );
+   end;
+
+ ND = pDDst->ST_len;                   /* Dest length from descr     */
+ if (NS>ND) then bStringsize='1'b;     /* Move will raise stringsize */
+
+ if pDDst->ST_idª='20'x                /* Is Dest. varying?          */
+ then do;                              /* Yes, bump address          */
+   if NS>ND then pDst->Varying_String_Pfx = ND;
+   else          pDst->Varying_String_Pfx = NS;
+   pDst = pDst + stg( sysnull()->Varying_String );
+   end;
+
+ /*-----------------------------------*/
+ /* Move source bits eight at a time  */
+ /* M (bits moved) will be zero when  */
+ /* destination string is full        */
+ /*-----------------------------------*/
+ do while(ND>0);
+   if NS<=0 then do;
+     NS=8;
+     Sbo = 0;
+     pSrc = addr(nil);
+     end; 
+   S = min(NS,8-Sbo);                  /* Source bits in next byte   */
+   D = min(ND,8-Dbo);                  /* Dest   bits in next byte   */
+   M = min(S,D);                       /* Bits to move               */
+   b = load_byte(pSrc,Sbo,M);          /* Load source byte           */
+   if Sbo<Dbo                          /* Shift bits if necessary    */
+   then bus = ISRL(bus,Dbo-Sbo);
+   else if Sbo>Dbo
+   then bus = ISLL(bus,Sbo-Dbo);
+   call store_byte(bus,pDst,Dbo,M);     /* Store target byte          */
+   call adjust_offset(pSrc,Sbo,M);      /* Adjust input and output ptr*/
+   call adjust_offset(pDst,Dbo,M);
+   NS = NS-M;                           /* Decrement bits remaining   */
+   ND = ND-M;
+   end;
+
+ /*-----------------------------------*/
+ /* Check for STRINGSIZE              */
+ /*-----------------------------------*/ /*NOTE:...*/
+ if bStringsize & M_Stringsize         /* STRSZ occurred and enabled?*/
+ then signal STRINGSIZE;               /* Yes, raise it now          */
+ return;                               /* Return in any case         */
+
+ /*------------------------------------------------------------------*/
+ /* Load up to 8 bits of data from address 'p' and offset 'o'.       */
+ /* Output is ALIGNED.  Extra 'garbage' bits are masked off.         */
+ /*------------------------------------------------------------------*/
+ load_byte: proc(pSrc,Sbo,NS) returns( bit(8) );
+   dcl   pSrc                ptr;
+   dcl   Sbo                 fixed bin(7);
+   dcl   nS                  fixed bin(31);
+   dcl   S                   fixed bin(7);
+   dcl   b                   bit(8)    aligned;
+   dcl   mask                bit(8)    aligned;
+   b = pSrc->B8;                       /* Load source byte           */
+   if NS=8 then b=pSrc->b8;            /* All 8 bits                 */
+   else do;
+     /* Build bitmask for bits in this byte  */
+     mask = build_mask(Sbo,NS,'0'b);
+     b = b&mask;
+     end;
+   return(b);
+   end load_byte;
+
+ /*------------------------------------------------------------------*/
+ /* Store up to 8 bits of data from byte 'b' at address 'p'          */
+ /* and offset 'o'.  Input is ALIGNED.                               */
+ /*------------------------------------------------------------------*/
+ store_byte: proc(b,pDst,Dbo,ND);
+   dcl   b                   bit(8);
+   dcl   pDst                ptr;
+   dcl   Dbo                 fixed bin(7);
+   dcl   ND                  fixed bin(31);
+   dcl   D                   fixed bin(7);
+   dcl   mask                bit(8)    aligned;
+   if ND=8 then pDst->b8=b;             /* Whole byte, just set bits  */
+   else do;
+     /* Build bitmask for bits in this byte  */
+     mask = build_mask(Dbo,ND,'1'b);
+     pDst->b8 = pDst->b8&mask;          /* Clear bits to set          */
+     pDst->b8 = pDst->b8|b;
+     end;
+   return;
+   end store_byte;
+
+ /*------------------------------------------------------------------*/
+ /* Build a bitmask. This may be simpler than using SUBSTR.          */
+ /*------------------------------------------------------------------*/
+ build_mask: proc(pos,n,rev) returns( bit(8) );
+   dcl     pos                fixed bin(7);
+   dcl     n                  fixed bin(7);
+   dcl     rev                bit(1);
+   dcl     i                  fixed bin(7);
+   dcl     mask               bit(8);
+   i = pos*8+n-1;
+   mask=ptradd(addr(masks),i)->B8;
+   /* rev='1'b reverses the values */
+   if rev='1'b then mask=^mask;
+   return(mask);
+   end build_mask;
+
+ /*-----------------------------------*/
+ /* Bump bit offset 'o' by 'n' bits   */
+ /* and adjust byte address 'p' if    */
+ /* necessary.                        */
+ /*-----------------------------------*/
+ adjust_offset: proc(p,o,n);
+   dcl   p                   ptr;            /* Address              */
+   dcl   o                   fixed bin(7);   /* Offset               */
+   dcl   n                   fixed bin(31);
+   o = o+n;                            /* Bump offset                */
+   if o>7 then do;                     /* Adj byte addr if necessary */
+     p = p+1;
+     o = 0;
+     end;
+   end adjust_offset;
+
+ %page;
+ %include DESC;
+
+ end MBS;

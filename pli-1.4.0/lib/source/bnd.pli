@@ -1,0 +1,198 @@
+ /* _pli_Bnd                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Bnd   (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Bnd                                     */
+ /*                                                                  */
+ /*      Function:      HBOUND/LBOUND/DIM for special cases.         */
+ /*                                                                  */
+ /*      Bnd is called to compute the HBOUND, LBOUND, and DIM        */
+ /*      builtins for adjustable members of arrays of structures.    */
+ /*                                                                  */
+ /*      It is passed the offset of the argument SED, the requested  */
+ /*      dimension, and the address of the level-1 locator/desc.     */
+ /*      The computed value is returned in EAX.                      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Descriptor formats.                          */
+ /*                                                                  */
+ /*      Argument List:                                              */
+ /*             +--------------------------------+                   */
+ /*         +0C | addr(struct descriptor)        |              1.3.2*/
+ /*             +--------------------------------+                   */
+ /*         +08 | dimension                      |                   */
+ /*             +--------------------------------+                   */
+ /*         +04 | offset(element SED)            |                   */
+ /*             +--------------------------------+                   */
+ /*         +00 | function code (0=L,1=H,2=D)    |                   */
+ /*             +--------------------------------+                   */
+ /*                                                                  */
+ /*      Errors:        None.                                        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*        * What do we want to do in case of errors? We currently   */
+ /*          raise the ERROR condition. SUBSCRIPTRANGE is not        */
+ /*          appropriate here. Should we return error code to caller */
+ /*          instead?                                                */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2024-08-29: (596) Changed fourth arg from addr(loc)  (596)*/
+ /*                          to addr(SDD). Only call from GBIF  (596)*/
+ /*                          changed to correspond              (596)*/
+ /*        2021-04-17: (479) Substantially rewrote            0.9.10e*/
+ /*                          get_composite_subsc              0.9.10e*/ 
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Bnd: proc(iFun,SEDOffset,iDim,pDesc)                     /*1.3.2*/
+              returns( fixed bin(31) )
+              options( linkage(system) )
+              ext( '_pli_Bnd' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     iFun                fixed bin(31);
+         /* 0 = LBOUND                 */
+         /* 1 = HBOUND                 */
+         /* 2 = DIM                    */
+ dcl     SEDOffset           fixed bin(31);
+ dcl     iDim                fixed bin(31);
+ dcl     pDesc               ptr;                             /*1.3.2*/
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pD,pDx)             ptr;
+ dcl     iD                  fixed bin(31);
+ dcl     result              fixed bin(31);
+
+ /*-------------------------------------------------------*/
+ /* Composite subscript data for arrays of structures     */
+ /*-------------------------------------------------------*/
+ dcl   1 CompositeSubs,
+         5 CompArray         like pli_ded_ARR,
+         5 CompDim       (15)like pli_ded_Dim;
+         /* COMMENT '(15)' is 'max_dim'                   */
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,null,plifill,plimove,stg,string,sysnull)
+                             builtin;
+
+ /*-------------------------------------------------------*/
+ /*  Mainline -- process all descriptors                  */
+ /*-------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+
+ pD = pDesc;                           /* ->SDD                 1.3.2*/
+ pD = pD->SDD_pSED;                    /* ->First SED                */
+ call plifill(addr(CompositeSubs),'00'x,stg(CompositeSubs) );/*.9.10e*/
+ call get_composite_subsc;             /*   Analyze descriptor list  */
+ pD = addr(CompositeSubs);             /*   and use that data.       */
+
+ iD = iDim;                            /* Get value of dimension arg */
+ if iD<1 | iD>pD->pli_ded_ARR.AR_dim   /* Invalid?                   */
+ then iD=1;                            /* Yes, set to one            */
+
+ select( iFun );                       /* Compute the requested info */
+   when(0) do;                         /* LBOUND                     */
+     result = addr(pD->pli_ded_ARR.ar_dims)->pli_ded_Dim.DM_lbnd(iD);
+     end;
+   when(1) do;                         /* HBOUND                     */
+     result = addr(pD->pli_ded_ARR.ar_dims)->pli_ded_Dim.DM_hbnd(iD);
+     end;
+   when(2) do;                         /* DIM                        */
+     result = addr(pD->pli_ded_ARR.ar_dims)->pli_ded_Dim.DM_hbnd(iD) -
+              addr(pD->pli_ded_ARR.ar_dims)->pli_ded_Dim.DM_lbnd(iD) + 
+              1;
+     end;
+   otherwise signal error;             /* S.N.O.                     */
+   end; /* select */
+
+ return(result);                       /* Return requested info      */
+
+ /*-------------------------------------------------------*/
+ /*  Process Structure descriptor to extract bounds info. */
+ /*-------------------------------------------------------*/
+ get_composite_subsc: proc;
+   dcl   pS                  ptr;      /* ->SEDs                     */
+   dcl   pC                  ptr;      /* ->Composite Subscripts     */
+   dcl   pX                  ptr;      /* ->Composite dimensions     */
+   dcl   pE                  ptr;      /* ->Struct Elem descriptor   */
+   dcl   n                   fixed bin(31);
+   dcl   level               fixed bin(7);                  /*0.9.10e*/
+   dcl   link            (15)ptr;                           /*0.9.10e*/
+   dcl   link_index          fixed bin(7);                  /*0.9.10e*/
+
+   pC = addr(CompositeSubs);           /* ->Composite subscript array*/
+   pX = addr(pC->pli_ded_ARR.AR_dims); /* ->Composite dimensions     */
+   call PLIFILL( pC, '00'x,            /* Clear Composite Subscripts */
+                 stg(NULL()->pli_ded_ARR) );
+   pX = pD+SedOffset;                  /* This SED            0.9.10e*/
+   level = pX->SE_lvl+1;                                    /*0.9.10e*/
+   link_index = 0;                                          /*0.9.10e*/
+
+   /* Work backwards and table addresses of array descriptors       */
+   pS = pX; 
+   n = 0;
+   do forever;                         /* Do entire structure 0.9.10e*/
+     if pS->SE_lvl<level then do;                           /*0.9.10e*/
+       level = pS->SE_lvl;                                  /*0.9.10e*/
+       if pS->SE_array then do;                             /*0.9.10e*/
+         link_index = link_index+1;                         /*0.9.10e*/
+         /* Allow a maximim of 15 dimensions */             /*0.9.10e*/
+         if link_index>hbound(link)                         /*0.9.10e*/
+         then signal error;                                 /*0.9.10e*/
+         link(link_index) = pS->SE_desc; /* Save ->Array desc 0.9.10e*/
+         end; /* array */                                   /*0.9.10e*/
+       end; /* level */
+     if pS=pD then leave;                /* Scanned all of struc9.10e*/
+     pS = pS-stg(null->pli_ded_SED);     /* Back up in SED    0.9.10e*/
+     end; /* forever */                                     /*0.9.10e*/
+
+   /* Work forwards and save array descriptors                0.9.10e*/
+   if link_index=0 then signal error;  /* Argument not an array.9.10e*/
+   pX = addr(CompDim(1));                                   /*0.9.10e*/
+   pC = addr(CompArray);                                    /*0.9.10e*/
+   do while(link_index>0);                                  /*0.9.10e*/
+    pE = link(link_index);             /* ->Array descriptor  0.9.10e*/
+    n = pE->pli_ded_ARR.AR_dim;        /* Sise of array data         */
+    pC->pli_ded_ARR.AR_dim = pC->pli_ded_ARR.AR_dim + n;
+    if pC->pli_ded_ARR.AR_dim>hbound(CompDim)               /*0.9.10e*/
+    then signal error;                                      /*0.9.10e*/
+    n = n*stg(null()->pli_ded_Dim);    /* Storage for these dim.9.10e*/
+    call PLIMOVE( pX, addr(pE->pli_ded_ARR.ar_dims), n );
+    pX = pX+n;
+    link_index = link_index-1;                              /*0.9.10e*/
+    end; /* do while */                                     /*0.9.10e*/
+
+   end get_composite_subsc;
+
+ %page;
+ %include desc;
+ %include locdesc;
+
+ end pli_Bnd;

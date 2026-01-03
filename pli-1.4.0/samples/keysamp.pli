@@ -1,0 +1,57 @@
+/*********************************************************************/
+/* KEYSAMP:   Sample KEYED file access                               */
+/*            This program writes a KEYED (non-ISAM) file            */
+/*            sequentially, and then retrieves records directly.     */
+/*            Note that REWRITE, LOCATE, and DELETE operations       */
+/*            are not currently implemented.                         */
+/*********************************************************************/
+keysamp: proc options(main);
+  dcl     f                   file record keyed
+                              env(varls recsize(80));
+
+  dcl     osdelete            entry( char(*) var )
+                              returns( fixed bin(31) )
+                              ext( '_pli_OSDelete' );
+  dcl     rc                  fixed bin(31);
+
+  dcl     nk                  fixed bin(31);
+  dcl     key_array       (16)char(12);
+  dcl     record              char(32)  varying;
+  dcl    (i,j)                fixed bin(31);
+  dcl     rand                float dec;
+  dcl     ppp                 pic'zzz9';
+  dcl     filename            char(64)  varying   static
+                init( 'keyed.file.sample' );
+
+  /*------------------------*/
+  /* Create the file        */
+  /*------------------------*/
+  open file(f) output title(filename);
+  nk = hbound(key_array);
+  do i = 1 to nk;
+  record = 'Record ' || char(i);
+  write file(f) from(record) keyto(key_array(i));
+  end;
+  close file(f);
+
+  /* At this point we should update a record or two */
+  /* when REWRITE is implemented.                   */
+
+  /*------------------------*/
+  /* Read the file Randomly */
+  /*------------------------*/
+  open file(f) input title(filename);
+  put skip list(' Rec  <-------Record data -----' );
+  do j=1 to 20;
+    rand = random();
+    i = mod(fixed(rand*20),15)+1;
+    read file(f) into(record) key(key_array(i)); 
+    ppp = i;
+    put skip list( ppp || ': ' || record );
+    end;
+  close file(f);
+ 
+  rc = osdelete(filename);
+  end keysamp;
+
+   

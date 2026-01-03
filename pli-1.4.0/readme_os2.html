@@ -1,0 +1,496 @@
+<html>
+<title>Iron Spring PL/I Compiler Release Notes - OS/2 version 1.4.0</title>
+<table border=0>
+<tr><td width="25%"><img src="islogo.gif"></td>
+<td>
+<h1>Iron Spring PL/I Compiler</h1>
+<h2>OS/2 Version 1.4.0<br>26 May, 2025</h2>
+<h3>Release Notes</h3>
+</td></tr></table>
+
+<ul>
+<li><a href="#intro">Introduction</a>
+<li><a href="#lic">License</a>
+<li><a href="#cont">Contents of distribution</a>
+<li><a href="#req">Requirements</a>
+<li><a href="#inst">Installation</a>
+<li><a href="#samp">Sample Programs</a>
+<li><a href="#use">Using the compiler</a>
+<li><a href="#link">Linking PL/I programs</a>
+<li><a href="#doc">Documentation</a>
+<li><a href="#fix">Bugs fixed in the current version</a>
+<li><a href="#lib">Modifying the Runtime Library</a>
+<li><a href="#bug">Reporting bugs</a>
+</ul>
+
+<a name="intro">
+<p>
+<h4>Introduction</h4>
+This document provides information on using the Iron Spring PL/I compiler
+and compiled programs on the OS/2 platform.  For information on the
+Linux platform, see the corresponding document 
+<a href="./readme_linux.html">readme_linux</a>. 
+
+<p>
+The current version still contains bugs.  
+You can help improve the compiler.  See the section 
+<a href="#bug">Reporting bugs</a>.
+
+<p>
+<b>Trademarks</b><br>
+eComStation is a trademark of Serenity Systems International.<br>
+Gnu is a trademark of the Free Software Foundation.<br>
+IBM is a trademark of IBM, Inc.<br>
+Intel is a trademark of Intel Corporation.<br>
+Iron Spring is a trademark of Iron Spring Software.<br>
+Linux is a registered trademark of Linus Torvalds.<br>
+VAX is a trademark of Hewlett-Packard, Inc.<br>
+WATCOM is a trademark of Sybase, Inc. and its subsidiaries.
+
+<!----- License ----- -->
+<a name="lic">
+<p>
+<h4>License</h4>
+&lt;boring-legal-stuff&gt;<br>
+This license a legal agreement between you and Iron Spring Software.  Your use of 
+this software signifies that you agree to the terms of this license.
+<p>
+Iron Spring Software grants you the right to use and copy the Iron
+Spring PL/I compiler and library freely.  You may distribute  programs compiled
+using the compiler and/or linked with the library under any terms you wish 
+without restriction.
+The source to the library is licensed under the terms of the
+<a href="lgpl.html">Gnu Lesser General Public License (LGPL)</a>.
+<p>
+All material is copyright Iron Spring Software, 2023.
+<p>
+THE COMPILER AND LIBRARY ARE PROVIDED "AS IS"
+WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING,
+BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND
+PERFORMANCE OF THE COMPILER AND LIBRARY IS WITH YOU. SHOULD THEY PROVE
+DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR OR
+CORRECTION.<br>
+&lt;/boring-legal-stuff&gt;<br>
+
+<!----- Contents ----->
+<a name="cont">
+<p>
+<h4>Contents</h4>
+This distribution includes the executable for the PL/I compiler PLIC.EXE, 
+the runtime DLL, the static and import libraries lib\static\prf.lib and \lib\prf.lib,
+and the sources for the library and sample programs.
+<pre><tt>
+  pli-1.4.0
+    |
+    +-----------------------samples----------------lib
+    |                          |                    |
+ plic.exe                   (Sample sources and     +--------------------------static---include----source
+ (compiler executable)       %include files,        PL/I DLL (prf.dll)         |         |         |
+ (documentation, etc.)       sample makefiles       Import Library (prf.lib)   |         |         +--------asm
+                             and module definition                             |         |   (PL/I source)   |   
+                             file).                                            |         |               (assembler
+                                                                               |  (%include files          source)
+                                                                               |    required by                                                                                      
+                                                                               |     library).
+                                                                               |
+                                                                      prf.lib (static library)
+                                                                      OS2386.lib
+</tt></pre>         
+
+
+<!----- Requirements ----->
+<a name="req">
+<p>
+<h4>Requirements</h4>
+The folowing software is required to run the OS/2 version of the compiler:
+<ul>
+<li>OS/2 Warp 4 or higher, includung eCS.  Warp 3 has been reported to work, but is unsupported.
+<li>LINK386 linker or equivalent to link object files.<br>
+LINK386 is distributed with OS/2 and installed as part of "Optional System Utilities."
+</ul>
+The following software is recommended:
+<ul>
+<li>The <a href="http://sourceforge.net/projects/jwasm/">JWasm</a> assembler - necessary only to rebuild the assembler pieces of the
+runtime library. 
+<li>Gnu make, available from <a href="http:/hobbes.nmsu.edu">Hobbes</a>.<br>
+The version of make used to build the libraries is 3.81beta3.
+<li>The WATCOM&reg; debugger "wdw."  WATCOM software is available from 
+<a href="http://www.openwatcom.org">Open Watcom</a>.<br>
+Versions 1.3 and 1.4 were tested.
+<p>
+The following debuger setup is not required, but will simplify debugging.<p>
+To get the debugger to stop at the beginning of the PL/I program,
+make the following modifications to "setup.dbg", normally found
+in the &lt;WATCOM&gt;\binw directory.
+<table col=2 border=0>
+<tr><td><tt>        elseif _dbg@dbg$os == 12 && ?@main {</tt></td><td>  Following this</td></tr>
+<tr><td><tt>            go/until/noflip @main</tt></td><td></td></tr>
+<tr><td><tt>        }</tt></td><td></td></tr>
+<tr><td><tt>        elseif ?@@_PLI_MAIN {</tt></td><td>Insert these three lines</td></tr>
+<tr><td><tt>            go/until/noflip @@_PLI_MAIN</tt></td><td></td></tr>
+<tr><td><tt>        }</tt></td><td></td></tr>
+</table>
+After this, you will also need to link your program with a module definition file
+that exports the symbol "_PLI_Main" so that it is visible to the debugger.
+The "samples" directory contains an example .def file and linker command
+to do this.
+<p>
+
+</ul>
+
+<!----- Installation ----->
+<a name="inst">
+<p>
+<h4>Installation</h4>
+<ol>
+<li>Unpack the distribution file into a directory named "x:\pli-1.4.0",
+(Specify your desired drive in place of 'x'.)
+<li>Only the compiler (x:\pli-1.4.0\plic.exe) and either the static 
+runtime library (x:\pli-1.4.0\lib\static\prf.lib) <b>OR</b>
+the DLL (x:\pli-1.4.0\lib\prf.dll) and the import library (x:\pli-1.4.0\lib\\prf.lib)
+are required.  
+You should already have a version of OS2386.LIB.  If you don't, you can use 
+the one supplied in "x:\pli-1.4.0\lib\static\OS2386.lib".
+<li>Move the compiler to a directory in your PATH or add x:\pli-1.4.0 to your 
+path in config.sys.  
+<li>If you are using the DLL version of the library, move prf.dll  
+to a directory in LIBPATH, or add (x:\pli-1.4.0\lib) to your LIBPATH in
+CONFIG.SYS and reboot.  In order to link compiled programs you also
+need to make the import library prf.lib available by moving it to
+a directory listed in the LIB environment variable.
+Alternatatively, you can add the line "LIB = x:\pli-1.4.0\lib"
+to your makefiles.  
+<li>If you are using the static version of the library (x:\pli-1.4.0\lib\static\prf.lib),
+move it [and x:\pli-1.4.0\lib\static\OS2386.lib if required] to
+a directory listed in the LIB environment variable.
+Alternatatively, you can add the line "LIB = x:\pli-1.4.0\lib\static"
+to your makefiles.  
+</ol> 
+<p>
+A later version will be installable using the WarpIN installer.
+
+<!----- Samples --- -->
+<a name="samp">
+<p>
+<h4>Sample Programs</h4>
+The file <a href="samples/samples.html">samples/samples.html</a> contains a list of all the 
+sample programs.  The comments in each program contain information on using
+the program.
+<ol>
+<li>Test the sample programs.  Two makefiles are provided: 'makefile.OS2DLL'
+links with the PL/I DLL, 'makefile.OS2Static' links with the static library.
+CD to the directory "x:\pli-1.4.0\samples"
+and type "make- makefile.OS2DLL" for the DLL version, or "make -f makefile.OS2Static" for the static
+version.  If you don't have <i>make</i> available, you can manually
+type the commands in the makefile.  The sample programs "numwrd", "filedump",
+"print_listing", and "libver" build to executables, the remainder should 
+generate object files.
+<li>Test numwrd. Enter ".\numwrd 123".  The program should display
+the result "one hundred twenty-three".
+<li>You might want access to the %INCLUDE files in "x:\pli-1.4.0\lib\include"
+or "x\pli-1.4.0\samples" for your own programming.
+</ol>
+<p>
+
+<!----- Using --- -->
+<a name="use">
+<p>
+<h4>Using the compiler</h4>
+The "samples" directory contains two sample makefiles that can be used to compile and link
+PL/I programs.  You should copy these and modify them for your requirements.
+"Makefile.OS2Static" is an example of a compile and link using the static version of the runtime 
+library.  "Makefile.OS2DLL" is an example linking against the runtime DLL.  The library named "prf.lib"
+contains object files in the static directory, and import definitions for the runtime DLL in
+the non-static directory.
+<p>
+
+<!----- Linking --- -->
+<a name="link">
+<p>
+<h4>Linking PL/I programs</h4>
+The following command statically links a PL/I program with the runtime library.
+<table border=1 width="90%" align="center" bgcolor=#CCCC99>
+<tr><td>
+<tt><font face="Courier">
+	LINK386 /m:f /a:8 /st:0x100000 ${OBJ},,,${LIBDIR}\prf.lib+${LIBDIR}\OS2386.lib,${DEF};
+</td></tr>
+</table>
+<ul>
+<li>Command should be contained on one line.
+<li>Replace ${OBJ} with the name of your compiled object file (.obj)
+<li>Replace ${LIBDIR} with the name of the directory containing the static library.
+For example, the default is \pli-1.4.0\lib\static
+<li>Replace ${DEF} with the name of your module definition files (.def).  See the LINK386
+reference for a description of module definition files.  This is not required for a VIO
+(non-PM) program, so it could be omitted and the ';' placed after 'OS2386.lib'.
+</ul>
+<p>
+The following command links a PL/I program with the PL/I runtime DLL.
+<table border=1 width="90%" align="center" bgcolor=#CCCC99>
+<tr><td>
+<tt><font face="Courier">
+	LINK386 /m:f /a:8 /st:0x100000 ${OBJ},,,${LIBDIR}\prf.lib,${DEF};
+</td></tr>
+</table>
+<ul>
+<li>Command should be contained on one line.
+<li>Replace ${OBJ} with the name of your compiled object file (.obj)
+<li>Replace ${LIBDIR} with the name of the directory containing the PL/I runtime expore library.
+For example, the default is \pli-1.4.0\lib
+<li>Replace ${DEF} with the name of your module definition files (.def).  See the LINK386
+reference for a description of module definition files.  This is not required for a VIO
+(non-PM) program, so it could be omitted and the ';' placed after 'OS2386.lib'.
+<li>The PL/I DLL must be in $LIBPATH when the program is executed.
+</ul>
+<p>
+
+<!----- Documentation ----->
+<a name="doc">
+<p>
+<h4>Documentation</h4>
+The <a href="prog_guide.html"><i>Iron Spring PL/I Compiler Programming Guide</i></a> contains
+a description of the features of the compiler.
+Except as noted in the <i>Programming Guide</i> 
+under <a href="prog_guide.html#diff">Compiler Differences</a> and
+<a href="prog_guide.html#rest">Restrictions</a> this compiler is compatible with
+the IBM "PL/I for MVS and VM Compiler 1.1".  A complete language reference
+in HTML will be available as part of a future release.
+<p>
+Documentation for the IBM compiler is available 
+<a href="http://teampli.net/SC26-3114-01.pdf">online at teampli.net</a>.
+<p>
+
+<!----- Bugs fixed --- -->
+<!-- ======================== Insert bug list here ==================== -->
+<!-- Bug List  -->
+<a name="fix">
+<p>
+<h4>Bugs Fixed</h4>
+<!-- @include bug_list.skel.html -->
+<table border=1 cellpadding=2 cellspacing=0>
+<tr><th colspan=3>Cumulative list of bugs fixed</th></tr>
+<tr><td valign="top"><td valign="top"><th>Changes in version 1.4.0</th></tr>
+<tr><td valign="top">615<td valign="top">1.4.0<td>Compiler errors may generate error
+        messages containing NULL characters
+<tr><td valign="top">610<td valign="top">1.4.0<td>Use of non-existent builtin
+        causes compiler trap
+<tr><td valign="top">609<td valign="top">1.4.0<td>Aggregate assignment of FIXED
+         BINARY arrays with elements shorter than four bytes incorrect
+<tr><td valign="top">606<td valign="top">1.4.0<td>Aggregate assignment of unaligned 
+         BIT arrays incorrect
+<tr><td valign="top">593<td valign="top">1.4.0<td>Operands of some short bit string
+        comparisons aligned incorrectly 
+<tr><td valign="top">582<td valign="top">1.4.0<td>Compiler trap allocating
+        CONTROLLED variable with INITIAL option
+<tr><td valign="top">578<td valign="top">1.4.0<td>Compiler trap referencing element
+        declared with REFER
+
+<tr><td colspan=3>&nbsp;
+
+<tr><td valign="top"><td valign="top"><th>Changes in prior versions</th></tr>
+<tr><td valign="top">607<td valign="top">1.3.2<td>References to subscripted
+        CONTROLLED elements causes compiler error
+<tr><td valign="top">603<td valign="top">1.3.2<td>Comparison of two files fails
+        with compiler error. Now temporarily gets error 612: "Invalid 
+        comparison of program control data"
+<tr><td valign="top">602<td valign="top">1.3.2<td>Compiler error calling FLOAT
+        builtin with literal constant argument
+<tr><td valign="top">600<td valign="top">1.3.2<td>F format does not print '-' 
+        for negative one-digit numbers
+<tr><td valign="top">599<td valign="top">1.3.2<td>MOD builtin traps if used in
+        INITIAL attribute
+<tr><td valign="top">598<td valign="top">1.3.2<td>Incorrect value set for 
+        ALLOCATE REFER-object
+<tr><td valign="top">597<td valign="top">1.3.2<td>Compiler error with HBOUND. LBOUND 
+        of adjustable array
+<tr><td valign="top">594<td valign="top">1.3.2<td>SIZE builtin of a structure
+        ending with an unaligned bit string is one byte too short
+<tr><td valign="top">592<td valign="top">1.3.2<td>PUT EDIT field widths may be 
+        incorrect for b2 and b3 format items
+<tr><td valign="top">589<td valign="top">1.3.1<td>GOTO &lt;subscipted-label-constant&gt;
+        traps at runtime
+<tr><td valign="top">588<td valign="top">1.3.1<td>INITIAL attribute generates 
+        incorrect data for STATIC BIT fields before non-BIT            
+<tr><td valign="top">587<td valign="top">1.3.1<td>Incorrect conversion of
+        CHARACTER to FLOAT             
+<tr><td valign="top">584<td valign="top">1.3.1<td>Incorrect output PUT EDIT 
+        with "F" format             
+<tr><td valign="top">583<td valign="top">1.3.1<td>Incorrect output for PUT
+        &lt;minor-structure&gt;             
+<tr><td valign="top">579<td valign="top">1.3.1<td>Compiler trap on aggregate
+        assignment of array arguments             
+<tr><td valign="top">577<td valign="top">1.3.1<td>Alignment attribute not copied for 
+        LIKE structure             
+<tr><td valign="top">572<td valign="top">1.3.1<td>Compiler trap referencing
+        computational elements of structure parameters             
+<tr><td valign="top">571<td valign="top">1.3.1<td>Error returning bit(1)
+        result from some conditionals            
+<tr><td valign="top">570<td valign="top">1.3.1<td>SUM builtin of array with 
+        zero lower bound causes runtime trap            
+<tr><td valign="top">568<td valign="top">1.3.1<td>Reference to element of DEFINED 
+        structure incorrect             
+<tr><td valign="top">566<br>565<td>1.3.1<td>BIT builtin returns incorrect 
+        result               
+<tr><td valign="top">551<td valign="top">1.3.1<td>Structure qualification not allowed
+        for refer object               
+<tr><td valign="top">549<td valign="top">1.3.1<td>BASED AREA variable not properly
+        initialized when allocated               
+<tr><td valign="top">448<td valign="top">1.3.1<td>STRING builtin and pseudovariable 
+        incorrect output if argument is a character string               
+<tr><td valign="top">410<td valign="top">1.3.1<td>ONFILE builtin returns null
+        string in UNDEFINEDFILE On-Unit               
+<tr><td valign="top">344<td valign="top">1.3.1<td>GET STRING(xx) LIST(string) raises 
+        ERROR condition                
+<tr><td valign="top">231<td valign="top">1.3.1<td>ENTRY variable not allowed 
+        as argument to ENTRYADDR builtin                  
+<tr><td valign="top">563<td valign="top">1.3.0<td>Incorrect access to elements of array
+        of structures
+<tr><td valign="top">561<td valign="top">1.3.0<td>Assignment to array of structures
+        may be incorrect
+<tr><td valign="top">560<td valign="top">1.3.0<td>Result of INDEX or SEARCH
+        builtin incorrect if used in expression
+<tr><td valign="top">556<td valign="top">1.3.0<td>LBOUND/HBOUND incorrect for
+        adjustable array. (repeat of 320)
+<tr><td valign="top">555<td valign="top">1.3.0<td>Refer object set incorrectly for
+        array bounds
+<tr><td valign="top">554<td valign="top">1.3.0<td>Incorrect length returned for
+        CONTROLLED string elements
+<tr><td valign="top">553<td valign="top">1.3.0<td>STORAGE/CURRENTSTORAGE values
+        inconsistent for adjustable based structure
+<tr><td valign="top">552<td valign="top">1.3.0<td>Refer expression not converted
+        to FIXED BIN(31)
+<tr><td valign="top">551<td valign="top">1.3.0<td>Allow structure qualification for 
+        refer object name
+<tr><td valign="top">550<td valign="top">1.3.0<td>Element name and descriptor not
+        passed to I/O subsystem  
+<tr><td valign="top">549<td valign="top">1.3.0<td>Subscripted reference to undeclared
+        variable causes trap
+<tr><td valign="top">548<td valign="top">1.3.0<td>Error with hardware shift instruction
+        with constant shift amount 
+<tr><td valign="top">547<td valign="top">1.3.0<td>Declaration of external array causes 
+        compiler trap
+<tr><td valign="top">540<td valign="top">1.3.0<td>No warning generated for undeclared
+        programmer-named condition
+<tr><td valign="top">530<td valign="top">1.3.0<td>TRIM(bit string) generates garbage
+<tr><td valign="top">454<td valign="top">1.3.0<td>Error referencing BASED ENTRY variable
+<tr><td valign="top">546<td valign="top">1.2.0<td>Builtin SIZE not recognized as 
+        synonym for STORAGE
+<tr><td valign="top">539<td valign="top">1.2.0<td>Incorrect conversion of bit string
+        constant to FIXED DECIMAL 
+<tr><td valign="top">536<td valign="top">1.2.0<td>Incorrect output with  
+       PUT(bit_string) with A-Format  
+<tr><td valign="top">534<td valign="top">1.2.0<td>Errors with UNSIGNED size<4 
+<tr><td valign="top">533<td valign="top">1.2.0<td>Errors converting relational 
+        expression to bit string 
+<tr><td valign="top">532<td valign="top">1.1.0<td>(OS/2)GOTO out of 
+ON-Unit causes erroneous "recursive abend"
+<tr><td valign="top">528<td valign="top">1.1.0<td>Block initialization calling some
+library procedures traps at runtime
+<tr><td valign="top">518<td valign="top">1.1.0<td>Initialization of UNALIGNED
+        BIT elements of STATIC structures and arrays incorrect
+<tr><td valign="top">513<td valign="top">1.1.0<td>Various errors with VARYING 
+UNALIGNED BIT arrays
+<tr><td valign="top">512<td valign="top">1.1.0<td>Trap referencing structure with
+REFER option declared in another block
+<tr><td valign="top">511<td valign="top">1.1.0<td>Floating point numbers print incorrectly
+if smaller than 1e-16
+<tr><td valign="top">510<td valign="top">1.1.0<td>ADDR(x) may return incorrect result if
+x was previously referenced in the same statement
+<tr><td valign="top">509<td valign="top">1.1.0<td>Access to adjustable descriptor in
+containing block returns incorrect result
+<tr><td>461<br>462<td>1.1.0<td>SIGSEGV on aggregate assignment to 
+array of structures
+<tr><td valign="top">508<td valign="top">1.0.0<td>Incorrect conversion of FLOAT BINARY 
+        to FIXED DECIMAL 
+<tr><td valign="top">506<td valign="top">1.0.0<td>Compiler trap in some cases where 
+        statement not properly terminated 
+<tr><td valign="top">504<td valign="top">1.0.0<td>Incorrect conversion of COMPLEX data
+<tr><td valign="top">503<td valign="top">1.0.0<td>Statement label should not be allowed
+        on declaration 
+<tr><td valign="top">502<td valign="top">1.0.0<td>Error using array element as control 
+        variable in DO-Statement 
+<tr><td valign="top">501<td valign="top">1.0.0<td>Code comment not printing subscript 
+        for subscripted label constant 
+<tr><td valign="top">500<td valign="top">1.0.0<td>GET/PUT array elements off by one 
+<tr><td valign="top">499<td valign="top">1.0.0<td>CHAR to BIT conversion not handling
+        leading and trailing blanks 
+<tr><td valign="top">498<td valign="top">1.0.0<td>ONCHAR returns incorrect value 
+<tr><td valign="top">497<td valign="top">1.0.0<td>Incorrect output for GET/PUT of 
+        minor structure 
+<tr><td valign="top">496<td valign="top">1.0.0<td>Problems moving FIXED BIN 
+        returned value  
+<tr><td valign="top">495<td valign="top">1.0.0<td>SIGNED/UNSIGNED builtins may return 
+        incorrect precision 
+<tr><td valign="top">494<td valign="top">1.0.0<td>Incorrect precision converting 
+        FIXED DECIMAL to FIXED BINARY
+<tr><td valign="top">493<td valign="top">1.0.0<td>Fixed documentation of OSGetProcInfo 
+</table>
+<!-- ======================== End of bug list ========================= -->
+
+<!----- Runtime Library ----->
+<a name="lib">
+<p>
+<h4>Modifying the Runtime Library</h4>
+The document <a href="library_os2.html">About the Iron Spring PL/I Library</a>
+Contains information necessary to modify or extend the runtime library.
+Most users of Iron Spring PL/I will probably not be interesting in making 
+modifications to the library.
+<p>
+
+<!----- Bug Reports ----->
+<a name="bug">
+<p>
+<h4>Support</h4>
+Iron Spring PL/I is supported on a "best efforts" basis. Attempts will be made
+to fix all reported bugs, and have the fixes included in
+the next distributed version.  "Thank You" to a number of users who have 
+submitted bug reports which helped improve this version of the compiler.
+<p>
+The Iron Spring PL/I Users' Forum 
+    (<a href="https://groups.io/g/Iron-Spring">https://groups.io/g/Iron-Spring</a>) 
+ is available as a user forum for problems, tips, etc.  The developers also monitor
+this group.
+<p>
+<h4>Reporting bugs</h4>
+For the current version of the compiler, a <i>bug</i> 
+is one of the following:
+<ol>
+<li>Any compiler trap.
+<li>Incorrect output <b>not</b> caused by a flagged
+unimplemented feature (compile-time message 995 or
+run-time UNIMPLEMENTED condition.
+<li>Compile-time message 990 (Compiler error).
+<li>Output of the compiled program different from that produced
+when the program is compiled with the IBM compiler, except for
+differences noted.
+</ol>
+Features not implemented in the current version will
+be added in future versions.  In the meantime, their
+absence should at least be indicated by an error message.<p>
+Before reporting a bug, please make sure you are running
+the most recent release.
+<p>The following information is <i>required</i> to report
+a bug:
+<ol>
+<li>A brief description of the problem (trap, incorrect output, etc.)
+<li>The host operating system: OS/2 or Linux.
+<li>The command-line options used to compile this program.
+<li>The current compiler version obtained by running "PLIC -V".
+<li>A <i>small</i> sample program ilustrating the problem.  Please
+make sure you imbed or supply all the %include files required to
+compile the sample.
+</ol>
+Hopefully, all this information will be small enough to be sent as
+plain text in a mail message.  Otherwise please attach a <b>zip</b> file.
+No other formats will be accepted.
+<p>
+Mail bug reports to:<br>
+<pre>   <a href="mailto:bugs@iron-spring.com?Subject=Version 1.4.0O">bugs@iron-spring.com</a>
+<p>
+<hr>
+version 1.4.0, 26 May, 2025<br>
+<a href="http://www.iron-spring.com">http://www.iron-spring.com</a>
+
+
+</html>

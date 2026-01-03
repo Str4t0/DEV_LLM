@@ -1,0 +1,68 @@
+ /* _pli_GetDate                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*                Iron Spring PL/I Version 0.1                      */
+ /*                                                                  */
+ /*      Module:        _pli_DT  (PL/I runtime)                      */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GetDate      [DATE() BIF]               */
+ /*                                                                  */
+ /*      Function:      Implement date builtin function.             */
+ /*                     Calls Operating-System-Dependent procedure   */
+ /*                     OSGetDateTime to get the current date and    */
+ /*                     time information.                            */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                                                                  */
+ /*      Calling sequence: Called with no arguments, returns the     */
+ /*                     appropriate character string result.         */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2009-12-14: Modified to call OSGetDateTime.         0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_DT:  proc returns( character(6) )
+               options( linkage(system) )
+               ext( '_pli_GetDate' );
+
+ /*------------------------------------------------------------------*/
+ /* DATE() Result string yymmdd                                      */
+ /*------------------------------------------------------------------*/
+ dcl   1 rDate,
+         5 Year              pic'99',
+         5 Month             pic'99',
+         5 Day               pic'99';
+
+ /*-----------------------------------*/
+ /* System OSGetDateTime Function     */
+ /*-----------------------------------*/
+ dcl     OSGetDateTime       entry(ptr,ptr)
+                             external( '_pli_OSGetDateTime' )
+                             returns( fixed bin(31) ) /* unsigned */
+                             options( asm linkage(system) );
+
+ dcl   1 datetime            like tm;
+ dcl     nsec                fixed bin(31);
+
+ dcl     retcode             fixed bin(31) /* unsigned */ ;
+
+ dcl    (addr,string)        builtin;
+
+ retcode = OSGetDateTime( addr(datetime), addr(nsec) );
+ rDate.Year       = datetime.tm_year;
+ rDate.Month      = datetime.tm_mon+1;
+ rDate.Day        = datetime.tm_mday;
+ return( string(rDate) );
+
+ %include tm;
+
+ end pli_DT;

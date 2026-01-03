@@ -1,0 +1,115 @@
+ /* _pli_Endpage                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Endpage (PL/I runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Endpage                                 */
+ /*                                                                  */
+ /*      Function:      Implicit action for ENDPAGE condition.       */
+ /*                                                                  */
+ /*      Endpage is called from SIG if there is no ON-Unit           */
+ /*      for an ENDPAGE condition.  It is passed the address of      */
+ /*      the FILE constant or variable.                              */
+ /*                                                                  */
+ /*      This is not as simple as may appear because there is no     */
+ /*      way to check at runtime that a SIGNAL ENDPAGE(filename)     */
+ /*      statement references a stream file or that the file         */
+ /*      is open.                                                    */
+ /*                                                                  */
+ /*      An IORB is built for the PUT PAGE option and passed to IOR  */
+ /*      for processing.                                             */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Control block formats:                       */
+ /*                       FILE, IORB, DCLCB.                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Address of FILE.                             */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Endpage: proc(pFile)
+              options( linkage(system) )
+              ext( '_pli_Endpage' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFile               ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl   1 my_dclcb            static,   /* like DCLCB                 */
+         5 my_attrib         bit(32)        init( '00010000'bx ),
+         5 my_fil1           char(8)        init( (8)'00'x ),
+         5 my_recsize        fixed bin(31)  init(0),
+         5 my_blksize        fixed bin(31)  init(0),
+         5 my_bufsp          fixed bin(31)  init(0),
+         5 my_keylen         fixed bin(31)  init(0),
+         5 my_keyloc         fixed bin(31)  init(0),
+         5 my_env            bit(32)        init( '08000080'bx ),
+         5 my_fil2           char(12)       init( (12)'00'x ),
+         5 my_dclcb_end      char(0);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     my_iorb             like IORB;
+
+ /*-------------------------*/
+ /*      Prototypes         */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     IOR                 entry( ptr )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_IOR' );
+ dcl     GetDSA              entry
+                             external( '_pli_GetDSA' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (
+          addr,allocate,null,plifill,plimove,
+          stg,string,substr,sysnull
+         )                   builtin;
+
+ /*-----------------------------------*/
+ /* Build IORB                        */
+ /*-----------------------------------*/
+ call plifill( addr(my_iorb), '00'x, stg(my_iorb) );
+ my_iorb.IOR_Ver    = 0;               /* Version                    */
+ my_iorb.IOR_Func   = 21;              /* PUT                        */
+ my_iorb.IOR_pFile  = pFile;           /* addr(file)                 */
+ my_iorb.IOR_pDCLCB = addr(my_dclcb);  /* addr(DCLCB)                */
+ my_iorb.IOR_pDSA   = GETDSA();        /* addr(DSA)                  */
+ my_iorb.IOR_bOpt   = '80040000'bx;    /* PAGE                       */
+ /* At this point we could check to make sure this program otherwise */
+ /* uses stream IO, and raise ERROR if not.                          */
+
+ /*-----------------------------------*/
+ /* Call IOR                          */
+ /*-----------------------------------*/
+ RC = IOR( addr(my_iorb) );
+
+ return;
+
+ %include IORB;
+ %include FILE;
+ %include DCLCB;
+
+ end pli_Endpage;

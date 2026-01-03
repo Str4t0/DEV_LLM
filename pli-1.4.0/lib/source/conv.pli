@@ -1,0 +1,110 @@
+ /* _pli_Conv                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Conv (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Conv                                    */
+ /*                                                                  */
+ /*      Function:      Raise 'CONVERSION', 'NAME', or 'KEY'         */
+ /*                     condition.                                   */
+ /*                                                                  */
+ /*      Most conditions are raised via generated code for the       */
+ /*      'SIGNAL' statement.  'CONVERSION' requires the ONCHAR and   */
+ /*      ONSOURCE values for the Builtin and Pseudovariables;        */
+ /*      'NAME' requires DATAFIELD.                                  */
+ /*                                                                  */
+ /*      This procedure executes a SIGNAL statement by calling       */
+ /*      the intrinsic from the PGT.                                 */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Format of PL/I ENTRY variable                */
+ /*                     Layout of PGT                                */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     call _pli_Conv( code, addr(data_list) );     */
+ /*                                                                  */
+ /*                     'code' is 600 for CONVERSION,                */
+ /*                                10 for NAME.                      */
+ /*                                                                  */
+ /*                     'data_list' is as follows:                   */
+ /*                     CONVERSION:                                  */
+ /*                       Addr(OnSource Loc/Desc)                    */
+ /*                       Addr(OnChar)                               */
+ /*                       Addr(OnFile) [FILE const/var or SYSNULL()] */
+ /*                     NAME:                                        */
+ /*                       Addr(DataField Loc/Desc)                   */
+ /*                       Addr(OnFile) [FILE const/var or SYSNULL()] */
+ /*                     KEY:                                   0.9.10*/
+ /*                       Addr(DataField Loc/Desc)             0.9.10*/
+ /*                       Addr(OnFile) [FILE const/var or SYSNU0.9.10*/
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                   . Reference to PGT(30) should be changed to    */
+ /*                     use the 'intrin' include.                    */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2017-08-01: Corrected argument documentation.       0.9.10*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Conv: proc(lCode,pData)
+             options( linkage(system) )
+             ext( '_pli_Conv' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     lCode               fixed bin(31);
+ dcl     pData               ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pDSA                ptr;
+ dcl     pPGT                ptr;
+ dcl     pSIG                entry( fixed bin(31), ptr )
+                             options( linkage(system) )
+                             variable;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetDSA              entry
+                             returns( ptr )
+                             options( linkage(system) )
+                             ext( '_pli_GetDSA' );
+
+ dcl    (addr,low,stg,string,sysnull)
+                             builtin;
+
+ /*-----------------------------------*/
+ /* Program entry                     */
+ /*-----------------------------------*/
+ pDSA = GETDSA();                      /* Get my DSA address         */
+ addr(pSIG)->ent_static_DSA  = pDSA;                          /*0.9.5*/
+ pDSA = pDSA - stg( SYSNULL->dsa_below_ebp );
+ pPGT = pDSA->dsa_edi;                 /* -> PGT                     */
+ addr(pSIG)->ent_entry_point = pPGT->PGT(16);
+ /* PGT(16) is ic_sig                */
+ call pSIG( lCode, pData );           /* Raise the condition        */
+
+ return;
+
+ %page;
+ %include entry;
+
+ %include dsa;
+
+ dcl     PGT          (0:127)ptr based;
+
+ end pli_Conv;

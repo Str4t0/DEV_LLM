@@ -1,0 +1,115 @@
+ /* NUMWRD - Format numbers as words                                 */
+
+ /********************************************************************/
+ /*                                                                  */
+ /*    Module ID: NUMWRD                                             */
+ /*                                                                  */
+ /*    Author:    Peter Flass <peter_flass@yahoo.com>                */
+ /*               May, 2006                                          */
+ /*                                                                  */
+ /*    Function:  Convert a number between -9,999,999,999 and        */
+ /*               9,999,999,999 to words.                            */
+ /*                                                                  */
+ /*                                                                  */
+ /*    NOTE:      IBM PL/I requires the 'NOEXECOPS' option for the   */
+ /*               MAIN procedure, or the number in the command-line  */
+ /*               needs to be prefixed with a '/', as:               */
+ /*               numwrd /123                                        */
+ /*                                                                  */
+ /********************************************************************/
+
+ NUMWRD: proc(parm) options(main reentrant);
+ dcl     parm                char(100) varying;
+ dcl     p                   char(16);
+ dcl     sysprint            print;
+ dcl     num                 fixed dec(15);
+ dcl     digits              fixed bin(31);
+ dcl     str                 char(512) varying   init( '' );
+ dcl     ones           (0:9)char(8)   varying   static    init(
+         'zero', 'one', 'two',   'three', 'four',
+         'five', 'six', 'seven', 'eight', 'nine' );
+ dcl     teens          (0:9)char(9)   varying   static    init(
+         'ten',     'eleven',  'twelve',    'thirteen', 'fourteen',
+         'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen' );
+ dcl     tens           (2:9)char(8)   varying   static    init(
+         'twenty',  'thirty', 'forty', 'fifty', 'sixty',
+         'seventy', 'eighty', 'ninty' );
+ /* %include builtins; */
+
+ if length(parm)=0 then do;                                   /*0.9.4*/
+   put skip edit( 'please enter number' )(a);                 /*0.9.4*/
+   return;                                                    /*0.9.4*/
+   end;
+ p = parm;
+ get string(p) edit(num)(f(10));
+ if num<-9999999999 then do;
+   put skip edit( 'Too Small' )(a);
+   return;
+   end;
+ if num>9999999999 then do;
+   put skip edit( 'Too Big' )(a);
+   return;
+   end;
+ if num=0 then do;
+   put skip edit( 'Zero' )(a);
+   return;
+   end;
+ if num<0 then do;
+   str = 'minus';
+   num = -num;
+   end;
+ if num>999999999 then do; /* 1,000,000,000 = 1 billion (US) */
+   digits = floor(num / 1000000000);
+   num = mod(num,1000000000);
+   str = str || ' ' || ones(digits) || ' billion';
+   end;
+ if num>999999  then do; /* 1,000,000 = 1 million */
+   digits = floor(num / 1000000);
+   num = mod(num,1000000);
+   call process_num(digits);
+   str = str || ' million';
+   end;
+ if num>999  then do; /* 1,000 = 1 thousand */
+   digits = floor(num / 1000);
+   num = mod(num,1000);
+   call process_num(digits);
+   str = str || ' thousand';
+   end;
+ call process_num(num); /* Hundreds, tens, ones */
+ put skip edit(str)(a);
+
+ /* Process a number between zero and 999 */
+ process_num: proc(num);
+   dcl   num                 fixed bin(31);
+   dcl   digit               fixed bin(31);
+   dcl   c                   char(1)   varying   init( '' );
+   dcl   p                   char(1)   varying   init( '' );
+   if length(str)>0 then p=' ';
+   if num>99  then do;       /* Hundreds */
+     digit  = num / 100;
+     num = mod(num,100);
+     str = str || p || ones(digit) || ' hundred';
+     p = ' ';
+     end;
+   if num>19  then do;       /* Tens     */
+     digit  = num / 10;
+     num = mod(num,10);
+     str = str || p || tens(digit);
+     p = ' ';
+     if num>0 then c='-';
+     end;
+   else if num>9 then do; /* Teens: 10-19 */
+     digit  = num - 10;
+     num = 0;
+     str = str || p || teens(digit);
+     p = ' ';
+     c = ' ';
+     end;
+   if length(c)>0 then p=c;
+   if num>0  then do;       /* Ones     */
+     str = str || p || ones(num);
+     end;
+   end process_num;
+
+ end NUMWRD;
+

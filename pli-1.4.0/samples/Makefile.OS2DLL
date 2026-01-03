@@ -1,0 +1,34 @@
+# Makefile for PL/I Sample Programs
+# Iron Spring PL/I 1.2.0
+
+# ******************************************************
+# ***** This file builds sample executables linked *****
+# ***** with the library DLL.                      *****
+# ***** To execute the samples, the DLL must be    *****
+# ***** accessible: either in LIBPATH or by typing *****
+# ***** the command 'SET beginlibpath=..\lib'      *****
+# ***** (without the quotes)                       *****
+# ******************************************************
+
+PLI	= ..\plic.exe
+PLIFLGS	= -lixgo -ew
+INC     = ..\lib\include
+LIBDIR	= ..\lib
+
+all:	filedump.exe numwrd.exe  readu.exe hanoi.exe libver.exe  \
+	filefind.obj hexdump.obj print_listing.exe   pmhanoi.exe \
+	sorttest.exe task.exe    keysamp.exe         refsamp.exe \
+        area.exe     isub.exe
+
+clean:	
+	del *.obj *.exe *.lst *.map
+
+%.obj:	%.pli 
+	${PLI} -C ${PLIFLGS}  $^ -o $*.obj
+%.exe:	%.obj
+	LINK386 /m:f /a:8 /st:0x100000 $*.obj,,,${LIBDIR}\prf.lib,sample.def;
+
+pmhanoi.obj:	pmhanoi.pli
+	${PLI} -C ${PLIFLGS} -cn(^^)  pmhanoi.pli
+pmhanoi.exe:	pmhanoi.obj
+	LINK386 /m:f /a:8 /st:0x1000000 pmhanoi.obj,,,${LIBDIR}\prf.lib,pm.def; 

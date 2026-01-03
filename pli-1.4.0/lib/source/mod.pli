@@ -1,0 +1,317 @@
+ /* _pli_Mod                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Mod  (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jun, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Implement MOD() builtin.                     */
+ /*                                                                  */
+ /*      This implements the IBM definition of MOD, which is         */
+ /*      the smallest NONNEGATIVE value R such that (x-R)/y = n.     */                 
+ /*      This differs from the ANSI definition of MOD(x,y) as:       */
+ /*      "x-y*floor(x/y)", which is used by almost all other         */
+ /*      PL/I compilers.                                             */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I Descriptor formats                      */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                    +20 | -> Output descriptor                 |  */
+ /*                        +--------------------------------------+  */
+ /*                    +16 | -> Output data area                  |  */
+ /*                        +--------------------------------------+  */
+ /*                    +12 | -> Second input descriptor (y)       |  */
+ /*                        +--------------------------------------+  */
+ /*                    +8  | -> Second input data (y)             |  */
+ /*                        +--------------------------------------+  */
+ /*                    +4  | -> First input descriptor (x)        |  */
+ /*                        +--------------------------------------+  */
+ /*                    +0  | -> First input data (x)              |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Inputs have been converted to common base and scale by      */
+ /*      compiled code to simplify conversions.                      */
+ /*                                                                  */
+ /*      Output:        Output is REAL with common base and scale.   */
+ /*                     If the result is FIXED, see SC26-3114-01,    */
+ /*                     p.361 for result precision.  Note that MOD   */
+ /*                     always returns a positive value.             */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . Need to check for and handle FIXEDOVERFLOW.  */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2012-07-05: Error if mod of negative number is zero. 0.9.3*/
+ /*        2013-09-18: Fix problem with FIXED DECIMAL.          0.9.4*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Mod: proc(pX,pXDesc,pY,pYDesc,pOut,pOutDesc)
+                             external( '_pli_Mod' )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pX                  ptr;                /* ->X Data         */
+ dcl     pXDesc              ptr;                /* ->X Descriptor   */
+ dcl     pY                  ptr;                /* ->Y Data         */
+ dcl     pYDesc              ptr;                /* ->Y Descriptor   */
+ dcl     pOut                ptr;                /* ->Output Data    */
+ dcl     pOutDesc            ptr;                /* ->Output Descr.  */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     BaseScale           fixed bin(7);       /* Common Base+Scale*/
+         /* 0 = FIXED BINARY                                         */
+         /* 1 = FIXED DECIMAL                                        */
+         /* 2 = FLOAT BINARY                                         */
+         /* 3 = FLOAT DECIMAL                                        */
+ dcl     XSign               bit(1)              init( '0'b );
+ dcl     XTempXB             fixed bin(31);      /* Temporaries      */
+ dcl     XTempXD             fixed dec(18);
+ dcl     XTempL              float bin(64);
+ dcl     YTempXB             fixed bin(31);
+ dcl     YTempXD             fixed dec(18);
+ dcl     YTempL              float bin(64);
+ dcl     ZTempXB             fixed bin(31);      /* Results          */
+ dcl     ZTempXD             fixed dec(18);
+ dcl     ZTempL              float bin(64);
+ dcl     QuotXB              fixed bin(31);      /* FLOOR(x/y)  0.9.4*/
+ dcl     QuotXD              fixed dec(18);      /* FLOOR(x/y)  0.9.4*/
+ dcl    (p1,p2,pr,q1,q2,qr)  fixed bin(7);       /* Precision & Scale*/
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     fb7                 fixed bin(7)        based;
+ dcl     fb15                fixed bin(15)       based;
+ dcl     fb31                fixed bin(31)       based;
+ dcl     fd18                fixed dec(18)       based;
+ dcl     LB23                float bin(23)       based;
+ dcl     LB49                float bin(49)       based;
+ dcl     LB64                float bin(64)       based;
+
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (abs,sign,stg,string,max,min,null,trunc)
+                             builtin;
+ %page;
+ 
+ /*------------------------------------------------------------------*/
+ /* Program Entry Point                                              */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ p1 = pXDesc->XB_prec;                 /* Get prec and Scale         */
+ p2 = pYDesc->XB_prec;
+ pr = pOutDesc->XB_prec;
+ q1 = pXDesc->XB_scale;
+ q2 = pYDesc->XB_scale;
+ qr = pOutDesc->XB_scale;
+
+ /*-----------------------------------*/
+ /* Get input values                  */
+ /*-----------------------------------*/
+ select( pOutDesc->XB_id );
+
+   when( '41'x ) do;                   /* FIXED BINARY               */
+     BaseScale=0;
+     if p1 < 8                         /* Get working X value        */
+     then XTempXB = pX->fb7;
+     else if p1 < 16
+     then XTempXB = pX->fb15;
+     else XTempXB = pX->fb31;
+     if p2 < 8                         /* Get working Y value        */
+     then YTempXB = pY->fb7;
+     else if p2 < 16
+     then YTempXB = pY->fb15;
+     else YTempXB = pY->fb31;
+     pOut->fb31 = 0;                   /* Initialize result          */
+     end; /* FIXED BIN */
+
+   when( '42'x ) do;                   /* FIXED DECIMAL              */
+     BaseScale=1;
+     XTempXD = pX->fd18;               /* Get working values         */
+     YTempXD = pY->fd18;
+     pOut->fd18 = 0;                   /* Initialize result          */
+     end; /* FIXED DEC */
+
+   when( '43'x ) do;                   /* FLOAT BINARY               */
+     BaseScale=2;
+     if p1 < 53                        /* Get working X value        */
+     then XTempL = pX->LB23;
+     else if p1 < 64
+     then XTempL = pX->LB49;
+     else XTempL = pX->LB64;
+     if p2 < 53                        /* Get working Y value        */
+     then YTempL = pY->LB23;
+     else if p2 < 64
+     then YTempL = pY->LB49;
+     else YTempL = pY->LB64;
+     pOut->LB64 = 0;                   /* Initialize result          */
+     end; /* FLOAT BIN */
+
+   when( '44'x ) do;                   /* FLOAT DECIMAL              */
+     BaseScale=3;
+     if p1 < 14                        /* Get working X value        */
+     then XTempL = pX->LB23;
+     else if p1 < 127
+     then XTempL = pX->LB49;
+     else XTempL = pX->LB64;
+     if p2 < 14                        /* Get working Y value        */
+     then YTempL = pY->LB23;
+     else if p2 < 127
+     then YTempL = pY->LB49;
+     else YTempL = pY->LB64;
+     pOut->LB64 = 0;                   /* Initialize result          */
+     end; /* FLOAT DEC */
+
+   end; /* select */
+
+ /*-----------------------------------*/
+ /* Compute MOD()                     */
+ /*-----------------------------------*/
+ select( BaseScale );
+
+   when(0) do;                         /* FIXED BINARY               */
+     if YTempXB=0 then goto ZDIV;      /* Raise ZERODIVIDE           */
+     if XTempXB<0 then do;             /* Handle negatives           */
+       XSign='1'b;
+       XTempXB = -XTempXB;
+       end;
+     if YTempXB<0 then YTempXB = -YTempXB;
+     QuotXB = XTempXB/YTempXB;                                /*0.9,4*/
+     if qr>0 then do;
+       QuotXB = QuotXB / twopower(qr);                        /*0.9.4*/
+       end;
+     ZTempXB = QuotXB * YTempXB;         /* y*floor(x/y)        0.9.4*/
+     if q1>qr then do;                 /* Scale temporaries          */
+       XTempXB = XTempXB * twopower(qr-q1);
+       end;
+     if q2>qr then do;
+       ZTempXB = ZTempXB * twopower(qr-q2);
+       end;
+     ZTempXB = XTempXB - ZTempXB;      /* Compute MOD                */
+     if ZTempXB=0 then return;         /* Zero result           0.9.3*/
+     if XSign then do;
+       ZTempXB = YTempXB - ZTempXB;
+       end; /* XSign */
+     end; /* FIXED BIN */
+
+   when(1) do;                         /* FIXED DECIMAL              */
+     if YTempXD=0 then goto ZDIV;      /* Raise ZERODIVIDE           */
+     if XTempXD<0 then do;             /* Handle negatives           */
+       XSign='1'b;
+       XTempXD = -XTempXD;
+       end;
+     if YTempXD<0 then YTempXD = -YTempXD;
+     QuotXD = XTempXD/YTempXD;                                /*0.9.4*/
+     if qr>0 then do;
+       QuotXD = QuotXD / tenpower(qr);                        /*0.9.4*/
+       end;
+     /* Do the multiplication in decimal to avouid possible ofl 0.9.4*/
+     ZTempXD = QuotXD * YTempXD;       /* y*floor(x/y)          0.9.4*/
+     if q1>qr then do;                 /* Scale temporaries          */
+       XTempXD = XTempXD * tenpower(qr-q1);
+       end;
+     if q2>qr then do;
+       ZTempXD = ZTempXD * tenpower(qr-q2);
+       end;
+     ZTempXD = XTempXD - ZTempXD;      /* Compute MOD                */
+     if ZTempXD=0 then return;         /* Zero result           0.9.3*/
+     if XSign then do;
+       ZTempXD = YTempXD - ZTempXD;
+       end; /* XSign */
+     end; /* FIXED DEC */
+
+   otherwise do;                       /* FLOAT                      */
+     if YTempL=0 then goto ZDIV;       /* Raise ZERODIVIDE           */
+     if XTempL<0 then do;              /* Handle negatives           */
+       XSign='1'b;
+       XTempL = -XTempL;
+       end;
+     if YTempL<0 then YTempL = -YTempL;
+     QuotXD = XTempL/YTempL;                                  /*0.9.4*/
+     ZTempL = QuotXD * YTempL;                                /*0.9.4*/
+     ZTempL = XTempL - ZTempL;         /* Compute MOD                */
+     if ZTempL=0 then return;          /* Zero result           0.9.3*/
+     if XSign then do;
+       ZTempL = YTempL - ZTempL;
+       end; /* XSign */
+     end; /* FLOAT */
+
+   end; /* select */
+
+ /*-----------------------------------*/
+ /* Store result                      */
+ /*-----------------------------------*/
+ select( pOutDesc->XB_id );
+
+   when( '41'x ) do;                   /* FIXED BINARY               */
+     if pr < 8                         /* Get working X value        */
+     then pOut->fb7  = ZTempXB;
+     else if pr < 16
+     then pOut->fb15 = ZTempXB;
+     else pOut->fb31 = ZTempXB;
+     end; /* FIXED BIN */
+
+   when( '42'x ) do;                   /* FIXED DECIMAL              */
+     pOut->fd18 = ZTempXD;
+     end; /* FIXED DEC */
+
+   when( '43'x ) do;                   /* FLOAT BINARY               */
+     if pr < 53                        /* Get working X value        */
+     then pOut->LB23 = ZTempL;
+     else if pr < 64
+     then pOut->LB49 = ZTempL;
+     else pOut->LB64 = ZTempL;
+     end; /* FLOAT BIN */
+
+   when( '44'x ) do;                   /* FLOAT DECIMAL              */
+     if pr < 14                        /* Get working X value        */
+     then pOut->LB23 = ZTempL;
+     else if pr < 127
+     then pOut->LB49 = ZTempL;
+     else pOut->LB64 = ZTempL;
+     end; /* FLOAT DEC */
+
+   end; /* select */
+
+   return;                             /* Return result to caller    */
+
+ /*-----------------------------------*/
+ /* Raise the ZERODIVIDE condition    */
+ /*-----------------------------------*/
+ ZDIV:
+   signal ZERODIVIDE;
+   return;                             /* Rerurn zero                */
+
+ %page;
+
+ %include DESC;
+ %include LIMITS;
+ %include TWOPOWER;
+ %include TENPOWER;
+
+ end pli_Mod;

@@ -1,0 +1,108 @@
+ /* _pli_OSCreateThread                                              */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.2         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSCreateThread(PL/I runtime) [OS/2]     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar, 2011                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSCreateThread                          */
+ /*                                                                  */
+ /*      Function:      Operating system dependent Thread creation.  */
+ /*                                                                  */
+ /*                     OSCreateThread is a wrapper for the OS/2     */
+ /*                     DosCreateThread function.                    */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     OS/2: DosCreateEventSem, DosResetEventSem,   */
+ /*                           DosPostEventSem, DosWaitEventSem,      */
+ /*                           DosCloseEventSem.                      */
+ /*                     Assumes the OS handle of or pointer to an    */
+ /*                     Event semaphore is FIXED BIN(31).            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*      dcl     OSCreateThread entry( 	ptr,		/*pfnFunction*/
+ /*			 	     	ptr,		/*ulArg      */
+ /*			 	     	fixed bin(31),	/*ulStackSz  */
+ /*			 	     	bit(32),	/*ulFlags    */
+ /*			 	     	ptr )		/*pulStkAddr */
+ /*		     		returns( fixed bin(31) )	     */
+ /*			     	ext( '_pli_OSCreateThread' )         */
+ /*			     	options( LINKAGE(SYSTEM) );	     */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ OSCreateThread: 	proc( pfnFunc,
+			   ulArg,
+			   ulStkSz,
+			   ulFlags,
+			   pulStkAddr )
+			returns( fixed bin(31) )
+              		options( linkage(system) )
+             		ext( '_pli_OSCreateThread' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl	pfnFunc		     ptr;
+ dcl    ulArg		     fixed bin(31);
+ dcl	ulStkSz		     fixed bin(31);
+ dcl	ulFlags		     bit(32);
+ dcl	pulStkAddr	     ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     tid                 fixed bin(31);
+ dcl     RC                  fixed bin(31);
+ dcl     pStack              ptr;          
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     PTR                 ptr       based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosCreateThread   entry( ptr,			/* pTID */ 
+				  ptr,			/* pfnThread */
+                                  fixed bin(31),	/* ulArg */
+				  bit(32),		/* ulFlags */
+				  fixed bin(31) )	/* ulStackSize*/
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosCreateThread' );
+
+ dcl    (addr,sysnull)       builtin;
+
+ /*-------------------------------------------------------*/
+ /*                                                       */
+ /*-------------------------------------------------------*/
+
+ /* Flags? */
+
+ RC = DosCreateThread(	addr(tid),    /* Start the thread*/
+			pfnFunc,
+			ulArg,
+			'00000000'bx,
+			ulStkSz );
+ pStack = sysnull();
+ pulStkAddr->PTR = pStack;
+ /* But how do we get pStack?? */
+ if RC=0 then return(tid);
+ return( -RC );
+
+
+ end OSCreateThread;

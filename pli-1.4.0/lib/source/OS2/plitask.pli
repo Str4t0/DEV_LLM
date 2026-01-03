@@ -1,0 +1,382 @@
+ /* PLITASK - PL/I Task interface                                    */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.1         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        PLITASK                                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          April, 2010                                  */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      PLITASK is the PL/I TASK interface.          */
+ /*                                                                  */
+ /*      Entry Points:  PLITASK                                      */
+ /*                                                                  */
+ /*      Calling Sequence: (see below)                               */
+ /*                                                                  */
+ /*      Parameters:                                                 */
+ /*                                                                  */
+ /*      Description:                                                */
+ /*          Iron Spring PL/I implements the PL/I for MVS and VM     */
+ /*          multitasking functions.  PL/I(F) tasking is somewhat    */
+ /*          different - all tasks are subtasks of a hidden "control */
+ /*          task."  IBM Enterprise PL/I implements threading but    */
+ /*          not multitasking - uses a different API.                */
+ /*                                                                  */
+ /*          All required information is passed to PLITASK in a      */
+ /*          block called a 'TSB' (Task Startup Block) which is      */
+ /*          created as a result of a CALL with the TASK, EVENT, or  */
+ /*          PRIORITY options.  The TSB is located on the stack      */
+ /*          above (higher addresses) any required dummy arguments   */
+ /*          and the argument list.  The address of the TSB is       */
+ /*          passed to PLITASK as the sole argument.  All data       */
+ /*          between the argument and the start of the TSB is        */
+ /*          moved to the new thread's stack as arguments to the     */
+ /*          invoked procedure.  The stack layout looks like this:   */
+ /*          (for PL/I linkage.)                                     */
+ /*                                                                  */
+ /*               |         TSB            |                         */
+ /*               +------------------------+ <-+                     */
+ /*               |                        |   |                     */
+ /*               |    Dummy arguments     |   |                     */
+ /*               |      and such          |   |                     */
+ /*               +------------------------+   |                     */
+ /*           +4  |    Argument list       |   |                     */
+ /*               +------------------------+   |                     */
+ /*           +0  |    Addr(TSB)           | --+                     */
+ /*               +------------------------+                         */
+ /*                                                                  */
+ /*          The TSB contains the number of arguments and a flag     */
+ /*          word indicating whether each argument points to data    */
+ /*          or to a locator/descriptor pair.                        */
+ /*                                                                  */
+ /*          Following the move, the argument list is relocated      */
+ /*          as necessary.  Procedures with SYSTEM linkage           */
+ /*          don't require relocation.                               */
+ /*           1. Each argument is an address.  If the address is     */
+ /*              between the address of the TSB passed to PLITASK    */
+ /*              and the start of the TSB itself then -              */
+ /*           2. The address is relocated by the difference between  */
+ /*              the address of the original argument list and       */
+ /*              the new.                                            */
+ /*           3. If the flags word indicates that this argument      */
+ /*              points to a locator/descriptor and the address of   */
+ /*              the loc/desc is in the relocated area, these        */
+ /*              fields are processed like argument addresses.       */
+ /*                                                                  */
+ /*          TCBs are linked in the following structure:             */   
+ /*                                                                  */
+ /*             +---------+      (child->parent)                     */
+ /*             | Initial |<------+----------------+                 */
+ /*             +---------+       ^                ^                 */
+ /*                 | ^           |                |                 */
+ /*                 v |           |                |                 */
+ /*             +---------+   +---------+     +---------+            */
+ /*             | First   | ->| Next    | ...>| Last    |            */
+ /*             | Child   |   | Sibling |     | Child   |            */
+ /*             +---------+   +---------+     +---------+            */
+ /*                 | ^          ...              ...                */
+ /*                 v |                                              */
+ /*             +---------+                                          */
+ /*             | Child of|-> ...                                    */
+ /*             |  Child  |                                          */
+ /*             +---------+                                          */
+ /*                ...                                               */
+ /*                                                                  */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*	     PLITASK uses the thread routine BeginThread.	     */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ PLITASK: package exports( pli_task, new_task );
+
+ /*------------------------*/
+ /* EXTERNAL data          */
+ /*------------------------*/
+ dcl	  thread_mutex	      fixed bin(31)  static    init(0)
+              ext( '_pli_thread_mutex' );
+
+ /*------------------------*/
+ /* Prototypes             */
+ /*------------------------*/
+ dcl     PTR                 ptr                 based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB31                fixed bin(31)       based;
+ dcl     EVENT		     event		 based;
+ 
+ /*------------------------*/
+ /* EXTERNAL entries       */
+ /*------------------------*/
+ dcl     GetTCB              entry(fixed bin(31))
+                             external( '_pli_GetTCB' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+ dcl     BeginThread         entry( ptr,	  /* pfnThread       */
+ 				    ptr,	  /* ulArg	     */
+				    ptr,	  /* pTask	     */
+				    ptr,	  /* pEvent	     */
+                                    bit(32),      /* ulFlags	     */
+				    fixed bin(31),/* ulStackSize     */
+				    fixed bin(31) ) /* ulPriority    */
+                             external( '_pli_BeginThread' )
+                             returns( ptr )          
+                             options( LINKAGE(SYSTEM) );
+ dcl	 mutex_wait	     entry(ptr)			     
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_mutex_wait' );
+ dcl	 mutex_post	     entry(ptr)			     
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_mutex_post' );
+
+ dcl    (
+         addr,
+         allocate,
+         auto,
+         binvalue,
+	 completion,
+         entryaddr,
+         heximage,
+         null,
+         plifill,
+         plimove,
+	 status,
+         stg,
+         sysnull
+        )                    builtin;
+ dcl     barrier             builtin;
+
+ PLI_TASK: procedure(pTSB)
+           ext( '_pli_Task' )
+           options( linkage(system) );
+
+ /*------------------------*/
+ /* Parameters             */
+ /*------------------------*/
+ dcl     pTSB                ptr;           /* ->TSB                 */
+
+ /*------------------------*/
+ /* AUTOMATIC data         */
+ /*------------------------*/
+ dcl     rc                  fixed bin(31);
+ dcl     pTCB		     ptr;
+ dcl     thread_stack        fixed bin(31); /* Thread stack size     */
+ dcl	 thread_start  	     event;	    /* Complete when started */
+ dcl     p                   ptr;
+	  
+ /*-----------------------------------*/
+ /* Beginning of procedure            */
+ /*-----------------------------------*/
+ p,pTSB->TSB_parent = GetTCB(0);        /* Current TCB address       */
+ pTSB->TSB_pStart = addr(thread_start);
+ completion(thread_start)='0'b;
+ if (p->TCB_flags&'C0000000'bx)='00000000'bx then do;
+   /*display( 'PLITASK: Can''t start thread' );*/
+   signal error;
+   end;
+ if pTSB->TSB_pTask^=sysnull() then do;	/* Init TASK variable        */
+   call plifill( pTSB->TSB_pTask, '00'x, stg(null()->TASK) );
+   pTSB->TSB_pTask->TASK_priority = pTSB->TSB_priority;
+   end;
+
+ /*-----------------------------------*/
+ /* Start the thread                  */
+ /*-----------------------------------*/
+ p = addr(pTSB);      
+ thread_stack = 8192;  /* TEST */
+ pTCB = BeginThread( entryaddr(new_task),	  /* pfnThread	     */
+ 		     p,				  /* ulArg	     */
+		     pTSB->TSB_pTask,		  /* pTask	     */
+		     pTSB->TSB_pEvent,    	  /* pEvent	     */
+                     '00000000'bx, 		  /* Start active    */
+		     thread_stack,  		  /* Stack size	     */
+		     pTSB->TSB_priority );	  /* Thread priority */
+		     
+ if pTSB->TSB_pTask^=sysnull() 		/* Init TASK variable        */
+ then pTSB->TSB_pTask->TASK_pTCB = pTCB;		     
+ /*display( 'PLITASK: Waiting for task to start' );/**/
+ wait( thread_start );                 	/* Wait for thread startup   */
+ /*display( 'PLITASK: Wait complete' );            /**/
+ /* The wait is complete when 'new_task' has initialized.	     */
+ 
+ return;                               /* Return to caller           */
+
+ end PLI_TASK;
+
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* This is the startup procedure for the new thread.  It runs as    */
+ /* the first procedure with the new stack.                          */
+ /*------------------------------------------------------------------*/
+ new_task: proc(ppTSB)
+             options( fromalien linkage(system) )
+             ext( '_pli_Subtsk' ); 
+    
+  /*------------------------*/
+  /* Parameters             */
+  /*------------------------*/
+  dcl     ppTSB               ptr;           /* ->addr(pTSB)         */
+
+  /*------------------------*/
+  /* AUTOMATIC data         */
+  /*------------------------*/
+  dcl     pTSB                ptr;           /* ->TSB                */
+  dcl     pTCB		      ptr;	     /* ->My TCB	     */
+  dcl     pParent	      ptr;	     /* ->Parent TCB	     */
+  dcl     rc                  fixed bin(31);
+  dcl    (pArg,pTop)          ptr;
+ 
+  dcl     arglist_size        fixed bin(31);
+  dcl     reloc               fixed bin(31);
+  dcl     i                   fixed bin(31);
+  dcl    (p,q)                ptr;
+  dcl	 task_complete        event;	     /* Task complete	     */
+  dcl    thread_exit	      label;	     /* BeginThread exit     */
+
+  /* 'real_entry' is declared as 'LINKAGE(SYSTEM)' regardless of     */
+  /* the actual linkage type.					     */
+  dcl     real_entry          entry variable
+                              options( linkage(system) );
+
+  /*display( 'PLITASK: Subtask started' );/**/
+  pTCB = GetTCB(0);         		    /* Current TCB address   */
+  pTSB = ppTSB->PTR;                        /* addr(TSB)             */
+  thread_exit = pTCB->TCB_Exit;		    /* Save exit address     */
+  pTCB->TCB_Exit = task_exit;		    /* Set new exit	     */
+  pTCB->TCB_pComplete = addr(task_complete);/* ->Completion Event    */
+
+  /*-----------------------------------------------------------------*/
+  /* Initialize TCB Task Chains                                      */
+  /*-----------------------------------------------------------------*/
+  pTCB->TCB_flags = '40000000'bx;	    /* Not initial task	     */
+  pParent = pTSB->TSB_parent;    	    /* addr(parent TCB)      */
+  pTCB->TCB_parent = pParent;		    /* Update par/child rel  */
+  call mutex_wait( addr(thread_mutex) );   /* Lock the TCB structure */
+  
+  if pParent->TCB_child^=sysnull then do;
+    pTCB->TCB_sib = pParent->TCB_child;
+    pParent->TCB_child = pTCB;
+    end;
+  else do;
+    pParent->TCB_child = pTCB;
+    end;
+  call mutex_post( addr(thread_mutex) );/* Unlock TCB structure 0.9.2*/
+ 
+ /*------------------------------------------------------------------*/
+ /* Get stack storage and copy argument list for thread,             */
+ /* as indicated in the TSB to the current stack.                    */
+ /* Note that the AUTO [or AUTOMATIC] builtin is currently intended  */
+ /* for internal use only.                                           */
+ /*------------------------------------------------------------------*/
+ arglist_size = pTSB - ppTSB;               /* Size of arglist       */
+ pArg = auto(arglist_size);                 /* Get stack storage     */
+ pTop = pArg + arglist_size;                /* Highest address       */
+ reloc = ppTSB+4 - pArg;                    /* Relocation factor     */
+ call plimove(pArg,ppTSB+4,arglist_size );  /* Move arglist          */
+
+ /*------------------------------------------------------------------*/
+ /* For PL/I linkage, relocate any addresses of dummy arguments or   */
+ /* temporary descriptors.                                           */
+ /*------------------------------------------------------------------*/
+ if pTSB->TSB_PLI_linkage then do;          /* Do the relocations    */
+   p = pArg;                                /* ->First argument      */
+   do i=1 to pTSB->TSB_argcnt;
+     if p->PTR > ppTSB & p->PTR < pTSB then do;
+       call do_reloc(i,p);
+       p = p + stg(null()->PTR);
+       end; /* if */
+     end; /* do i */
+   end; /* PLI_linkage */
+   
+ /*------------------------------------------------------------------*/
+ /* Call the invoked procedure, the (relocated) argument list is     */
+ /* on top of the stack.                                             */
+ /*------------------------------------------------------------------*/
+ real_entry = pTSB->TSB_entryaddr;          /* Save entry address    */
+ /*display( 'PLITASK: Posting task started' );/**/
+ call barrier;                              /* Flush cache writes    */
+ completion(pTSB->TSB_pStart->EVENT)='1'b;  /* Task started          */
+ /*------ After this point the TSB will no longer be accessible -----*/
+ 
+ call real_entry;                           /* Call the thread code  */
+
+ /*------------------------------------------------------------------*/
+ /* The task returns here when it terminates.                        */
+ /* Lock the TCB structure to update the chains.                     */
+ /*------------------------------------------------------------------*/
+ task_exit:
+   /*display( 'PLITASK: task_exit for TCB ' || /**/
+   /*            heximage(addr(pTCB),4) );     /**/
+   call mutex_wait( addr(thread_mutex) );	/* Lock the TCB structur0.9.2*/
+   if pParent->TCB_child = pTCB then do;/* Is this first child?	     */
+     pParent->TCB_child  = pTCB->TCB_sib;/* Yes, just unlink	     */
+     pTCB->TCB_sib = sysnull;		/* Just for luck	     */
+     end; /* first child */
+   else do;				/* No, locate on chain	     */
+     p = pParent->TCB_child;
+     do while('1'b );
+       q = p->TCB_sib;
+       if q=sysnull then signal error;  /* TCB not found	     */
+       if q=pTCB then leave;		/* This is the TCB	     */
+       p = q;				/* Otherwise chase chain     */
+       end; /* do while */
+     p->TCB_sib = q->TCB_sib;
+     q->TCB_sib = sysnull;
+     end; /* not first child */
+   /* If this is the last child of this parent, post parent.	     */
+   if pParent->TCB_child=sysnull	/* Is this last child?       */
+   then do;
+     /*display( 'PLITASK: Last child complete' );/**/
+     completion(pParent->TCB_pComplete->EVENT)='1'b;
+     end;
+   call mutex_post( addr(thread_mutex) );	/* Unlock TCB structure 0.9.2*/
+    /* If this task has children, wait for them to terminate.        */
+    if pTCB->TCB_child^=sysnull		/* Does this task have childr*/
+    then do;
+      /*display( 'PLITASK: waiting for subtask completion' );/**/
+      wait(task_complete); 
+      end; 
+    goto thread_exit;			/* Finish the thread	     */
+    /* 'thread_exit' does not return   */
+
+  /*----------------------------------*/
+  /* Relocate Argument List           */
+  /*----------------------------------*/
+  do_reloc: proc(n,pArg);
+    dcl  n                   fixed bin(31);
+    dcl  pArg                ptr;
+    dcl  pNew                ptr;
+    dcl  p                   ptr;
+    pNew = pArg->PTR - reloc;
+    pArg->PTR = pNew;
+    if pTSB->tsb_arginfo(n) then do;    /* Loc/Desc         */
+      if pNew->pData > ppTSB & pNew->pData < pTSB then do;
+        p = pNew->pData - reloc;
+        pNew->pData = p;
+        end; /* loc */
+      if pNew->pDesc > ppTSB & pNew->pDesc < pTSB then do;
+        p = pNew->pDesc - reloc;
+        pNew->pDesc = p;
+        end; /* desc */
+      end; /* loc/desc */
+    end do_reloc;
+
+ end new_task;
+
+ %page;
+
+ %include tsb;
+ %include tcb;
+ %include task;
+ %include locdesc;
+ %include entry;
+ %include gbl;
+ %include event;
+
+ end PLITASK;                         /* End of package             */
+

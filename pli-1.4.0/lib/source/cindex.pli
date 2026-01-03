@@ -1,0 +1,134 @@
+ /* _pli_CIndex                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CIndex (PL/I runtime)                   */
+ /*      Version:       1.0                                          */
+ /*      Date:          Oct, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CIndex [INDEX() BIF]                    */
+ /*                                                                  */
+ /*      Function:      Implement INDEX to search for                */
+ /*                     character string expressions                 */
+ /*                     longer than a single character.              */
+ /*                                                                  */
+ /*                     The compiler generates inline code for       */
+ /*                     character index search for a single          */
+ /*                     character.  This procedure relies on that    */
+ /*                     and calls INDEX to obtain the position of    */
+ /*                     the first character in a longer substring.   */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL CIndex entry(pHaystk,pNeedle,iBegin)     */
+ /*                                returns( fixed bin(31) )          */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     ix = CIndex( addr(haystack_loc_desc),        */
+ /*                                  addr(needle_loc_desc),          */
+ /*                                  iBegin );                       */
+ /*                                                                  */
+ /*                     'Haystack' and 'Needle' are both character-  */
+ /*                     string expressions.                          */
+ /*                                                                  */
+ /*                     Each address points to a character-string    */
+ /*                     Locator/Descriptor.                          */
+ /*                                                                  */
+ /*      To Do:       . Since FIXED BINARY UNSIGNED is not yet       */
+ /*                     implemented this procedure is written for    */
+ /*                     signed.  This is a relatively small hit.     */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2018-04-05: Error if multi-char 'y' at end of 'x'0.9.10b*/
+ /*                                                                  */
+ /********************************************************************/
+
+ CIndex: proc( pHaystack, pNeedle, iBegin )
+         returns( fixed bin(31) )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_CIndex' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pHaystack           ptr;
+ dcl     pNeedle             ptr;
+ dcl     iBegin              fixed bin(31);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pH,pN,pS)           ptr;
+ dcl    (iPos,iRem)          fixed bin(31);
+ dcl    (lH,lN)              fixed bin(31);
+ dcl     c                   char(1);
+
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     OneC                char(1)             based;
+ dcl     Max_String          char(32767)         based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ dcl    (addr,index,length,stg,string,sysnull)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Get Lengths and positions         */
+ /*-----------------------------------*/
+ pH = pHaystack->pData;                /* Address of 'Haystack'      */
+ if pHaystack->pDesc->ST_id='10'x      /* Is Haystack fixed-length?  */
+ then lH=pHaystack->pDesc->ST_len;     /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lH = length(pH->Varying_String);
+   pH = pH + stg( sysnull()->Varying_String );
+   end;
+ pN = pNeedle->pData;                  /* Address of 'Needle'        */
+ if pNeedle->pDesc->ST_id='10'x        /* Is Needle fixed-length?    */
+ then lN=pNeedle->pDesc->ST_len;       /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lN = length(pN->Varying_String);
+   pN = pN + stg( sysnull()->Varying_String );
+   end;
+
+ if lN=0 | lH=0 then return(0);        /* Zero-length string         */
+ if iBegin<0                           /* Check starting position    */
+ then signal STRINGRANGE;              /* Manual doesn't say optional*/
+ if iBegin>lH then return(0);          /* Past end of string         */
+ pS = pH;                              /* Save starting address      */
+ pH = pH+iBegin;                       /* String start address       */
+ lH = lH-iBegin;                       /* Remaining string length    */
+ c = pN->OneC;                         /* Get first character        */
+
+ /*-----------------------------------*/
+ /* Search the string                 */
+ /*-----------------------------------*/
+ do while( lH>0 );
+   iPos = INDEX( substr(pH->Max_String,1,lH), c );
+   /*----------------------------------------------------------------*/
+   /* See comment above.  Single-character INDEX() generates         */
+   /*                     inline code.                               */
+   /*----------------------------------------------------------------*/
+   if iPos=0 then return(0);           /* Leading character not found*/
+   iRem = lH-iPos;
+   if iRem<lN-1 then return(0);        /* This can't be it    0.9.10b*/
+   pH = pH+iPos-1;                     /* Point to string            */
+   lH = lH-iPos+1;                     /* Recompute length           */
+   if substr(pH->Max_String,1,lN) = Substr(pN->Max_String,1,lN)
+   /* NOTE: This should use the COMPARE() BIF                        */
+   /*       if COMPARE(pH,pN,iN)=0                                   */
+   then return(pH-pS+1);               /* That's a hit!              */
+   pH = pH+1;                          /* Continue                   */
+   lH = lH-1;
+   end; /* do while */
+
+ return(0);
+
+ %page;
+ %include DESC;
+ %include LOCDESC;
+
+ end CIndex;

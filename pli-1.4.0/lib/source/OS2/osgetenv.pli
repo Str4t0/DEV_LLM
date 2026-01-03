@@ -1,0 +1,76 @@
+
+ /* _pli_OSGetEnv                                                    */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        OSGetEnv (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSGetEnv                                */
+ /*                                                                  */
+ /*      Function:      Operating system dependent code for          */
+ /*                     'get environment' function.                  */
+ /*                     Analog of C's 'getenv()' function.           */
+ /*                                                                  */
+ /*      Dependencices: Linux                                        */
+ /*                     OS/2: DosScanEnv                             */
+ /*                                                                  */
+ /*      Called From:   user code.                                   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL name char(*); /* null-terminated         */
+ /*                     DCL pval ptr;     /* ->null-terminated value */
+ /*                     DCL OSGetEnv entry( ptr )                    */
+ /*                             returns(ptr)                         */
+ /*                             options( linkage(system) )           */
+ /*                             ext( '_pli_OSGetEnv' );              */
+ /*                     pval = OSGetEnv( addr(name) )                */
+ /*                                                                  */
+ /*      Returns:       Pointer to null-terminated value for         */
+ /*                     environment variable 'name', if 'name'       */
+ /*                     is found, or sysnull() if not.               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ OSGetEnv: proc(pName) 
+           returns(ptr)
+           options( linkage(system) )
+           external( '_pli_OSGetEnv' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pName               ptr;      /* ->Null-terminated name     */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     pValue              ptr;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      DosScanEnv         entry( ptr,              /* pszName     */
+                                    ptr )             /* ppszValue   */
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) )
+                             ext( 'DosScanEnv' );
+ dcl     sysnull             builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Scan Environment String                                          */
+ /*------------------------------------------------------------------*/
+ RC = DosScanEnv( pName, addr(pValue) );
+ if RCª=0 then pValue = sysnull();
+ return(pValue);
+
+ end OSGetEnv;
+

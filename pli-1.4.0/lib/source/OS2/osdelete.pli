@@ -1,0 +1,72 @@
+ /* _pli_OSDelete                                                    */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSDelete (PL/I runtime)                 */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSDelete                                */
+ /*                                                                  */
+ /*      Function:      Operating system dependent file deleteion.   */
+ /*                                                                  */
+ /*      OSDelete is a user-callable procedure.                      */
+ /*                                                                  */
+ /*      The return code from DOSDelete is passed back to the caller.*/
+ /*      A return code of 0 indicates no error, see OS/2 Control     */
+ /*      Program documentation for list of other possible errors.    */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     OS/2: DOSDelete                              */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = _pli_OSDelete( svFilename );            */
+ /*                     svFilename - varying string containing       */
+ /*                       the name of the file to be deleted.        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSDelete: proc(svFilename)
+               returns( fixed bin(31) )
+               ext( '_pli_OSDelete' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     svFilename          char(*) varying;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     szFilename          char(260);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DOSDelete           entry( ptr )           /* pszFile     */
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DosDelete' );
+
+ dcl    (addr,length,stg,substr,sysnull)
+                             builtin;
+
+ /*-------------------------------------------------------*/
+ /*                                                       */
+ /*-------------------------------------------------------*/
+ szFilename = svFilename || '00'x;     /* make null-terminated       */
+ RC = DOSDelete( addr(szFilename) );
+ return( RC );
+
+ end pli_OSDelete;

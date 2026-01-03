@@ -1,0 +1,85 @@
+ /* _pli_Exit                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        pli_Exit (PL/I runtime) [OS2]                */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar, 2001                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Exit                                    */
+ /*                                                                  */
+ /*      Function:      PL/I 'EXIT' statement                        */
+ /*                                                                  */
+ /*      Dependencices: OS/2 DosExit                                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Call _pli_Exit                               */
+ /*                                                                  */
+ /*      Called from:   _pli_Init at end of process                  */
+ /*                     --??-- at end of thread.                     */                  
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*	    2010-02-27: Source renamed 'osexit' per new standard.0.8d*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Exit: proc              external( '_pli_Exit' )
+                             options( linkage(system) );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                    fixed bin(31);
+ dcl     retc                  fixed bin(31);
+ dcl     pTCB                  ptr;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace EXIT_THREAD   by 0;
+ %replace EXIT_PROCESS  by 1;
+ 
+ dcl	 dosexit	     entry( fixed bin(31), fixed bin(31) )
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( 'DosExit' );
+ dcl	 dosunsetex          entry( ptr )
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( 'DosUnsetExceptionHandler' );
+ dcl     GetTCB              entry(fixed bin(31))	      /*0.9.2*/
+                             external( '_pli_GetTCB' )	      /*0.9.2*/
+                             returns( ptr )		      /*0.9.2*/
+                             options( LINKAGE(SYSTEM) );      /*0.9.2*/
+ dcl     pliretv             builtin;
+ 
+ /*------------------------------------------------------------------*/
+ /*      Code for EXIT Statement                                     */
+ /*------------------------------------------------------------------*/
+
+ /*------------------------------------------------------------------*/
+ /* Check thread being terminated.                                   */
+ /* . If Thread 1 (major task) execute 'SIGNAL FINISH',              */
+ /*   Normal return from FINISH calls OS/2                           */
+ /*   to terminate all threads.                                      */
+ /* . If other than thread 1, call OS/2                              */
+ /*   to terminate current thread only.                              */
+ /*------------------------------------------------------------------*/
+
+ retc = pliretv();
+ pTCB = GetTCB(0);                     /* Get addr(my_TCB)           */
+ if pTCB^=sysnull() then do;
+   RC = dosunsetex( pTCB->TCB_pEREGREC );/* Release except handler   */
+   end;
+ 
+ /* Probably need to do more here: e.g. call EndThread to clean up   */
+ /* stack, etc.                                                      */
+ RC = dosexit( EXIT_THREAD, retc );
+
+ %include TCB;
+  
+ end pli_Exit;

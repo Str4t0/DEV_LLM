@@ -1,0 +1,40 @@
+[package]
+name = "pli-lexer-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-fast PL/I syntax highlighter for WebAssembly"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Logos - compile-time optimized lexer generator (FAST!)
+logos = "0.14"
+
+# WASM bindings
+wasm-bindgen = "0.2"
+
+# Serialization for JS interop
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+serde_json = "1.0"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Maximum optimization for speed
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# Strip debug info for smaller WASM
+strip = true
+
+[profile.release.package."*"]
+opt-level = 3
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

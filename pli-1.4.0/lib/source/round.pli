@@ -1,0 +1,237 @@
+ /* Round                                                            */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version               */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        Round                                        */
+ /*      Version:       1.0                                          */
+ /*      Date:          September, 2015                              */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Implement ROUND builtin for FIXED data.      */
+ /*                                                                  */
+ /*      Entry Points:  _pli_RoundB - round FIXED BINARY value       */
+ /*                     _pli_RoundD - round FIXED DECIMAL value      */
+ /*                     _pli_RoundF - round FLOAT value (not implem) */
+ /*                                                                  */
+ /*      Calling Sequence: (not user-callable)                       */
+ /*                     DCL ROUNDx entry( ptr, ptr, ptr, ptr )       */
+ /*                                returns( <maybe> )                */              
+ /*                                options( linkage(system) )        */
+ /*                                ext( '_pli_Roundx' );             */
+ /*                     result = ROUNDx( addr(source value),         */
+ /*                                      addr(source descriptor),    */
+ /*                                      addr(result value), /* [OPT]*/
+ /*                                      addr(result descriptor),    */
+ /*                                                                  */
+ /*          Round is an experiment with builtins that may return    */
+ /*          REAL or COMPLEX values.  Based on the descriptor the    */
+ /*          result is returned either in EAX/ST(0) or on the stack. */
+ /*                                                                  */
+ /*          The digit postition for rounding is obtained from the   */
+ /*          scale in the result descriptor.                         */
+ /*                                                                  */
+ /*      Parameters:                                                 */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ /********************************************************************/
+ /*  ENTRY POINT ROUNDB                                              */
+ /********************************************************************/
+ ROUND: package exports( ROUNDB, ROUNDD );
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FB31                fixed bin(31)       based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB07                fixed bin(07)       based;
+ dcl     FD18                fixed dec(18)       based;
+ 
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     SetFlags            entry( bit(16) )
+                             ext( '_pli_SetFlags' )
+                             options( linkage(system) );
+                             
+%page;                             
+ ROUNDB: procedure( pS, pdS, pR, pDR )
+         returns( fixed bin(31) )
+         options( linkage(system) )
+         ext( '_pli_RoundB' );
+         
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   (pS,pdS,pR,pdR)      ptr;
+   
+   dcl    n                   fixed bin(7);
+   dcl   (sizeR,sizeS)        fixed bin(7);
+   dcl    bNeg                bit(1)              init( '0'b );
+   dcl    complex             bit(1)              init( '0'b );
+   dcl   (p,q,i,s)            fixed bin(7);
+   dcl    source              fixed bin(31);
+
+   p    = pdS->XB_prec;
+   q    = pds->XB_scale;
+   if p<=7 then sizeS=1;                /* Compute argument size     */
+   else if p<=15 then sizeS=2;
+   else sizeS = 4;
+   s    = pdR->XB_prec;
+   if s<=7 then sizeR=1;                /* Compute result size       */
+   else if s<=15 then sizeR=2;
+   else sizeR = 4;
+   complex = substr(pdS->XB_flgs,1,1);
+   /* Compute position to round */ 
+   n = pdR->XB_scale;                   /* Digit to round            */ 
+   i = q-n;                             /* Scale difference          */
+   select(sizeS);
+     when(1) source = pS->FB07;
+     when(2) source = pS->FB15;
+     when(4) source = pS->FB31;
+     end;
+   call RndB;       
+   if ^complex                          /* Return REAL result in EAX */
+   then return( source );
+   
+   /* Complex result goes on stack     */
+   select(sizeR);
+     when(1) pR->FB07 = source;
+     when(2) pR->FB15 = source;
+     when(4) pR->FB31 = source;
+     end;
+   pR = pR+sizeR;
+   pS = pS+sizeS;
+   select(sizeS);
+     when(1) source = pS->FB07;
+     when(2) source = pS->FB15;
+     when(4) source = pS->FB31;
+     end;
+   call RndB;   
+   select(sizeR);
+     when(1) pR->FB07 = source;
+     when(2) pR->FB15 = source;
+     when(4) pR->FB31 = source;
+     end;
+   return;    
+   
+ RndB: procedure;
+   dcl    neg                 bit(1)              init( '0'b );
+   if source<0 then do;
+     neg='1'b;
+     source = -source;
+     end;
+   /* If the scale difference is <= one we're trying to round in a   */
+   /* nonexistant digit.                                             */
+   if i>0
+   then source = source + twopower(i-1);
+   /* If the scale difference is positive the scale of the result is */
+   /* less than the scale of the source, so we divide.  If negative  */
+   /* the result scale is greater, so we multiply.                   */  
+   if i>0 
+   then source = source / twopower(i);
+   else if i<0
+        then source = source * twopower(-i);
+   if neg then source = -source;
+   end RndB;
+                  
+         
+   end ROUNDB;
+ 
+ /********************************************************************/
+ /*  ENTRY POINT ROUNDD                                              */
+ /********************************************************************/
+ ROUNDD: procedure( pS, pdS, pR, pDR )
+         returns( fixed dec(18) )
+         options( linkage(system) )
+         ext( '_pli_RoundD' );
+         
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/         
+   dcl   (pS,pdS,pR,pdR)      ptr;
+   
+   dcl    n                   fixed bin(7);             
+   dcl    bNeg                bit(1)              init( '0'b );
+   dcl    complex             bit(1)              init( '0'b );
+   dcl   (p,q,i)              fixed bin(7);
+   dcl    source              fixed dec(18);
+
+   p    = pdS->XD_prec;
+   q    = pds->XD_scale;
+   complex = substr(pdS->XD_cplx,1,1);
+   /* Compute position to round */ 
+   n = pdR->XD_scale;                   /* Digit to round            */ 
+   i = q-n;                             /* Scale difference          */
+   source = pS->FD18;
+   call RndD;       
+   if ^complex                          /* Return REAL result in ST(0*/
+   then return( source );
+   
+   /* Complex result goes on stack     */
+   pR->FD18 = source;                   /* Store real component      */
+   pR = pR+stg(null()->FD18);
+   pS = pS+stg(null()->FD18);
+   source = pS->FD18;                   /* Pick up imag component    */
+   call RndD;   
+   pR->FD18 = source;                   /* Store rounded imag comp   */
+   return;    
+   
+ RndD: procedure;
+   dcl    neg                 bit(1)              init( '0'b );
+   if source<0 then do;
+     neg='1'b;
+     source = -source;
+     end;
+   /* If the scale difference is <= one we're trying to round in a   */
+   /* nonexistant digit.                                             */
+   if i>0
+   then source = source + 5 * tenpower(i-1);
+   /* If the scale difference is positive the scale of the result is */
+   /* less than the scale of the source, so we divide.  If negative  */
+   /* the result scale is greater, so we multiply.                   */  
+   if i>0 
+   then source = source / tenpower(i);
+   else if i<0
+        then source = source * tenpower(-i);
+   if neg then source = -source;
+   end RndD;
+                  
+   end ROUNDD;
+ 
+ /********************************************************************/
+ /*  ENTRY POINT ROUNDF (not used)                                   */
+ /*  ROUNDF rounds floating point numbers                            */
+ /********************************************************************/
+ ROUNDF: procedure( pS, pdS, pR, pDR )
+         returns( float dec(20) )
+         options( linkage(system) )
+         ext( '_pli_RoundF' );
+         
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/         
+   dcl   (pS,pdS,pR,pdR)      ptr;
+   
+   dcl    n                   fixed bin(31); 
+         
+   end ROUNDF;
+   
+   %include DESC;
+   %include tenpower;
+   %include twopower;
+   
+   end ROUND;
+            

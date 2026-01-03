@@ -1,0 +1,79 @@
+ /* _pli_HexI                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        HexI (PL/I runtime)                          */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jun, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  HexI                                         */
+ /*                                                                  */
+ /*      Function:      Implement the 'HEXIMAGE' builtin.            */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     None                                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     +------------------------+                   */
+ /*                +0C  | addr(result)           |                   */
+ /*                     +------------------------+                   */
+ /*                +08  | Insert char val or -1  |                   */
+ /*                     +------------------------+                   */
+ /*                +04  | Length(data)           |                   */
+ /*                     +------------------------+                   */
+ /*                +00  | Addr(data)             |                   */
+ /*                     +------------------------+                   */
+ /*                                                                  */
+ /*                     Compiled code has computed the required      */
+ /*                     length of the returned string and allocated  */
+ /*                     storage.                                     */
+ /*                                                                  */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ HexI: procedure(pDat,iLen,iFil,pRes)
+       options( linkage(system) )
+       ext( '_pli_HexI' );
+ dcl  pDat                   ptr;           /* ->Input data          */
+ dcl  iLen                   fixed bin(31); /* Length(input data)    */
+ dcl  iFil                   fixed bin(31); /* Fill char or -1       */
+ dcl  pRes                   ptr;           /* ->Result string       */
+
+ dcl  j                      fixed bin(15);
+ dcl  c1                     char(1)   based;
+ dcl  c2                     char(2)   based;
+ dcl  cfil                   char(1);
+
+ if iFilª=-1 then cfil = byte(iFil);   /* Get fill character         */
+ do j=1 to iLen;    
+   pRes->c2 = hexone( pDat->c1 );
+   pDat = pDat+1;
+   pRes = pRes+2;
+   if j=iLen then leave;               /* Last character processed   */
+   if mod(j,4)=0 & iFilª=-1 then do;   /* Fill character?            */
+     pRes->c1 = cfil;
+     pRes = pRes+1;
+     end;                  
+   end; /* do j */
+ return;
+
+ hexone: proc(c) returns( char(2) );
+ dcl  c                      char;
+
+ dcl  hextabs                char(16) static     init
+                   ('0123456789ABCDEF'),
+      hextab           (0:15)char(1)  defined hextabs;
+
+ dcl  p                      ptr,
+      x                      bit(8) based(p);
+ p = addr(c);
+ return( hextab( substr(x,1,4) ) || hextab( substr(x,5,4) ) );
+ end hexone;
+
+ end HexI;

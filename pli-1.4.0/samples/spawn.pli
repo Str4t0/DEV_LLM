@@ -1,0 +1,246 @@
+ /* spawn.pli                                             */
+ /*********************************************************/
+ /*                                                       */
+ /* Module:   spawn                                       */
+ /*           Peter Flass -- May 2011                     */
+ /*                                                       */
+ /* Function: Spawn is a Linux module which will FORK and */
+ /*           EXEC a child process, passing it an         */
+ /*           argument string, and optionally wait for    */
+ /*           completion.                                 */
+ /*                                                       */
+ /* Usage:    spawn( name, pPID [,Arg...] ,0 )            */
+ /*           'name' and all 'Arg' arguments are          */
+ /*           character string constants or varying or    */
+ /*           nonvarying character variables.             */
+ /*           Any other data types will cause errors.     */
+ /*           'pPID' is a pointer which should be         */
+ /*           sysnull if the caller will wait for         */
+ /*           the called process to complete, otherwise   */
+ /*           it is a pointer to a FIXED BINARY(31)       */
+ /*           variable which will receive the child PID.  */
+ /*           The last argument must be zero or sysnull   */ 
+ /*           to indicate the end of arguments.           */
+ /*                                                       */
+ /*           'name' is the full path name of the program */
+ /*           to be EXEC'd.                               */
+ /*                                                       */
+ /*           Each 'Arg' is an argument to pass to the    */
+ /*           called program.  All arguments will be      */
+ /*           concatenated separated by a single blank,   */
+ /*           null-terminated, and passed as a            */
+ /*           command line.                               */
+ /*                                                       */
+ /*           If spawn does not wait for child process    */
+ /*           completion the caller is responsible        */
+ /*           for waiting via WAITPID using something     */
+ /*           like the following:                         */
+ /*             dcl     bChildStatus        bit(32);      */
+ /*             RC = syscall( SYS_WAITPID,                */
+ /*                           PID,                        */
+ /*			      addr(bChildStatus), 0 );    */
+ /*           where 'PID' is the value pointed to by      */
+ /*           'pPID' in the call to spawn.                */
+ /*                                                       */
+ /* Dependencies:                                         */
+ /*           Spawn may not be compatible with PL/I       */
+ /*           tasking as of Linux Kernel 2.6.35.  This    */
+ /*           may be fixed in future Linux releases.      */
+ /*                                                       */
+ /*           PL/I locator and descriptor formats.        */
+ /*                                                       */
+ /* To Do:                                                */
+ /*                                                       */
+ /*********************************************************/
+ 
+pkgspawn: package exports(spawn);
+
+spawn: proc( dummy ) 
+       options( linkage(system) );
+
+  /*------------------------*/
+  /* Parameters             */
+  /*------------------------*/
+  dcl     dummy               fixed bin(31);		      
+
+  /*------------------------*/
+  /* Automatic Data         */
+  /*------------------------*/
+  dcl    (p,q,s,t)            ptr;
+  dcl    (pName,pStatus,pParms,pAuto)
+                              ptr; 
+  dcl    (num_args,size_args) fixed bin(31)       init(0);
+  dcl     size_auto           fixed bin(31)       init(0);
+  dcl     n                   fixed bin(31);			      
+  dcl     RC                  fixed bin(31);
+  dcl     PID                 fixed bin(31);
+  dcl     bChildStatus        bit(32);
+
+  /*------------------------*/
+  /* Static Data            */
+  /*------------------------*/
+  dcl     nullptr             fixed bin(31)  static    init(0);
+
+  /*------------------------*/
+  /* External Data          */
+  /*------------------------*/
+  dcl	 thread_mutex	      fixed bin(31)  static    init(0)
+              ext( '_pli_thread_mutex' );
+
+  /*------------------------*/
+  /* Prototypes             */
+  /*------------------------*/
+  dcl     PTR                 ptr       based;
+  dcl     VARSTR              char(256) based     varying;
+  dcl     FIXSTR              char(256) based;
+  dcl     C1                  char(1)   based;
+  
+  
+  dcl     ChildPID            fixed bin(31) based;
+
+  /*------------------------*/
+  /* External Entries       */
+  /*------------------------*/
+  %replace SYS_EXIT    by  1;
+  %replace SYS_FORK    by  2;
+  %replace SYS_WAITPID by  7;
+  %replace SYS_EXECVE  by 11;
+ 
+  dcl     syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+			      
+  dcl    (
+          addr,
+	  auto,
+	  length,
+	  stg
+	 )                    builtin;			      
+ 
+  /*-----------------------------------*/
+  /* Compute auto storage requirement  */
+  /*-----------------------------------*/
+  p = addr(dummy);                      /* ->ParmList address        */
+  q = p->PTR;                           /* ->Name loc/desc           */
+  size_args = getsize(q)+1;
+  
+  p = p+stg(null()->PTR);
+  pStatus = p->PTR;                     /* ->addr(Process status blk)*/
+  pStatus = pStatus->PTR;               /* ->Process status block    */
+  
+  p = p+stg(null()->PTR);               /* ->Next argument           */  
+  do while( '1'b );
+    q = p->PTR;                         /* ->Argument loc/desc       */
+    if q->pData=sysnull() then leave;   /* 0                         */
+    n = getsize(q);
+    if n=0 then leave;                  /* Null string ends list     */
+    num_args  = num_args+1;
+    size_args = size_args + n + 1;
+    p = p+stg(null()->PTR);
+    end; /* do */
+    
+  /* The storage requirement is the sum of all (string length)+1     */
+  /* plus 4 (pointer) for each argument + 4 bytes (null).            */ 
+  size_auto = stg(null()->PTR) * (num_args+2) + size_args;
+  pAuto = auto(size_auto+4);            /* Get auto storage          */
+  n = mod(size_auto,4);                 /* Force dword boundary      */
+  if n>0 then n=4-n;
+  pAuto = ptradd(pAuto,n);
+  s = pAuto;
+  pName = pAuto + stg(null()->PTR) * (num_args+2);
+ 
+  /*-----------------------------------*/
+  /* Build null-terminated arg strings */
+  /*-----------------------------------*/
+  p = addr(dummy);                      /* ->ParmList address        */
+  q = p->PTR;                           /* ->Name loc/desc           */
+  n = getsize(q);
+  call plimove(pName,getaddr(q),n);
+  t = pName+n;
+  t->C1 = '00'x;
+  s->PTR = pName;                       /* Store string address      */
+  s = s+stg(null()->PTR);
+  pParms = t+1;
+  t = pParms;                           /* Argument list goes here   */ 
+  
+  p = p+stg(null()->PTR);               /* Ignore process status     */
+  p = p+stg(null()->PTR);               /* ->Next argument           */  
+  do while( '1'b );
+    q = p->PTR;                         /* ->Argument loc/desc       */
+    if q->pData=sysnull() then leave;   /* 0                         */
+    n = getsize(q);
+    if n=0 then leave;                  /* Null string ends list     */
+    s->PTR = t;                         /* Store string address      */
+    s = s+stg(null()->PTR);
+    call plimove(t,getaddr(q),n);
+    t = t+n;
+    t->C1 = '00'x;
+    t = t+1;
+    p = p+stg(null()->PTR);
+    end; /* do */
+  s->PTR = sysnull;                     /* End of address list       */ 
+    
+  /*-----------------------------------*/
+  /* Create new process                */
+  /*-----------------------------------*/
+  RC = syscall( SYS_FORK );
+  if RC<0 then do;
+    signal error;
+    end;
+  PID = RC;  
+ 
+  /*-----------------------------------*/
+  /* C H I L D   P R O C E S S         */
+  /*-----------------------------------*/
+  if PID=0 then do;
+    RC = syscall( SYS_EXECVE, pName, pAuto, addr(nullptr) );
+    if RC<0 then display( 'C: EXECVE RC=' || RC );
+    RC = syscall( SYS_EXIT, 0 );
+    end;
+   
+  /*-----------------------------------*/
+  /* P A R E N T   P R O C E S S       */
+  /*-----------------------------------*/
+  /* There is apparently a problem with futexes in combination       */
+  /* with FORK and EXEC.  Hopefully this will be fixed.              */
+  thread_mutex = 0;                     /* <futex>                   */
+  if pStatus^=sysnull then do;          /* No wait requested         */
+    pStatus->ChildPID = PID;
+    return;
+    end;
+  RC = syscall( SYS_WAITPID, PID, addr(bChildStatus), 0 );
+  /* I'm not sure why the following is required, maybe something     */
+  /* with FUTEXs and FORK/EXEC.                                      */
+  /* If it's not in the parent process will hang.                    */
+  /* This should probably be protected.                              */
+  thread_mutex = 0;                     /* <futex>                   */
+  return;
+  
+  /* Get the current length of a string argument                     */
+  getsize: proc(p) returns( fixed bin(31) );
+    dcl   p                   ptr;
+    dcl   n                   fixed bin(31);
+    select( p->pDesc->ST_id );
+      when( '10'x ) n = p->pDesc->ST_len;
+      when( '11'x ) n = length(p->pData->VarStr);
+      /* Otherwise raise error */
+      end; /* select */
+    return( n ); 
+    end getsize; 
+     
+  /* Get the address of a string argument                            */
+  getaddr: proc(p) returns( ptr );
+    dcl   p                   ptr;
+    dcl   a                   ptr;          
+    a = p->pData;
+    if p->pDesc->ST_id = '11'x then a=a+2;
+    return(a);
+    end getaddr;
+   
+   %include locdesc;
+   %include desc;
+   
+   end spawn;
+   
+   end pkgspawn;

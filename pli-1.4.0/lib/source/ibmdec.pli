@@ -1,0 +1,180 @@
+ /* _pli_IBMDEC                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.3         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        IBMDEC  (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2012                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:                                               */
+ /*                     _pli_ToIBMDec - Intel to IBM conversion      */
+ /*                     _pli_FrIBMDec - IBM to Intel conversion      */
+ /*                                                                  */
+ /*      Function:      Convert fixed decimal between IBM            */
+ /*                     'packed decimal' format and Intel 'BCD'      */
+ /*                     format used internally.                      */
+ /*                                                                  */
+ /*      Dependencies:  Intel BCD format                             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*    _pli_FrIBMDec:                                                */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Packed Decimal descriptor         |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> IBM-format packed decimal data    |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Value returned in ST(0)                      */
+ /*                                                                 */
+ /*    _pli_ToIBMDec:                                                */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> addr(IBM-format packed result)    |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Packed Decimal descriptor         |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> addr(BCD TBYTE data)              |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Called From:   Compiled code.                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*          . This package can be extended to perform arithmetic    */
+ /*            on packed decimal numbers without requiring a         */
+ /*            a separate conversion operation from/to BCD.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2014-10-21: ToIBMDec - add SIZE check              0.9.6*/
+ /*                                                                  */
+ /********************************************************************/
+ 
+ IBMDEC: package exports( ToIBM,FromIBM );
+
+ /*-------------------------*/
+ /* STATIC data             */
+ /*-------------------------*/
+ /* Digit positions for digits 0:17 within BCD number              */
+ dcl      d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl    1 packed_decimal      based,
+          5 dec_dig     (0:31)bit(4);
+ dcl      xBCD                fixed dec(18)  based;           /*0.9.6*/
+	  
+ /*-------------------------*/
+ /* External entries        */        
+ /*-------------------------*/
+ dcl     GetFlags            entry                            /*0.9.6*/
+                             external( '_pli_GetFlags' )      /*0.9.6*/
+                             returns( bit(16) )               /*0.9.6*/
+                             options( LINKAGE(SYSTEM) );      /*0.9.6*/
+ dcl     SetFlags            entry( bit(16) )                 /*0.9.6*/
+                             ext( '_pli_SetFlags' )           /*0.9.6*/
+                             options( linkage(system) );      /*0.9.6*/
+			     
+ %include BCDINC;
+ %include desc;
+	
+ /*------------------------------------------------------------------*/
+ /* Convert Intel BCD io IBM Packed Decimal format                   */
+ /*------------------------------------------------------------------*/
+ ToIBM: Proc( pBCD, pDesc, pIBM )
+        options( linkage(system) )
+	ext( '_pli_ToIBMDec' );
+	
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   (pBCD,pDesc,pIBM)    ptr;
+  	
+   /*-----------------------*/
+   /* AUTOMATIC data        */
+   /*-----------------------*/
+   dcl    prec                fixed bin(31);
+   dcl   (i,j)                fixed bin(7);
+   dcl    dec_digits          fixed bin(31);
+   dcl    b                   bit(4);
+ %include condmask;                                           /*0.9.6*/
+   dcl    bSize               bit(1)    init( '0'b );         /*0.9.6*/
+        
+   string(cond_mask) = GetFlags();     /* Get enabled cond mask 0.9.6*/
+   M_LibMod = '1'b;                    /* Indicate 'Library'    0.9.6*/
+   call SetFlags( string(cond_mask) ); /* Set for called rtns   0.9.6*/
+
+   prec = pDesc->XD_prec;
+   dec_digits = prec;                  /* Number of digits to cvt    */
+   j = dec_digits-1;
+   if mod(prec,2)=0 then do;
+     j=j-1;
+     end;
+   do i=0 to hbound(d);                              
+     b = pBCD->BCD_dig(d(i));
+     if b^='0'bx & j<0 then signal error;
+     if j>=0 then pIBM->dec_dig(j)=b;
+     else if b^='0000'b then bSize='1'b;                      /*0.9.6*/
+     j = j-1;
+     end; /* do i */
+   j = prec;                             /* Number of digits converted*/
+   if mod(prec,2)=0 then j=j+1;
+   if pBCD->BCD_sign                     /* Set sign of result        */
+   then b='D'bx; 
+   else b='C'bx; 
+   pIBM->dec_dig(j)=b; 
+   if bSize & M_size then signal SIZE;                       /*0.9.6*/
+ 	
+   end ToIBM;			
+		
+ /*------------------------------------------------------------------*/
+ /* Convert IBM Packed Decimal format to Intel BCD                   */
+ /*------------------------------------------------------------------*/
+ FromIBM: Proc( pIBM, pDesc ) 
+          returns( fixed dec(18) )
+          options( linkage(system) )
+	  ext( '_pli_FrIBMDec' );
+ 	
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl  (pIBM, pDesc)         ptr;
+  	
+   /*-----------------------*/
+   /* AUTOMATIC data        */
+   /*-----------------------*/
+   dcl   prec                 fixed bin(31);
+   dcl   (i,j,k)              fixed bin(7);
+   dcl    b                   bit(4);
+   dcl    Result              fixed dec(18);
+   dcl    dec_digits          fixed bin(31);
+   dcl    pBCD                ptr;
+      
+   prec = pDesc->XD_prec;
+   pBCD = addr(Result);
+   Result=0;
+   dec_digits = prec;                   /* Number of digits to cvt   */
+   if mod(dec_digits,2)=1               /* If even number of digits  */
+   then dec_digits = dec_digits-1;      /* Then skip leading zero    */
+   i = dec_digits;                      /* Output digit              */
+   do j=0 to dec_digits;                                   
+     b = pIBM->dec_dig(j);
+     if b>'9'bx then signal error;      /* Bad digit                 */
+     if b>'0'bx & j>17                  /* Too many digits           */
+     then signal error; 
+     pBCD->BCD_dig(d(i)) = b;
+     i = i-1;
+     end; /* do i */
+   b = pIBM->dec_dig(j);                /* Get sign                  */
+   if b<'A'bx then signal error;        /* Invalid sign              */
+   if b='B'bx | b='D'bx                 /* Negative                  */
+   then pBCD->BCD_sign = '1'b;
+   return( result );
+  	
+   end FromIBM;	
+   
+   end IBMDEC;		

@@ -1,0 +1,128 @@
+ /* _pli_TBS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.9b        */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_TBS (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2018                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_TBS                                     */
+ /*                                                                  */
+ /*      Function:      Test a bit string for zero/nonzero,          */
+ /*                     return zero or nonzero in AL.                */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Descriptor for source string      |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Source string                     |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        0/'00000080'x in EAX (128) ['0'b | '1'b ]    */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      Errors:        None.                                        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ %replace isZero  by 0;
+ %replace notZero by 128;
+
+ pli_TBS: proc(pStr,pDesc)   returns( fixed bin(31) )
+                             external( '_pli_TBS' )
+                             options( LINKAGE(SYSTEM) );
+
+ 
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      pStr                ptr;                     /* -> Input   */
+ dcl      pDesc               ptr;                     /* -> Descript*/
+ 
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl      Bit_length          fixed bin(31);
+ dcl      Bit_offset          fixed bin(31);
+ dcl      (bits_bef,bits_aft) fixed bin(31);
+ dcl      p                   ptr;
+ dcl      n                   fixed bin(31);
+ 
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+ dcl      lead_mask        (7)bit(8)    static    init(
+        '01'bx, '03'bx, '07'bx, '0F'bx, '1F'bx, '3F'bx, '7F'bx );
+ dcl      trail_mask       (7)bit(8)    static    init(
+        '80'bx, 'C0'bx, 'E0'bx, 'F0'bx, 'F8'bx, 'FC'bx, 'FE'bx );
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     STR0                 char(0)   varying   based;
+ dcl     B8                   bit(8)              based;
+ dcl     Cx                   char(0)             based; 
+
+ dcl     addr                 builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ Bit_length = pDesc->st_len;
+ if Bit_length=0 then return(isZero);   /* Source is null string     */
+ Bit_offset = pDesc->st_bo;
+ if pDesc->st_id = '21'x                /* VARYING string            */
+ then pStr = pStr+stg(null->STR0);
+ bits_bef = 8-Bit_offset;               /* Leading Bits              */
+
+ if Bit_offset+Bit_length<=8            /* Source is single byte     */
+ then do;
+   if substr(pStr->B8,Bit_offset+1,Bit_length)='00'bx
+   then return(isZero);
+   else return(notZero);
+   end;
+
+ if bits_bef^=8 then do;                /* Not byte boundary         */
+   if (pStr->B8&lead_mask(bits_bef))^='00'b /* First bits not zeros  */
+   then return(notZero);
+   pStr = pStr+1;                       /* Rnd up to first full byte */
+   Bit_length = Bit_length - bits_bef;  /* Remaining length          */
+   if Bit_length=0 then return(isZero);
+   end;
+
+ bits_aft = Bit_length-(Bit_length/8)*8;/* Trailing bits             */
+ p = pStr + (Bit_length+7)/8 - 1;       /* ->Last byte               */
+ if bits_aft^=8 then do;
+   if (p->B8&trail_mask(bits_aft))^='00'b /* last bits byte not zeros*/
+   then return(notZero);
+   Bit_length = Bit_length - bits_aft;
+   if Bit_length=0 then return(isZero);
+   end;
+
+ /* Compare whole bytes                                              */
+ /* There is no good way to do this, VERIFY and comparison to the    */
+ /* null bit string both will call subroutines here.                 */
+ do while(Bit_length>0);
+   if pStr->B8^='00'bx then return(notZero);
+   Bit_length = Bit_length-8;
+   pStr = pStr+1;
+   end;
+ return(isZero);
+
+ %page;
+
+ %include DESC;
+
+ end pli_TBS;

@@ -1,0 +1,126 @@
+ /* _pli_OpenDir                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OpenDir (PL/I Runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OpenDir                                 */
+ /*                                                                  */
+ /*      Function:      This is the PL/I analog of the C 'opendir'   */
+ /*                     function.                                    */
+ /*                                                                  */
+ /*                     This procedure opens a directory specified   */
+ /*                     by name and returns the 'directory stream'   */
+ /*                     (file descriptor) for reading the directory. */
+ /*                     If unsuccessful, sysnull will be returned.   */
+ /*                     There is no equivalent of the C ERRNO field  */
+ /*                     to return additional error information.      */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Linux System Call interface.                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> null-terminated directory name    |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        If successful returns a directory handle     */
+ /*                     in eax.                                      */
+ /*                                                                  */
+ /*                     The handle is opaque to the caller, but      */
+ /*                     internally is a pointer to the following:    */
+ /*                                                                  */
+ /*                        +--------------------------------------+  */
+ /*                    +00 | Linux file descriptor for directory  |  */
+ /*                        +--------------------------------------+  */
+ /*                    +04 | maximum size of buffer               |  */
+ /*                        +--------------------------------------+  */
+ /*                    +08 | -> last byte+1                       |  */
+ /*                        +--------------------------------------+  */
+ /*                    +0C | -> next byte                         |  */
+ /*                        +--------------------------------------+  */
+ /*                    +10 | Directory data (4K-'10'x bytes)      |  */
+ /*                        +--------------------------------------+  */
+ /*                                                                  */
+ /*      Called from:   anywhere                                     */
+ /*                                                                  */
+ /*      Errors:        none                                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2023-07-26: switch to stat64                       1.1.1*/
+ /*                                                                  */
+ /********************************************************************/
+ 
+ %replace BUF_SIZE by 4096;
+
+ opendir: proc (pDirName)  
+          returns( ptr )                                   
+          external( '_pli_OpenDir' )
+          options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pDirname            ptr;      /* ->null-terminated name     */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     pDir                ptr;      /* -> PL/I 'dir' structure    */
+ dcl     my_stat             like stat64;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ %include fstat64;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/	  
+	  
+ /* PL/I 'dir' structure                         */
+ dcl    1 dir                 based(pDir),
+          5 dir_hdr,
+            10 dir_fd         fixed bin(31),
+	    10 dir_bufsz      fixed bin(31),
+	    10 dir_pLast      ptr,
+	    10 dir_pNext      ptr,
+	  5 dir_buffer        char(0);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_OPEN     by   5; 
+ %replace SYS_STAT64   by 195;
+ 
+ dcl      syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+
+ dcl    (addr,mod,string,substr) builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ RC = syscall( SYS_STAT64, pDirName, addr(my_stat) );         /*1.1.1*/
+
+ RC = syscall( SYS_OPEN, pDirName, 0 ); /* Open the directory        */
+ if RC<=0 then do;                      /* Need way to return error  */
+   return( sysnull );                                         /*1.1.1*/
+   end;
+ pDir = allocate(BUF_SIZE);             /* Get a buffer         1.1.1*/
+ dir_fd = RC;                           /* fd for directory          */
+ dir_bufsz = BUF_SIZE-stg(dir_hdr);     /* space for directory storag*/
+ dir_pLast,dir_pNext = pDir+BUF_SIZE;   /* Last, 'next' byte         */
+ return(pDir);                          /* Return addr as handle     */            
+
+ end opendir;    

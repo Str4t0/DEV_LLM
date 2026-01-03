@@ -1,0 +1,134 @@
+ /* _pli_GetS                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_GetS (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2005                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GetS                                    */
+ /*                                                                  */
+ /*      Function:      GET STRING driver.                           */
+ /*                                                                  */
+ /*      GetS is called once per data element to be read.            */
+ /*      It is passed the addresses of the caller's GET/PUT STRING   */
+ /*      Block (GPSB).                                               */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2009-09-24: LINEEND proc needs to return one with   0.8c*/
+ /*                      GBSB_pLine=sysnull so that GET LIST     0.8c*/
+ /*                      can recognize the end of data.          0.8c*/
+ /*                      Second call to LINEEND raises ERROR.    0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_GetS: proc( pGPSB )
+               options( linkage(system) )
+               ext( '_pli_GetS' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pGPSB               ptr;      /* -> GPSB                    */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     p                   ptr;
+ dcl     pData               ptr;      /* -> Data element            */
+ dcl     pDesc               ptr;      /* -> Data descriptor         */
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FB15                fixed bin(15) based;
+ dcl     NullStr             char(0)       varying;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetX                entry( ptr )
+                             external( '_pli_GetX' );
+
+ dcl    (
+         addr,length,
+         stg,substr
+        )                    builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry                                                  */
+ /*------------------------------------------------------------------*/
+ p = pGPSB->GPSB_pString;              /* addr(string locator/descr) */
+ pData = p->LocDesc.pData;             /* addr(string data)          */
+ pDesc = p->LocDesc.pDesc;             /* addr(string descriptor)    */
+ 
+ /*---------------------------------------------*/
+ /* First Use of this GPSB                      */
+ /*---------------------------------------------*/
+ if (pGPSB->GPSB_bOpt&'80000000'bx)ª='00000000'bx /* First time?     */
+ then do;
+   substr(pGPSB->GPSB_bOpt,1,1)='0'b;    /* Reset 'first time' flag  */
+   pGPSB->GPSB_aLine,                    /* -> String data           */
+       pGPSB->GPSB_pLine = pData;
+   if pDesc->ST_id = '11'x               /* VARYING String?          */
+   then do;                              /* Yes, length from prefix  */
+     pGPSB->GPSB_lnsize = pData->FB15;   /* Set length               */
+     pGPSB->GPSB_pLine =                 /* Skip over prefix         */
+       pGPSB->GPSB_pline + stg(NullStr);
+     end;
+   else                                  /* Else len from descriptor */
+     pGPSB->GPSB_lnsize = pDesc->ST_len;
+   pGPSB->GPSB_col    = 0;               /* Initial 'column pos'.    */
+   end; /* first time */
+
+ /*---------------------------------------------*/
+ /* Build Parameter List and call GetX          */
+ /*---------------------------------------------*/
+ SPL_pSRB    = addr(pGPSB->GPSB_SRB);  /* addr(SRB)                  */
+ SPL_pSBB    = addr(pGPSB->GPSB_SBB);  /* addr(SBB)                  */
+ SPL_bFlg    = '00000000'bx;           /* Flag                   0.5e*/
+ SPL_LineEnd = LineEnd;                /* addr(callback_proc)        */
+ call GetX( addr(SPL) );               /* GET this data element      */
+
+ return;
+
+ /*------------------------------------------------------------------*/
+ /* Callback proc: Called when line is empty.                        */
+ /*                                                                  */
+ /* COMMENT: The IBM compiler raises the ERROR condition             */
+ /*          (ONCODE=1004)  if ... any control format item is used   */
+ /*          with GET/PUT STRING.                                    */
+ /*          "If the number of characters in the string is less      */
+ /*           than the total number of characters specified by the   */
+ /*           data specification, the ERROR condition is raised."    */
+ /*                   - SC26-3114-01, p.258                          */
+ /*------------------------------------------------------------------*/
+ LineEnd: proc( code, count );
+   dcl  (code,count)         fixed bin(15);
+   if pGPSB->GPSB_pLine = SYSNULL()    /* Called after EOS   20090924*/
+   then signal ERROR;                                      /*20090924*/
+   pGPSB->GPSB_pLine = SYSNULL();                          /*20090924*/
+   return;
+   end LineEnd;
+
+ %page;
+
+ %include GPSB;
+ %include SRB;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_GetS;

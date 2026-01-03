@@ -1,0 +1,187 @@
+ /* _pli_CDB                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CDB (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2021                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CDB                                     */
+ /*                                                                  */
+ /*      Function:      Convert non-integral FIXED DECIMAL to        */
+ /*                     FIXED BINARY.                                */
+ /*                                                                  */
+ /*                     Integral conversions are done inline.        */
+ /*                                                                  */
+ /*                     Complex data will have one input and output  */
+ /*                     descriptor, and the input and output         */
+ /*                     data will be two contiguous fields.          */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Intel BCD format.                            */
+ /*                     PL/I Descriptor format                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                    +12 | -> Descriptor for FIXED DEC input    |  */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> FIXED DEC input                   |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Descriptor for FIXED BIN output   |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> FIXED BIN output                  |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Converted binary value is returned.          */
+ /*                     The output descriptor is not strictly        */
+ /*                     required as it can be derived from the input.*/
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      To Do:                                                      */ 
+ /*        * FIXED DECIMAL OPTIONS(IBM)                              */
+ /*        * Since 2**31 is defined in twopower we could             */
+ /*          avoid special handing for unsigned values               */
+ /*          if the precision is correct.                            */
+ /*                                                                  */
+ /*      Errors:        SIZE                                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        yyyy-mm-dd:                                               */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CDB: proc(pBin,pBDesc,pDec,pDDesc)
+                             external( '_pli_CDB' )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pBin                ptr;      /* -> FIXED BINARY input      */
+ dcl     pBDesc              ptr;      /* FIXED BIN Descriptor       */
+ dcl     pDec                ptr;      /* -> FIXED DEC output        */
+ dcl     pDDesc              ptr;      /* FIXED DEC Descriptor       */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pB,qB)              fixed bin(7);
+ dcl    (pD,qD)              fixed bin(7);
+ dcl     sz                  fixed bin(7);
+ dcl     bSize               bit(1)                   init( '0'b );
+ dcl     bUns                bit(1)                   init( '0'b );
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      UNIMPLEMENTED       condition;                      /*1.2.1*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18)       based;
+ dcl     FB7                 fixed bin(7)        based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB31                fixed bin(31)       based;
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,mod,string,substr) builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ if pDDesc->XD_id='48'x                /* OPTIONS(IBM)          1.0.1*/
+ then signal condition(UNIMPLEMENTED);                        /*1.0.1*/
+ pB = pBDesc->XB_prec;
+ qB = pBDesc->XB_scale;
+ pD = pDDesc->XD_prec;
+ qD = pDDesc->XD_scale;
+ /* Compute size of binary result      */ 
+ if (pBDesc->XB_flgs&'40'bx)^='00'bx    /* UNSIGNED            0.9.10*/
+ then do;                                                    /*0.9.10*/
+   bUns = '1'b;                                              /*0.9.10*/
+   if pB<=8       then sz=1;                                 /*0.9.10*/
+   else if pb<=16 then sz=2;                                 /*0.9.10*/
+   else                sz=4;                                 /*0.9.10*/
+   end;                                                      /*0.9.10*/
+ else do;                               /* SIGNED              0.9.10*/  
+   if pB<=7       then sz=1;                                 /*0.9.10*/
+   else if pb<=15 then sz=2;                                 /*0.9.10*/
+   else                sz=4;                                 /*0.9.10*/
+   end;                                                      /*0.9.10*/
+
+ /*---------------------------------------------*/
+ /* Convert real part                           */
+ /*---------------------------------------------*/
+ call convert;                         /* Convert real part          */
+
+ /*---------------------------------------------*/
+ /* Convert imaginary part                      */
+ /*---------------------------------------------*/
+ if (pBDesc->XB_flgs&'80'bx)='80'bx    /* Complex?             0.9.10*/
+ then do;
+   pDec = addr(pDec->BCD_end);         /* -> Imaginary part of output*/
+   pBin = pBin + stg(null()->FB31);    /* -> Imaginary part of 0.9.10*/
+   call convert;                       /* Convert imaginary part     */
+   end; /* Complex */
+
+ /*---------------------------------------------*/
+ /* Raise SIZE condition if enabled by caller   */
+ /*---------------------------------------------*/
+ (size): if bSize & M_size then signal SIZE;               /*20060215*/
+
+ return;
+
+ /*---------------------------------------------*/
+ /* Convert Real or Imaginary Part of Source    */
+ /*---------------------------------------------*/
+ convert: proc;
+   dcl  (int,frac)           fixed bin(31);
+   dcl   tmpb                fixed bin(31);
+   dcl   tmpd                fixed dec(18);
+   dcl   df                  fixed dec(18);                 /*0.9.10d*/
+   dcl  (l,m,n)              fixed bin(7);                 /*20090723*/
+   dcl   bSign               bit(1)              init( '0'b );
+ tmpd = pDec->FD18;
+ if tmpd<0 then do;                     /* Negative value            */
+   bSign = '1'b;
+   tmpd  = -tmpd;
+   end;
+ int  = tmpd/tenpower(qD);              /* Get integral part         */
+ frac = tmpd-int*tenpower(qD);          /* Get fractional part       */
+ int  = ISLL(int,qB);                   /* int = int * twopower(qB)  */
+ frac = ISLL(frac,qB);                  /* Convert fraction          */
+ frac = frac / tenpower(qD);
+ int  = int + frac;                     /* Final result              */
+ if int>=tenpower(pD) then bSize='1'b;  /* Size check                */
+ if bSign then int = -int;              /* Restore sign              */
+ select (sz);                           /* Store result              */
+   when(1) pBin->FB7  = int;
+   when(2) pBin->FB15 = int;
+   when(4) pBin->FB31 = int;
+   end; /* select */
+
+ end convert;
+   
+ %include BCDINC;
+ %include DESC;
+ %include TENPOWER;
+ %include TWOPOWER;
+
+ end pli_CDB;

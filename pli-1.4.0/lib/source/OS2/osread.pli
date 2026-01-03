@@ -1,0 +1,88 @@
+ /* _pli_OSRead                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSRead (PL/I runtime) [OS/2]            */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSRead                                  */
+ /*                                                                  */
+ /*      Function:      Operating system dependent read logic.       */
+ /*                                                                  */
+ /*      This is a revised version of 'OSRead' that uses a more      */
+ /*      C-like interface.  OS/2's DosRead provides a similar level  */
+ /*      of abstraction that's missing on bare-metal Linux.          */
+ /*      This routine will either call DosRead or the Linux system   */
+ /*      service.                                                    */
+ /*                                                                  */
+ /*      OSRead is called by READ to read a block of data.           */
+ /*      This procedure contains all operating-system dependent code.*/
+ /*      The file must be open for read.                             */
+ /*      The file position is assumed to be set prior to the call    */
+ /*      to OSRead.                                                  */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Linux: syscall                               */
+ /*                     OS/2: DOSRead                                */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = OSRead(hFile,pBuf,iCnt);                */
+ /*                                                                  */
+ /*                     hFile is the OS 'File Handle'.               */
+ /*                     pBuf is the address of the buffer.           */
+ /*                     iCnt is the maximum number of bytes to read. */
+ /*                     The returned value is either the positive    */
+ /*                     count of bytes read (may be zero), or a      */
+ /*                     negative error code.                         */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSRead: proc(hFile,pBuf,iCnt)
+              returns( fixed bin(31) )
+	      options( linkage(system) )
+              ext( '_pli_OSRead' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     hFile               fixed bin(31);      /* FD               */
+ dcl     pBuf                ptr;                /* ->Buffer         */
+ dcl     iCnt                fixed bin(31);      /* Byte count       */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     cbActual            fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DOSRead             entry( fixed bin(31),    /* hFile       */
+                                    ptr,              /* pBuffer     */
+                                    fixed bin(31),    /* cbRead      */
+                                    ptr )             /* pcbActual   */
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DosRead' );
+
+ /*-------------------------------------------------------*/
+ /* Read a block of data                                  */
+ /*-------------------------------------------------------*/
+ RC  = DosRead( hFile, pBuf, iCnt, addr(cbActual) );
+ if RC=0 then return(cbActual);
+ return(-RC);
+
+ end pli_OSRead;

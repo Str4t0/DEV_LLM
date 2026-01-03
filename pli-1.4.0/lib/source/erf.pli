@@ -1,0 +1,163 @@
+ /* _pli_ERF                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_ERF (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_ERF                                     */
+ /*                                                                  */
+ /*      Function:      ERF computes the value of the PL/I           */
+ /*                     builtin function ERF (the error function)    */
+ /*                     of its argument, which must be a float real. */
+ /*                                                                  */
+ /*      ERF(x) is defined as (2/SQRT(pi)) times the integral from   */
+ /*      0 to x of the function EXP(-(t**2))dt.                      */
+ /*      The returned result has the same base, scale, and precision */
+ /*      as the argument.  The computation is performed in           */
+ /*      extended floating-point.                                    */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Descriptor formats.                          */
+ /*                                                                  */
+ /*      Argument List:                                              */
+ /*             +----------------------------------+                 */
+ /*         +00 | addr(argument)                   |                 */
+ /*             +----------------------------------+                 */
+ /*         +04 | addr(argument/result descriptor) |                 */
+ /*             +----------------------------------+                 */
+ /*         +08 | addr(result)                     |                 */
+ /*             +----------------------------------+                 */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ ERF: proc(pData,pDesc,pRes)
+      returns( fixed bin(31) )
+      options( linkage(system) )
+      ext( '_pli_ERF' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pData               ptr;      /* ->Argument data            */
+ dcl     pDesc               ptr;      /* ->Descriptor               */
+ dcl     pRes                ptr;      /* ->Result data              */
+
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl     arg                 float bin(64); /* Argument value        */
+ dcl     res                 float bin(64); /* Result value          */
+ dcl     flt_size            fixed bin(7);  /* Argument size         */
+ dcl     accuracy            float bin(64); /* Result accuracy       */
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+ dcl     zero                float bin(64)  static    init( 0e0 );
+ /* This eliminates the calculation 2/SQRT(pi), and                  */
+ /* is accurate to ther limits of the x87.                           */
+ dcl     TwoOverSqrtPi_Hex   char(10)       static
+                   init( '8E68DB1482BA6E90FF3F'x );
+ dcl     TwoOverSqrtPi       float bin(64) 
+                   based( addr(TwoOverSqrtPi_Hex) );
+ dcl     eps              (3)float bin(64)  static
+                   init( 1.0e-4, 1.0e-14, 1.0e-16 ); 
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     LD07                float dec(7)        based;
+ dcl     LD15                float dec(15)       based;
+ dcl     LD20                float dec(20)       based;
+
+ dcl     INTEG               entry( entry, float bin(64),
+                                    float bin(64), float bin(64) )
+                             returns( float bin(64) )
+                             ext( '_pli_Integ' );
+
+ /*-----------------------------------*/
+ /* Determine hardware input size     */
+ /*-----------------------------------*/
+ select( pDesc->LD_id );
+   when( '43'x ) do;                   /* FLOAT BINARY               */
+     select;                           /* Choose input HW size       */
+       when( pDesc->LB_prec<=24 ) flt_size=4;
+       when( pDesc->LB_prec<=50 ) flt_size=8;
+       otherwise                  flt_size=10;
+       end; /* prec */
+     end; /* FLOAT BIN */
+   when( '44'x ) do;                   /* FLOAT DECIMAL              */
+     select;                           /* Choose input HW size       */
+       when( pDesc->LD_prec<=7  ) flt_size=4;                 /*0.9.3*/
+       when( pDesc->LD_prec<=15 ) flt_size=8;                 /*0.9.3*/
+       otherwise                  flt_size=10;
+       end; /* prec */
+     end; /* FLOAT BIN */
+   otherwise signal ERROR;             /* Not FLOAT input            */
+   end; /* LD_id */
+
+ accuracy = eps( (flt_size+2)/4 );        /* Select desired accuracy */
+
+ /* Integrate the function 'erff' from 0 to arg with                 */
+ /* accuracy as indicated by the last argument.                      */
+ /* The accuracy should be set according to the desired precision    */
+ /* of the result.  1.0e-17 seems to give results good to            */
+ /* 17 decimal digits [ext float, off in the last digit],            */
+ /* which is better than IBM PL/I for OS/2.                          */
+ /* Use 1.0e-14 for 14 digits [FLOAT DEC(14)], and  1.0e-5           */
+ /* for float dec(5).                                                */
+
+ call get_arg(pData);                  /* Get value of argument      */
+ res = INTEG(erff,zero,arg,accuracy);  /* Integrate the function     */
+ res = res * TwoOverSqrtPi;            /* Compute erf.               */
+ call put_result(pRes);                /* Return the result          */
+ return;
+
+ /*--------------------------------------------*/
+ /* This is the function being integrated      */
+ /*--------------------------------------------*/
+ erff: proc(t) returns( float bin(64) );
+   dcl   t                   float bin(64);
+   dcl   r                   float bin(64);
+   r = exp(-(t**2));
+   return( r );
+   end erff;
+
+ /*------------------------------------------------------------------*/
+ /* Get the value of the argument                                    */
+ /*------------------------------------------------------------------*/
+ get_arg: proc(pData);       
+   dcl   pData               ptr;
+   select( flt_size );       /* FLOAT BIN DEC have same internal fmt.*/
+     when( 4)  arg = pData->LD07;
+     when( 8)  arg = pData->LD15;
+     otherwise arg = pData->LD20;
+     end; /* select */
+   end get_arg;
+
+ /*------------------------------------------------------------------*/
+ /* Store the value of the result                                    */
+ /*------------------------------------------------------------------*/
+ put_result: proc(pRes);        
+   dcl   pRes                ptr;
+   select( flt_size );       /* FLOAT BIN DEC have same internal fmt.*/
+     when( 4)  pRes->LD07  = Res;     
+     when( 8)  pRes->LD15  = Res;     
+     otherwise pRes->LD20  = Res;
+     end; /* select */
+   end put_result;
+
+ %include desc;
+ %include locdesc;
+
+ end ERF;

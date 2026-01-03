@@ -1,0 +1,267 @@
+ /* _pli_Ceil, _pli_Floor                                            */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CF   (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Feb, 2006                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Implement CEIL() and FLOOR() builtins.       */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I Descriptor formats                      */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                    +12 | 0=FLOOR, 1=CEIL                      |  */
+ /*                        +--------------------------------------+  */
+ /*                    +8  | -> Output area (16 or 32 bytes)      |  */
+ /*                        +--------------------------------------+  */
+ /*                    +4  | -> Input Descriptor                  |  */
+ /*                        +--------------------------------------+  */
+ /*                    +0  | -> Input data                        |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Output has mode, base, precision, and        */
+ /*                     scale of input except that the result        */
+ /*                     for FIXED(p,q) is min(max(N,p-q+1,1)),0)     */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2014-01-10: Fix FLOAT DECIMAL sizes.                 0.9.4*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CF: proc(pDat,pDesc,pRet,iCeil)
+                             external( '_pli_CF' )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pDat                ptr;                     /* -> Input    */
+ dcl     pDesc               ptr;                     /* -> Descript.*/
+ dcl     pRet                ptr;                     /* -> Output   */
+ dcl     iCeil               fixed bin(31);           /* CEIL/FLOOR  */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (p,q,m,s)            fixed bin(7);            /* Arg info    */
+ dcl    (size_i,size_o)      fixed bin(7);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FB7                 fixed bin(7)        based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB31                fixed bin(31)       based;
+ dcl     FD18                fixed dec(18)       based;
+ dcl     LB23                float bin(23)       based;
+ dcl     LB49                float bin(49)       based;
+ dcl     LB64                float bin(64)       based;
+
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ 
+ dcl    (abs,addr,sign,stg,string,max,min,null,trunc)
+                             builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* Program Entry Point                                              */
+ /* COMMENT: For LINKAGE(SYSTEM) all arguments are temporaries.      */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ p = pDesc->XB_prec;                   /* Get prec, scale, and mode  */
+ q = pDesc->XB_scale;
+ m = (pDesc->XB_flgs&'80'bx)ª='00'bx;  /* '1' if complex             */
+ do while( m>=0 );                     /* one or two times           */
+   select( pDesc->XB_id );
+     when( '41'x ) call do_fixed_bin;  /* FIXED BIN input            */
+     when( '42'x ) call do_fixed_dec;  /* FIXED DEC input            */
+     when( '43'x ) call do_float_bin;  /* FLOAT BINARY input         */
+     when( '44'x ) call do_float_dec;  /* FLOAT DECIMAL input        */
+     end; /* select */
+   pDat = pDat+size_i;                 /* Update input address       */
+   pRet = pRet+size_o;                 /* Update output address      */
+   m=m-1;
+   end; /* do while */
+ return;
+
+ /*---------------------------------------------*/
+ /* FIXED BINARY                                */
+ /*---------------------------------------------*/
+ do_fixed_bin: proc;
+   dcl  (int,frac,temp)      fixed bin(31);
+   if p<=7 then do;                    /* Get arg size_i and value   */
+     size_i = stg( null()->FB7 );
+     int = pDat->FB7;                  /*   and value                */
+     end;
+   else if p<=15 then do;
+     size_i = stg( null()->FB15 );
+     int = pDat->FB15;
+     end;
+   else do;
+     size_i = stg( null()->FB31 );
+     int = pDat->FB31;
+     end;
+   size_o = size_i;                     /* Default output size       */
+   s   = sign(int);                    /* Get arg sign and abs val   */
+   int = abs(int);
+   if q<=0 then goto fixed_bin_done;   /* (n,0) or (n,-x)            */
+   size_o = min( max_prec_fixbin,      /* Compute result precision   */
+                 max(p-q+1,1) );
+   if size_o<=7 then size_o=1;         /* Re-compute output size     */
+   else if size_o<=15 then size_o=2;
+   else                    size_o=4;
+   if q>=p then do;                    /* No integer bits            */
+     frac = int;
+     int = 0;
+     end;
+   else do;                            /* Separate integer and fract */
+     temp = int / twopower(q);
+     frac = int - temp * twopower(q);
+     int  = temp;
+     end;
+   if frac=0 then goto fixed_bin_done; /* Already an integral value  */
+   if (s=-1 & iCeil=0) |
+      (s=+1 & iCeil=1)
+   then int=int+1;
+
+ fixed_bin_done:                       /* Return result value        */
+   int = int * s;                      /* Restore sign               */
+   select(size_o);                     /* Move result                */
+     when( stg( null()->FB7 ) )
+       pRet->FB7 = int;
+     when( stg( null()->FB15 ) )
+       pRet->FB15 = int;
+     otherwise
+       pRet->FB31 = int;
+     end; /* select */
+
+   end do_fixed_bin;
+
+ /*---------------------------------------------*/
+ /* FIXED DECIMAL                               */
+ /*---------------------------------------------*/
+ do_fixed_dec: proc;
+   dcl  (int,frac,temp)      fixed dec(18);
+   size_i,size_o = stg( null()->FD18 );
+   int = pDat->FD18;
+   s   = sign(int);                    /* Get arg sign and abs val   */
+   int = abs(int);
+   if q<=0 then goto fixed_dec_done;   /* (n,0) or (n,-x)            */
+   if q>=p then do;                    /* No integer bits            */
+     frac = int;
+     int = 0;
+     end;
+   else do;                            /* Separate integer and fract */
+     temp = int / tenpower(q);
+     frac = int - temp * tenpower(q);
+     int  = temp;
+     end;
+   if frac=0 then goto fixed_dec_done; /* Already an integral value  */
+   if (s=-1 & iCeil=0) |               /* Floor/negative value       */
+      (s=+1 & iCeil=1)                 /* Ceil/positive value        */
+   then int=int+1;
+
+ fixed_dec_done:                       /* Return result value        */
+   int = int * s;                      /* Restore sign               */
+   pRet->FD18 = int;                   /* Move result                */
+
+   end do_fixed_dec;
+
+ /*---------------------------------------------*/
+ /* FLOAT BINARY                                */
+ /*---------------------------------------------*/
+ do_float_bin: proc;
+   dcl   int                 float bin(64);
+   if p<=23 then do;                   /* Get arg size_i and value   */
+     size_i = stg( null()->LB23 );
+     int = pDat->LB23;                 /*   and value                */
+     end;
+   else if p<=49 then do;
+     size_i = stg( null()->LB49 );
+     int = pDat->LB49;
+     end;
+   else do;
+     size_i = stg( null()->LB64 );
+     int = pDat->LB64;
+     end;
+   call do_float(int);                 /* Common for DEC and BIN     */
+   end do_float_bin;
+
+ /*---------------------------------------------*/
+ /* FLOAT DECIMAL                               */
+ /*---------------------------------------------*/
+ do_float_dec: proc;
+   dcl   int                 float bin(64);
+   if p<=7 then do;                    /* Get arg size_i and value   */
+     size_i = stg( null()->LB23 );
+     int = pDat->LB23;                 /*   and value                */
+     end;
+   else if p<=15 then do;
+     size_i = stg( null()->LB49 );
+     int = pDat->LB49;
+     end;
+   else do;
+     size_i = stg( null()->LB64 );
+     int = pDat->LB64;
+     end;
+   call do_float(int);                 /* Common for DEC and BIN     */
+   end do_float_dec;
+
+ /*-------------------------*/
+ /* Common FLOAT logic      */
+ /*-------------------------*/
+ do_float: proc(int);
+   dcl   int                 float bin(64);
+   dcl   temp                float bin(64);
+   size_o = size_i;                    /* Default output size        */
+   s    = sign(int);                   /* Get arg sign and abs val   */
+   int  = abs(int);
+   temp = trunc(int);                  /* Truncate to integer        */
+   if temp=int then goto float_done;   /* Already an integral value  */
+   if (s=-1 & iCeil=0) |
+      (s=+1 & iCeil=1)
+   then int=int+1;
+
+ float_done:                           /* Return result value        */
+   int = int * s;                      /* Restore sign               */
+   select(size_o);                     /* Move result                */
+     when( stg( null()->LB23 ) )
+       pRet->LB23 = int;
+     when( stg( null()->LB49 ) )
+       pRet->LB49 = int;
+     otherwise
+       pRet->LB64 = int;
+     end; /* select */
+
+   end do_float;
+
+ %page;
+
+ %include DESC;
+ %include LIMITS;
+ %include TWOPOWER;
+ %include TENPOWER;
+
+ end pli_CF;

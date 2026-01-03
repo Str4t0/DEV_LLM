@@ -1,0 +1,220 @@
+ /* _pli_BufO                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_BufO (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_BufO                                    */
+ /*                                                                  */
+ /*      Function:      Move a record to an output buffer adding     */
+ /*                     any required control information.            */
+ /*                                                                  */
+ /*      BufO is called by I/O procedures to move data to a buffer.  */
+ /*      When the buffer is filled the block is written at the       */
+ /*      current file position.                                      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Control block formats:                       */
+ /*                       FCB, KEY                                   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     call _pli_BufO( aFCB, aRecord, lRecord );    */
+ /*                     aFCB   = Address of FCB                      */
+ /*                     aRecord = Address of record                  */
+ /*                     lRecord = Length of record                   */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2012-07-05: Use BufF instead of OSWrite, UNBUFFERED0.9.3*/
+ /*          2011-06-12: Fixes for multitsking.                 0.9.2*/
+ /*          2010-06-23: Changed to use new OSWrite.            0.9.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_BufO: proc(pFCB,pRecord,lRecord)
+               options( linkage(system) )
+               ext( '_pli_BufO' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFCB                ptr;
+ dcl     pRecord             ptr;
+ dcl     lRecord             fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     CRLF                char(2)   static    init( '0D0A'x );
+ dcl     LF                  char(1)   static    init( '0A'x );
+ dcl     FF                  char(1)   static    init( '0C'x );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pF                  ptr;
+ dcl     lAvail              fixed bin(31);
+ dcl     iPrefix             fixed bin(15);
+ dcl     ctlchar             char(1);                         /*0.9.4*/
+ dcl     skip                fixed bin(7);                    /*0.9.4*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     C1                  char(1)             based;       /*0.9.4*/
+ dcl     this_file           file                based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     BufF                entry( ptr )
+                             external( '_pli_BufF' );
+
+ dcl    ( addr,length,stg,substr,sysnull
+        )                    builtin;
+ dcl     barrier             builtin;                         /*0.9.2*/
+ 
+ pF = pFCB;                            /* A(FCB)                     */
+
+ /*-------------------------------------------------------*/
+ /* Validate requested record length.  If error, raise    */
+ /* the RECORD condition.                                 */
+ /* A record length of -1 is used by PUT to indicate      */
+ /* a PAGE request.                                       */
+ /*-------------------------------------------------------*/
+ if lRecord<-1 | lRecord>32767 then do;/* Invalid record length      */
+   signal RECORD( pF->FCB_pFile->this_file );
+   /* GET/PUT cannot raise the RECORD condition                      */
+   return;                             /* Normal return exits        */
+   end; /* RECORD */ 
+
+ /*-------------------------------------------------------*/
+ /* Compute available space in buffer                     */
+ /*-------------------------------------------------------*/
+ lAvail = pF->FCB_blksize - (pF->FCB_pBuf-pF->FCB_abuf); 
+
+ /*-------------------------------------------------------*/
+ /* Process ASA control characters                        */
+ /*-------------------------------------------------------*/
+ if substr(pF->FCB_envflags,20,1)       /* CTLASA               0.9.4*/
+ then do;                                                     /*0.9.4*/
+   ctlchar = ' ';                                             /*0.9.4*/
+   if lRecord>0 then do;                                      /*0.9.4*/
+     ctlchar = pRecord->C1;                                   /*0.9.4*/
+     lRecord = lRecord - 1;                                   /*0.9.4*/
+     pRecord = pRecord + 1;                                   /*0.9.4*/
+     end;                                                     /*0.9.4*/
+   select(ctlchar);                                           /*0.9.4*/
+     when(' ') skip=1;                                        /*0.9.4*/   
+     when('0') skip=2;                                        /*0.9.4*/   
+     when('-') skip=3;                                        /*0.9.4*/   
+     when('1') skip=-1;                                       /*0.9.4*/   
+     when('+') skip=0;                                        /*0.9.4*/   
+     end; /* select */                                        /*0.9.4*/ 
+   end; /*CTLASA*/                                            /*0.9.4*/
+
+ /*-------------------------------------------------------*/
+ /* Move the prefix if required.                          */
+ /*-------------------------------------------------------*/
+ if substr(pF->FCB_envflags,1,1)='1'b  /* VARLS?                     */
+ then do;
+   iPrefix = lRecord;
+   if iPrefix=-1 then iPrefix=1;
+   call move( addr(iPrefix), stg(iPrefix) );
+   end; /* bPrefix */
+
+ /*-------------------------------------------------------*/
+ /* Move the record data (length verified)                */
+ /*-------------------------------------------------------*/
+ if lRecord>0 then do;                 /* Zero-length record is valid*/
+   call move( pRecord, lRecord );
+   end; /* lRecord */
+
+ /*-------------------------------------------------------*/
+ /* Move FormFeed if PAGE request                         */
+ /*-------------------------------------------------------*/
+ if lRecord=-1 then do;                /* PAGE request (STREAM only) */
+   call move( addr(FF), 1 );           /* Move FormFeed      20070413*/
+   pF->FCB_col    = 0;                 /* Reset column positi20050526*/
+   pF->FCB_pLine  = pF->FCB_aLine;     /* Reset buffer positi20050526*/
+   pF->FCB_LineNo = 1;                 /* Reset line number          */
+   pF->FCB_status = pF->FCB_status |   /* Mark buffer dirty     0.9.3*/
+                    FCB_buf_dirty;                            /*0.9.3*/
+   if substr(pF->FCB_attrib,8,1)       /* UNBUFFERED            0.9.3*/
+   then call BufF(pF);                                        /*0.9.3*/		    
+   return;                             /* NO LF/CRLF                 */
+   end; /* bPrefix */
+
+ /*-------------------------------------------------------*/
+ /* Move LF or CRLF if required.                          */
+ /*-------------------------------------------------------*/
+ if substr(pF->FCB_envflags,3,1)       /* ENV(LF)                    */
+ then call move( addr(LF), length(LF) );
+ if substr(pF->FCB_envflags,4,1)       /* ENV(CRLF)                  */
+ then call move( addr(CRLF), length(CRLF) );
+
+ /*-------------------------------------------------------*/
+ /* Mark the buffer dirty                                 */
+ /*-------------------------------------------------------*/
+ pF->FCB_col = 0;                      /* Reset column position      */
+ pF->FCB_pLine = pF->FCB_aLine;        /* Reset buffer position      */
+ if substr(pF->FCB_attrib,15,1)='1'b   /* RECORD File?       20070402*/
+ then pF->FCB_pLine = pF->FCB_pLine + STG( NULL->KEY );    /*20070402*/
+ pF->FCB_status = pF->FCB_status |     /* Mark buffer dirty     0.9.3*/
+                  FCB_buf_dirty;                              /*0.9.3*/
+ if substr(pF->FCB_attrib,8,1)         /* UNBUFFERED            0.9.3*/
+ then call BufF(pF);                                          /*0.9.3*/		    
+ call barrier;                         /* Cache coherence       0.9.2*/
+ return;
+
+ /*-------------------------------------------------------*/
+ /* Raise the TRANSMIT condition if an error occurred     */
+ /*-------------------------------------------------------*/
+ signal_transmit:
+   signal TRANSMIT( pF->FCB_pFile->this_file );
+   return;                             /* Normal return exits        */
+
+ /*------------------------------------------------------------------*/
+ /* Move data to buffer (target is pF->FCB_pBuf implied)             */
+ /* Write full buffers                                               */
+ /*------------------------------------------------------------------*/
+ move: proc(pData,lData);
+   dcl   pData               ptr;
+   dcl   lData               fixed bin(31);
+   dcl   pD                  ptr;
+   dcl   lD                  fixed bin(31);
+   dcl   n                   fixed bin(31);
+   dcl   RC                  fixed bin(31);
+
+   pD = pData;
+   lD = lData;
+   do while( lD>0 );
+     n = lD;                           /* What fits in this buffer   */
+     if n>lAvail then n=lAvail;        /* n=MIN(lAvail,n)            */
+     call plimove(pF->FCB_pBuf,pD,n);  /* Move the data              */
+     pF->FCB_pBuf = pF->FCB_pBuf+n;
+     pD = pD+n;                        /* Account for data moved     */
+     lD = lD-n;
+     lAvail = lAvail-n;
+     if lD>0 & lAvail=0                /* Buffer filled              */
+     then do;                          /* Write this buffer          */
+       call BufF(pF);        
+       lAvail = pF->FCB_blksize;
+       end; /* buffer filled */
+     end; /* do while */
+     
+   call barrier;                                              /*0.9.2*/
+
+   end move;
+
+ %page;
+ %include FCB;
+ %include KEY;                                             /*20070402*/
+
+ end pli_BufO;

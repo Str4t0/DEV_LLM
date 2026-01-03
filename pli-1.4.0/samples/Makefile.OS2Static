@@ -1,0 +1,31 @@
+# Makefile for PL/I Sample Programs [OS/2]
+# Iron Spring PL/I 1.2.0
+
+# ******************************************************
+# ***** This file builds sample executables linked *****
+# ***** with the static library.                   *****
+# ******************************************************
+
+PLI	= ..\plic
+PLIFLGS	= -lsixgo -ew -cn(^^)
+INC     = ..\lib\include
+LIBDIR	= ..\lib\static
+
+all:	filedump.exe numwrd.exe  readu.exe hanoi.exe libver.exe  \
+	filefind.obj hexdump.obj print_listing.exe   pmhanoi.exe \
+	sorttest.exe task.exe    keysamp.exe         refsamp.exe \
+        area.exe     isub.exe
+
+clean:	
+	del *.obj *.exe *.lst *.map
+
+%.obj:	%.pli 
+	${PLI} -C -dOMF ${PLIFLGS}  $^ -o $*.obj
+%.exe:	%.obj
+	LINK386 /m:f /a:8 /st:0x100000 $*.obj,,,${LIBDIR}\prf.lib+${LIBDIR}\OS2386.lib,sample.def;
+
+pmhanoi.obj:	pmhanoi.pli
+	${PLI} -C ${PLIFLGS} -cn(^^)  pmhanoi.pli
+pmhanoi.exe:	pmhanoi.obj
+	LINK386 /m:f /a:8 /st:0x1000000 pmhanoi.obj,,,${LIBDIR}\prf.lib+${LIBDIR}\OS2386.lib,pm.def; 
+

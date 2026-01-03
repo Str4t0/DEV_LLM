@@ -1,0 +1,759 @@
+ /* _pli_AggIO                                                       */
+ %replace debug by 0;         /* 1=enable debug diaplays, 0=no debug */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.10        */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_AggIO (PL/I runtime)                    */
+ /*      Version:                                                    */
+ /*      Date:          Aug, 2017 (rev. May 2023)                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _AggIO                                       */
+ /*                                                                  */
+ /*      Function:      'Walk' an array or structure and return      */
+ /*                     addresses of elements one by one to a        */
+ /*                     callback procedure for processing.           */
+ /*                     The caller supplies the entry address        */
+ /*                     of the callback procedure.                   */
+ /*                                                                  */
+ /*                     This procedure is called from GETX and       */
+ /*                     PUTX to get and put arrays and structures.   */
+ /*                                                                  */
+ /*      Access to iSub-defined variables:                           */
+ /*        Once the subscripts for an iSub-defined array are         */
+ /*        determined, the "iSub thunk" is called to translate       */
+ /*        them to the address of an element in the base array.      */
+ /*        The field "AR_iSub" in the array descriptor pointed to by */
+ /*        "pAggrDesc" indicates that the base variable descriptor   */
+ /*        address and the thunk entry are present. Otherwise        */
+ /*        these arguments are omitted. Note that the iSub array and */
+ /*        the base array have the same addresses.                   */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*          call aggio( pAggrDesc, pAggrData, pNameList,            */
+ /*                      pfnCallback, pBaseDesc, eThunk );      1.2.1*/
+ /*              pAggrDesc: Address of aggregate descriptor          */
+ /*              pAggrData: Address of structure or array            */
+ /*              pNameList: Address of a list of pointers to         */
+ /*                         VARYING element names. Structure names   */
+ /*                         are not included.                        */
+ /*              pfnCallback:Address of an ENTRY constant or         */
+ /*                         variable of the caller-supplied          */
+ /*                         procedure to process each element        */
+ /*              Optional arguments:                            1.2.1*/
+ /*                  For iSub defined arrays:                   1.3.1*/
+ /*                    P1   Addr of base variable desc          1.2.1*/
+ /*                    P2   Thunk entry variable                1.2.1*/
+ /*                                                                  */
+ /*              The caller-supplied procedure (callback) uses       */
+ /*              standard PL/I linkage, and takes three              */
+ /*              pointer arguments:                                  */
+ /*                1. Address of data element                        */
+ /*                2. Address of element descriptor                  */
+ /*                3. Address of element name, as a varying string   */
+ /*                   including subscripts, if any                   */
+ /*                                                                  */
+ /*      Library routines:                                           */
+ /*          FmtSub: Formats a printable subscript list for PUT DATA */
+ /*                  or errors such as CONVERSION.                   */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2024-08-02: Make name optional (again)             1.3.1*/
+ /*          2024-07-04: Rewrite to fix structure problem.      1.3.1*/
+ /*                      For some reason I couldn't grasp the logic.1*/
+ /*          2024-04-09: Fix problem accessing arrays of struct 1.3.0*/
+ /*          2024-02-05: Reference to iSub-defined arrays.      1.2.1*/
+ /*          2023-11-16: (550)PUT EDIT(array) traps in FMTSUB   1.2.1*/
+ /*          2023-05-31: Major rewrite for nested arrays of          */
+ /*                      of structures. Program restructure.         */
+ /*          2023-02-12: Cleanup for unaligned bit arrays,           */
+ /*                      arrays of structures.                       */
+ /*          2022-06-11: (500) Not handling unaligned bit arrays     */
+ /*          2022-06-11: Array processing ref incorr elem            */
+ /*          2020-09-16: Fix processing of element names      0.9.10d*/
+ /*                                                                  */
+ /********************************************************************/
+
+ AggIO: proc( pDesc, pData, pName, callback, 
+              /* Optional */ P1, P2 )                         /*1.3.1*/
+              /* iSub:       pBaseDesc, PEntry                /*1.3.1*/
+              /* Minor str:  pL1, unused                      /*1.3.1*/
+              ext( '_pli_AggIO' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pDesc               ptr;      /* -> Data descriptor         */
+ dcl     pData               ptr;      /* -> Data address            */
+ dcl     pName               ptr;      /* -> Data name or name list  */
+ dcl     callback            entry;    /* -> Caller's callback routin*/
+ dcl    (P1,P2)              ptr;      /* Optional arguments    1.3.1*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ /* Here follows storage to generate the subscript list string.      */
+ /* The longest generated string is:                                 */
+ /*     (max_digits + sign + comma) * max_subscripts                 */
+ /*      + 1 (for opening paren).  This is (9+1+1)*16 +1, or 177.    */
+ /* NOTE: This does not allow for FIXED DECIMAL subscripts, which    */
+ /*       may be eighteen digits each.                               */
+ dcl      name_string         char(256) varying;/* Subscript text    */ 
+ dcl    1 sublist             aligned,                        /*1.2.1*/
+          5 num_subs          fixed bin(31), 
+          5 subscript     (16)fixed bin(31); 
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     pVoid               ptr           based;
+ dcl     VarStr              char(0)       varying     based;
+
+ dcl    1 array_def           based,
+          5 arr_pDesc         ptr,
+          5 dim               fixed bin(31)       init(0), 
+          5 dim_data      (16),
+            10 sub            fixed bin(31),
+            10 mult           fixed bin(31),
+            10 lbnd           fixed bin(31),
+            10 hbnd           fixed bin(31),
+            10 off            fixed bin(31); /* Curr offset in array */
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      FmtSub              entry( ptr, ptr, ptr )
+                              options( linkage(system) )
+                              ext( '_pli_FmtSub' );
+ dcl      GetDSA              entry                           /*1.2.1*/
+                              external( '_pli_GetDSA' )       /*1.2.1*/
+                              returns( ptr )                  /*1.2.1*/
+                              options( LINKAGE(SYSTEM) );     /*1.2.1*/
+%page;
+
+ /* This routine is called to process arrays or structures as        */
+ /* indicated by the descriptor                                      */
+ if pDesc->XB_id = '30'x               /* Is this list item an array?*/ 
+ then do;   
+   call array(pData,pDesc,pName);
+   end;
+ else if pDesc->XB_id = '80'x          /* Is this list item a struct?*/
+ then do;  
+   call struct(pData,pDesc,pName);
+   end;                                                       /*1.3.1*/
+ /* COMMENT: Should we allow (non-aggregate) element variables?      */
+ else signal ERROR;                    /* Otherwise compiler error   */
+
+ /*------------------------------------------------------------------*/
+ /*     Walk structure (top level)                                   */
+ /*------------------------------------------------------------------*/
+ struct: proc(pDat,pSDD,ppN);
+   dcl    pDat                ptr;      /* ->Data                    */
+   dcl    pSDD                ptr;      /* ->Descriptor              */
+   dcl    ppN                 ptr;      /* ->List of addrs of names  */
+   dcl    pSED                ptr;
+   dcl    struct_base         ptr;                            /*1.3.1*/
+   dcl    one_time            bit(1)    init('0'b);        
+
+   dcl  1 array_data          like array_def;
+
+   pSED  = pSDD->SDD_pSED;              /* ->First Struct Elem Desc  */
+   struct_base  = pDat-pSED->SE_offset; /* ->Start of major struct   */
+   pDat = struct_base;                  /* Adjust data start addr    */
+   /* This bit is set if we want to process one element of array     */
+   if (pSDD->SDD_flag&'80'bx)^='00'bx
+   then one_time = '1'b;
+
+   if debug then do;
+     display(' ');
+     display('struct   '||heximage(pDesc,8,' '));
+     display('         '||heximage(pSED,12,' '));
+     display('         '||heximage(pDat,16,' '));
+     end; /* debug */
+
+   num_subs = 0;
+   /* get_composite_subs returns the base subscripts for the         */
+   /* structure or element being processed. Minor structure          */
+   /* elements may supply additional subscripts.                     */
+   call get_composite_subs(pSed);
+   select;
+     when( pSED->SE_array & pSED->SE_str ) 
+       call array_of_struct(pDat,pSED,ppN,0,0,one_time); 
+     when( pSED->SE_array ) 
+       call struct_a(pDat,pSED,ppN,0,0,one_time); 
+     otherwise
+       call element(pDat,pSED,ppN,0,0,one_time);
+     end; /* select */
+   return; 
+   
+ /*-----------------------------------*/
+ /* Process all elements of structure */
+ /*-----------------------------------*/
+ element: proc(pDat,pSED,ppN,offset,boffset,one_time) returns(ptr); 
+   dcl    pDat                ptr;                                
+   dcl   (pSED,ppN)           ptr;
+   dcl    one_time            bit(1);
+   /* offset, boffset are the offsets of the current element         */
+   /* within an array of structures.                                 */
+   /* boffset needs to be the difference (+/-) from SE_bitoffset       */
+   dcl   (offset,boffset)     fixed bin(31);
+
+   dcl    pDesc               ptr;
+   dcl    pName               ptr;
+   dcl    last_elem           ptr;
+   dcl    pS                  ptr;
+   dcl   (of,bo)              fixed bin(31);
+   dcl    lvl                 fixed bin(7);
+   dcl    i                   fixed bin(31);
+   dcl    bit                 bit(1)              init( '0'b );
+   dcl  1 this_array          like array_def;
+       
+   /* For unaligned bit elements, make a copy of the descriptor here */
+   /* so that we can update the offset.                              */
+   dcl   bit_desc            char(8); 
+
+   /* 'element' computes the offset of an element, array, or         */
+   /* structure from the base offset in the SED for this element     */
+   /* plus any offset into a structure or array                      */
+   pS    = pSED;
+   lvl   = pS->SE_lvl;                  /* Save starting level num   */
+
+   /* Process structure elements       */
+   do forever; 
+     if debug then display('element  '||heximage(pS,12,' '));
+     pDesc = pS->SE_desc;
+     if pS->SE_align                    /* No bit offset for aligned */
+     then boffset = 0;
+     bo = boffset;
+     of = offset;
+     bit='0'b;                          /* Determine bit or non-bit  */
+     if  pS->SE_bit                     /* Unal bit struct or array  */
+       then bit='1'b; 
+     else do;                           /* Unal bit string           */
+       if pDesc^=sysnull & pDesc->ST_id='20'x
+       then bit='1'b;
+       end; /* non-structure */
+
+     bit_desc = (8)'0'b;
+     if bit then do; 
+       bo = bo+pS->SE_bitoffset;
+       of = of+bo/8;                    /* Offset adjusterizer       */
+       bo = mod(bo,8);
+       if pDesc=sysnull then leave;
+       call plimove( addr(bit_desc), pDesc, stg(bit_desc) );
+       pDesc = addr(bit_desc);
+       bo = bo; 
+       pDesc->SE_bitoffset = bo;
+       end; /* bit */
+     of = pS->SE_offset + of;
+     last_elem = pS; 		        /* Last element processed    */
+     select;
+       when (pS=pSed & pS->SE_str)      /* Skip struct top level     */
+         /* do nothing */ ;
+       when (pS->SE_array & pS->SE_str) /* Array of struct?          */
+         do;
+           call array_of_struct(pDat,pS,ppN,offset,boffset,'0'b);
+           end; /*array of struct */
+       when (pS->SE_array) do;          /* Array of elements?        */
+           call struct_a(pDat,pS,ppN,of,bo,'0'b); 
+           end;
+       when (pS->SE_str) do;            /* Other Minor structure?    */
+         /* continue */
+         end;
+       otherwise do;                    /* Scalar element            */ 
+         if ppN^=sysnull then do;                             /*1.3.1*/
+           pName = elem_name(ppN);   
+           name_string = pName->VarStr;
+           if num_subs>0 then do;
+             call FmtSub( pName,		       
+                          addr(sublist),
+                          addr(name_string) );
+             end; /* num_subs */
+           end; /* ppN */                                     /*1.3.1*/
+         else name_string='';                                 /*1.3.1*/
+         if debug then display('  desc   '||heximage(pDesc,8,' ')||
+                               ' '||name_string);
+         call callback( pDat+of, 
+                        pDesc, 
+                        addr(name_string) );
+         end; /* otherwise */
+       end; /* select */
+
+     if pS->SE_last then leave;         /* This was last element     */ 
+     pS = addr(pS->SE_end);             /* ->Next SED                */
+     if pS->SE_lvl<=lvl then leave;                           /*1.3.1*/
+      
+     end; /* forever */
+ 
+   return(last_elem); 
+           
+   end element;  
+       		     
+ /*-----------------------------------*/
+ /* Process arrays of structures      */
+ /*-----------------------------------*/
+ array_of_struct: proc(pDat,pSED,ppN,offset,boffset,one_time);
+   dcl    pDat                ptr;
+   dcl   (pSED,ppN)           ptr;
+   dcl   (offset,boffset)     fixed bin(31);
+   dcl    one_time            bit(1); 
+
+   dcl   (saved_offset,saved_boffset)            
+                              fixed bin(31); /* Base offset in struct*/
+   dcl    saved_ppN           ptr;
+   dcl    saved_pSED          ptr;
+   dcl    last_elem           ptr;
+   dcl    saved_dim           fixed bin(7);
+   dcl   (of,bo)              fixed bin(31);
+   dcl    i                   fixed bin(31);
+   dcl    lvl                 fixed bin(7);
+   dcl    pS                  ptr;
+   dcl    done                bit(1)              init( '0'b );
+   dcl    bit                 bit(1)              init( '0'b );
+   dcl  1 this_array          like array_def;
+
+   if debug then display('array of struct '||heximage(pSed,12,' '));
+   
+   saved_offset  = offset; 
+   saved_boffset = boffset; 
+   saved_dim   = num_subs;              /* Save structure status     */
+   saved_ppN   = ppN;
+   saved_pSED  = pSED;
+   lvl         = pSED->SE_lvl;          /* Save starting level num   */ 
+   pDesc       = pSED->se_desc;
+   of  = offset;
+   bo  = boffset;                        /* Base bit offset from SED  */
+   call get_array_data(addr(this_array),pDesc);
+   if pSED->SE_bit                                            /*1.3.1*/
+   then bit='1'b;
+
+   do forever;                          /* Repeat <subscript> times  */
+     /* For unaligned bit arrays, offsets are in bits                */
+     /* convert to bytes/bits and adjust by SED bit offset           */
+     i = this_offset(addr(this_array));
+     if bit then bo  = boffset + i;
+     else of = of/*fset*/ + i;                                /*20240803*/
+     if debug
+     then display('--->as offset='||trim(of)||
+                  ' boffset='||trim(bo));
+     /* Process all elements in minor structure */
+     last_elem = element(pDat,pSED,ppN,of,bo,'0'b);              
+     done = bump_subscript(addr(this_array)); 
+     if done | one_time then leave;
+     ppN  = saved_ppN;                  /* Restore structure names   */
+     pSED = saved_pSED;                 /*   and SED address         */
+     end; /* <forever> */ 
+
+   offset   = saved_offset; 
+   boffset  = saved_boffset; 
+   pSED     = last_elem;
+   num_subs = saved_dim;
+   dim      = saved_dim;
+   end array_of_struct;
+            		     
+ /*-----------------------------------*/
+ /* Process arrays of elements        */
+ /*-----------------------------------*/
+ struct_a: proc(pDat,pSED,ppN,offset,boffset,one_time); 
+   dcl    pDat                ptr; 
+   dcl   (pSED,ppN)           ptr;
+   dcl   (offset,boffset)     fixed bin(31); /* Offset in arr of stru*/
+   dcl    one_time            bit(1);
+
+   dcl    pDesc               ptr;
+   dcl    pName               ptr;
+   dcl   (saved_dim,this_dim) fixed bin(31);
+   dcl    saved_num_subs      fixed bin(31);                  /*1.3.1*/
+   dcl   (off,bof)            fixed bin(31); /* Base offset in struct*/
+   dcl   (of,bo)              fixed bin(31);
+   dcl    i                   fixed bin(31);
+   dcl    done                bit(1)              init( '0'b );
+   dcl    bit                 bit(1)              init( '0'b );
+   dcl  1 this_array          like array_def;
+       
+   /* For unaligned bit arrays, make a copy of the descriptor here   */
+   /* so that we can update the offset.                              */
+   dcl   bit_desc            char(8); 
+
+   if debug then display('struct_a '||heximage(pSed,12,' '));
+   pDesc = pSED->SE_desc;
+   of = pSED->SE_offset + offset;                /* Offset in struct from SED */
+   bo = pSED->SE_bitoffset + boffset;
+   saved_dim = num_subs;
+   /* This element or minor structure is an array */
+   call get_array_data(addr(this_array),pDesc);
+   if pSED->SE_alignd='0'b &
+      (arr_pDesc->ST_flg&'80'bx)^='00'bx                             
+   then bit='1'b;
+   pDesc = arr_pDesc;
+   /* Bit descriptors may be modified by the IO routines, make a     */
+   /* copy of it here.                                               */
+   if bit then do;
+     call plimove( addr(bit_desc), pDesc, stg(bit_desc) );
+     pDesc = addr(bit_desc);
+     end; 
+   this_dim = dim;
+   if ppN^=sysnull                                            /*1.3.1*/
+   then pName = elem_name(ppN); 
+   else pName = sysnull;                                      /*1.3.1*/
+   saved_num_subs = num_subs;                                 /*1.3.1*/
+
+   /* Do all elements of array */
+   do forever;                          /* Do one array element      */
+     num_subs = saved_num_subs;                               /*1.3.1*/
+     /* For unaligned bit arrays, offsets are in bits                */
+     /* convert to bytes/bits                                        */
+     i = this_offset(addr(this_array));
+     if bit then do;                             
+       bof   = bo + boffset + mod(i,8); 
+       off   = offset  + i/8;
+       if bof>7 then do;
+         bof = bof-8;
+         end;
+       pDesc->ST_bo = bof;
+       end; /* bit */
+     else off = /*of +*/ offset + i;
+     if pName^=sysnull then do;                               /*1.3.1*/
+       call FmtSub( pName,                   /* Format name w/subscr */
+                    addr(sublist),
+	            addr(name_string)
+                  );
+        end; /* pName */                                      /*1.3.1*/
+     else name_string='';                                     /*1.3.1*/
+     /* Call caller-supplied procedure */
+     call callback( pDat+off, (pDesc), addr(name_string) );
+     done = bump_subscript(addr(this_array));
+     if done | one_time then leave;
+     num_subs = this_dim;                    /* Reset subscript count*/
+     end; /* forever */
+
+   num_subs = saved_dim;
+   end struct_a;   
+   
+ /*----------------------------------*/
+ /* Bump subscript                   */
+ /*----------------------------------*/
+ bump_subscript: proc(pSub) returns( bit(1) );
+   dcl    pSub                ptr; 
+   dcl   (i,j)                fixed bin(31);
+   dcl  1 this_array          like array_def based(pSub);
+   
+   /* Need to keep track of two levels of subscript. i is the        */
+   /* The subscript for the current array element. j is the          */
+   /* subscript within a nested array of structures                  */
+   j = num_subs+1;
+   do i=dim to 1 by -1;
+     j = j-1;
+     if sub(i)<hbnd(i) then do;
+       sub(i)=sub(i)+1;
+       subscript(j) = sub(i);
+       off(i) = off(i) + mult(i);
+       return('0'b);
+       end;
+     sub(i) = lbnd(i);
+     subscript(j) = sub(i);
+     off(i) = 0;
+     i = i-1;
+     end; /* do i */ 
+   return('1'b);
+   end bump_subscript;
+
+ /*----------------------------------*/
+ /* Compute offset in array          */
+ /*----------------------------------*/
+ this_offset: proc(pSub) returns(fixed bin(31));
+   dcl     pSub               ptr;
+   dcl     offset             fixed bin(31);
+   dcl     i                  fixed bin(7);
+   dcl   1 this_array         like array_def based(pSub);
+   offset=0;
+   do i=1 to dim;
+     offset = offset + off(i);
+     end;
+   return(offset);
+   end this_offset;
+   
+ /*----------------------------------*/
+ /* Get subsc data for struct elem.  */
+ /*----------------------------------*/
+ get_array_data: proc( pSub, pD ); 
+   dcl    pSub                ptr;
+   dcl   (pD,pX)              ptr;
+   dcl    pDesc               ptr;          
+   dcl    i                   fixed bin(7);
+   dcl  1 this_array          like array_def based(pSub);
+
+   if pD->AR_id ^='30'x                 /* (delete '31'         1.3.0*/
+   then signal error;
+   this_array.dim = 0;
+   pDesc = pD +                         /* ->Element descriptor      */
+           stg(pD->pli_ded_ARR) +       /* Point to data desc        */
+           pD->AR_dim * stg(null()->pli_ded_Dim);
+   arr_pDesc = pDesc;
+   pX  = addr(pD->AR_dims);
+   do i=1 to pD->AR_dim;
+     if dim>=hbound(dim_data) then signal error;
+     dim=dim+1;
+     dim_data.mult(dim)  = pX->DM_mult(1);
+     dim_data.lbnd(dim)  = pX->DM_lbnd(1);
+     dim_data.hbnd(dim)  = pX->DM_hbnd(1);
+     dim_data.off(dim)   = 0;
+     dim_data.sub(dim)   = pX->DM_lbnd(1);
+     num_subs = num_subs + 1;
+     subscript(num_subs) = dim_data.sub(dim);
+     pX = addr(pX->DM_next);
+     end;
+   return;                   
+     
+   end get_array_data;
+
+/* starting_offset reverse-engineers the subscript list from         */
+/* the offset of this element.                                       */
+/* If this is not the first element of array, compute the subscripts.*/
+/* The IORB contains no subscript info, so we have to derive it.     */
+starting_offset: proc(pData,pSub) returns( fixed bin(31) );
+  dcl     pData               ptr;
+  dcl     pSub                ptr;
+  dcl     o                   fixed bin(31);
+  dcl    (i,j)                fixed bin(7);
+  dcl     n                   fixed bin(31);
+  dcl   1 this_array          like array_def based(pSub);
+
+  o = pData-struct_base;                /* offset of curr elemen1.3.1*/
+  j = num_subs - dim;
+  do i=1 to dim;
+    if o=0 then do;
+      n = o/mult(i);
+      o = mult(i)*n;
+      end;
+    else n = lbnd(i);
+    sub(i) = n + lbnd(i); 
+    off(i) = (n - lbnd(i)) * mult(i);
+    j = j+1;
+    subscript(j) = sub(i);
+    end; /* do i */
+  o = pData-struct_base;                /* offset of curr elemen1.3.1*/
+  pData=struct_base;                    /* Back up to start of s1.3.1*/
+  return(o);
+
+  end starting_offset;
+   
+ /*----------------------------------*/
+ /* Det size of element              */
+ /*----------------------------------*/
+ size: proc(pSED,bytes,bits);
+   dcl    pSED                ptr;
+   dcl   (bytes,bits)         fixed bin(31);
+   dcl    p                   ptr;
+   bytes,bits = 0;
+   if pSED->SE_last then return;
+   p = pSED + stg(pli_ded_SED);
+   bytes = p->SE_offset - pSED->SE_offset;
+   if pSED->SE_alignd then return;
+   if pSED->SE_desc = sysnull then return;
+   p = pSED->SE_desc;                   /* ->Descriptor              */
+   if p->ST_id^='20'x then return;      /* Not nonvarying bit        */
+   /* Length of unaligned bit string */
+   bytes = bytes-1;
+   bits = p->ST_len;                    /* Length in bits            */
+   return;
+   end;
+   
+ /*----------------------------------*/
+ /* Bump element name pointer        */
+ /*----------------------------------*/
+ elem_name: proc(ppN) returns(ptr);              
+   dcl    ppN                 ptr;
+   dcl    pName               ptr;
+   dcl    no_name             char(1)   varying   static    init('');
+   if ppN = sysnull() then return(addr(no_name));
+   pName = ppN->pVoid;
+   ppN = ppN + stg(null()->pVoid);    /* ->Next name               */  
+   return(pName);
+   end elem_name;  
+   
+ /*----------------------------------*/
+ /* Get structure info               */
+ /*----------------------------------*/
+ get_composite_subs: proc(pSed);
+   dcl     pSed               ptr;
+   dcl    (p,q)               ptr;
+   dcl     level              bit(8);
+   dcl    (i,j)               fixed bin(7);
+   dcl     SED_array      (16)ptr;
+
+   p = pSed;
+   level = p->SE_lvl;
+   if level = '01'bx then return;
+   i = 0;
+   /* Scan the SEDs back-to-front, and table pointers to arrays       */
+   do forever;
+     p = p-stg(pli_ded_SED);
+     if p->SE_lvl<level then do; 
+       level = p->SE_lvl;
+       if p->SE_array then do;
+         i = i+1;
+         if i>hbound(SED_array) then signal error;
+         SED_array(i) = p;
+         end; /* array */
+       end; /* level */
+     if level=1 then leave;    
+     end; /* forever */
+
+   /* Now list SEDs front-to-back */
+   array_data.dim = i;
+   do forever;
+     if i=0 then leave;
+     p = SED_array(i);
+     i = i-1; 
+     q = p->SE_desc;
+     do j=1 to q->AR_dim;
+       if j>16 then signal error; /* max_dim */
+       array_data.mult(j) = addr(q->AR_dims)->DM_mult(j);
+       array_data.lbnd(j) = addr(q->AR_dims)->DM_lbnd(j);
+       array_data.hbnd(j) = addr(q->AR_dims)->DM_hbnd(j);
+       subscript(j)       = addr(q->AR_dims)->DM_lbnd(j);
+       end; /* do j */
+     end; /* forever */
+  num_subs = array_data.dim;
+  end get_composite_subs;
+        
+  end struct;
+
+ /*------------------------------------------------------------------*/
+ /*     Walk array                                                   */
+ /*------------------------------------------------------------------*/
+ array: proc(pDat,pDsc,pN); 
+   dcl   pDat                ptr;      /* ->Data                     */
+   dcl   pDsc                ptr;      /* ->Descriptor               */
+   dcl   pN                  ptr;      /* ->Name (and subscript info)*/
+   dcl   elem_pDesc          ptr;      /* ->Array Data Desc          */
+   dcl   pD                  ptr;      /* ->Array Element            */
+   dcl   init_offset         fixed bin(31);                   
+   dcl   offset              fixed bin(31);
+   dcl   more                bit(1)              init( '1'b );
+   dcl  (i,j)                fixed bin;
+   dcl   NumE                fixed bin(31)       init(1);
+
+   dcl 1 array_data          like array_def;
+
+   /* For unaligned bit arrays, make a copy of the descriptor here   */
+   /* so that we can update the offset.                              */
+   dcl   bit_desc            char(8);                         
+
+   elem_pDesc = pDsc + stg(pDsc->pli_ded_ARR) +   /* Point to descr  */
+             pDsc->AR_dim * stg(null()->pli_ded_Dim);
+   if elem_pDesc->ST_id='20'x | elem_pDesc->ST_id='20'x  /* BIT                  */
+   then do;                                                   
+     call plimove(addr(bit_desc),elem_pDesc,stg(bit_desc));           
+     elem_pDesc  = addr(bit_desc);                                     
+     init_offset = elem_pDesc->ST_bo;   /* Save starting offset      */
+     end; /* unaligned bit array */                           
+   else init_offset=0;  
+
+   /* Initialize starting subscripts and number of elements          */
+   dim = pDsc->AR_dim;
+   num_subs = dim;                                            /*(550)*/
+   do i = 1 to dim;
+     subscript(i) = addr(pDsc->AR_dims)->DM_lbnd(i);
+     NumE = NumE * (addr(pDsc->AR_dims)->DM_hbnd(i) -
+                    addr(pDsc->AR_dims)->DM_lbnd(i) + 1);
+     dim_data.mult(i)  = addr(pDsc->AR_dims)->DM_mult(i);
+     dim_data.lbnd(i)  = addr(pDsc->AR_dims)->DM_lbnd(i);
+     dim_data.hbnd(i)  = addr(pDsc->AR_dims)->DM_hbnd(i);
+     off(i)            = 0;                    
+     end; /* do i */
+
+   j = 0;                               /* Count of elements process */
+   do while( more );                    /* Process all array elements*/
+     j = j+1;                           /* Count elements            */     
+     /* Format the subscript string for PUT DATA                     */
+     call FmtSub( pN, addr(sublist), addr(name_string) );
+     offset = 0;
+
+     /* Unaligned bit arrays possibly start at other than bit 0      */
+     do i = 1 to dim; 
+       offset = offset + off(i);
+       end;
+     if pDsc->AR_unalbit then do;                            
+       offset = offset + init_offset;                         
+       elem_pDesc->ST_bo = mod(offset,8);/* Compute bit offset       */
+       pD = pDat + offset/8;             /*   and data address       */
+       end;                                                   
+     else do;                                                 
+       pD = pDat + offset;              /* Compute data address      */
+       end;                                                    
+                                      
+     if pDesc->AR_iSub then do;         /* iSub defined array   1.2.1*/
+       offset = isub_define;                                  /*1.2.1*/
+       pD = pDat + offset;              /* Compute data address      */
+       end;                                                   /*1.2.1*/
+
+     call callback( pD, elem_pDesc, addr(name_string) );
+
+     i = pDsc->AR_dim;
+     do while(i>0);                     /* Bump subscript            */
+       subscript(i) = subscript(i)+1;
+       off(i)       = off(i) + dim_data.mult(i); 
+       if subscript(i)>dim_data.hbnd(i)
+       then do;
+         subscript(i) = dim_data.lbnd(i);
+         off(i)       = 0;                   
+         i = i-1;
+         if i=0 then more='0'b;        /* All done                   */
+         end;
+       else i=0;
+       end; /* do while i */
+
+     end; /* do while(more) */
+
+   /*----------------------------------------------------------------*/
+   /* iSub defined array                                             */
+   /* The thunk is called a pointer to a list with four arguments:   */
+   /*  addr(output sub list)                                         */
+   /*  addr(input sub list)                                          */
+   /*  addr(base var desc)                                           */
+   /*  caller's (my) EBP                                             */
+   /*return value in EAX = offset of this element                    */
+   /*----------------------------------------------------------------*/
+   isub_define: proc returns( fixed bin(31) );                /*1.2.1*/
+     dcl  off                 fixed bin(31);                  /*1.2.1*/
+     dcl 1 thunk_parms        aligned,
+           5 pOutlist         ptr,
+           5 pInlist          ptr,
+           5 piDsc            ptr,
+           5 EBP              ptr;
+     dcl 1 outlist            aligned,
+           5 num_osubs        fixed bin(31), 
+           5 osubscript   (16)fixed bin(31); 
+     dcl  iSub_Entry          entry     variable  based
+                              returns( fixed bin(31) )
+                              options( linkage(system) );
+
+     /* Build argument list for iSub thunk */
+     pOutlist = addr(outlist);
+     pInlist  = addr(sublist);
+     piDsc    = P1;                     /* ->BASE array         1.3.1*/
+     EBP      = GetDSA();               /* Get addr(my_stack_frame)  */
+
+     off = P2->iSub_entry( addr(thunk_parms) );               /*1.3.1*/
+
+     return(off);                                             /*1.2.1*/
+     end isub_define;                                         /*1.2.1*/
+ 
+   end array;
+ 
+ %include LOCDESC;
+ %include DESC;
+
+ end AggIO;

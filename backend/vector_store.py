@@ -249,24 +249,6 @@ def index_project(project_name: str, root_dir: str):
 
     chunks_batch = []
 
-def index_project(project_name: str, root_dir: str):
-    root_dir = os.path.abspath(root_dir)
-    print(f"[info] Projekt: {project_name}")
-    print(f"[info] Root dir: {root_dir}")
-
-    client = OpenAI()
-    conn = get_conn()
-    init_db(conn)
-
-    project_id = get_or_create_project(conn, project_name, root_dir)
-
-    total_files = 0
-    indexed_files = 0
-    skipped_unchanged = 0
-    total_chunks = 0
-
-    chunks_batch = []
-
     for dirpath, dirnames, filenames in os.walk(root_dir):
         # NAGY, FELESLEGES KÖNYVTÁRAK KIHAGYÁSA
         dirnames[:] = [
@@ -339,6 +321,86 @@ def index_project(project_name: str, root_dir: str):
     print(f"[done] Indexelt (új / változott): {indexed_files}")
     print(f"[done] Változatlanul kihagyva: {skipped_unchanged}")
     print(f"[done] Összes chunk: {total_chunks}")
+    
+    return {
+        "total_files": total_files,
+        "indexed_files": indexed_files,
+        "skipped_unchanged": skipped_unchanged,
+        "deleted_files": 0,
+        "total_chunks": total_chunks,
+    }
+
+
+def index_single_file(project_name: str, root_dir: str, rel_path: str):
+    """
+    Egyetlen fájl indexelése/frissítése.
+    Mentéskor automatikusan hívódik - gyors, mert csak egy fájlt dolgoz fel.
+    """
+    root_dir = os.path.abspath(root_dir)
+    full_path = os.path.join(root_dir, rel_path)
+    
+    # Ellenőrzések
+    if not os.path.isfile(full_path):
+        print(f"[single-index] Fájl nem létezik: {full_path}")
+        return {"status": "skipped", "reason": "file_not_found"}
+    
+    _, ext = os.path.splitext(rel_path)
+    ext = ext.lower()
+    
+    if ext not in ALLOWED_EXTS:
+        print(f"[single-index] Nem támogatott kiterjesztés: {ext}")
+        return {"status": "skipped", "reason": "unsupported_extension"}
+    
+    try:
+        client = OpenAI()
+        conn = get_conn()
+        init_db(conn)
+        
+        # Projekt lekérése/létrehozása
+        project_id = get_or_create_project(conn, project_name, root_dir)
+        
+        # Fájl hash
+        file_hash = sha256_file(full_path)
+        language = get_language_from_ext(ext)
+        
+        # Dokumentum frissítése
+        doc_id, changed = upsert_document(conn, project_id, rel_path, file_hash, language)
+        
+        if not changed:
+            print(f"[single-index] Változatlan: {rel_path}")
+            return {"status": "unchanged"}
+        
+        # Fájl beolvasása és chunkolása
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        
+        chunks_content = chunk_text(content)
+        
+        if not chunks_content:
+            print(f"[single-index] Üres fájl: {rel_path}")
+            return {"status": "empty"}
+        
+        # Embedding generálás
+        chunks_batch = []
+        for idx, chunk in enumerate(chunks_content):
+            chunks_batch.append({
+                "document_id": doc_id,
+                "chunk_index": idx,
+                "content": chunk,
+            })
+        
+        # Batch embedding
+        flush_batch(conn, client, chunks_batch)
+        
+        print(f"[single-index] Indexelve: {rel_path} ({len(chunks_content)} chunk)")
+        return {
+            "status": "indexed",
+            "chunks": len(chunks_content),
+        }
+        
+    except Exception as e:
+        print(f"[single-index] Hiba: {rel_path} - {e}")
+        return {"status": "error", "error": str(e)}
 
 
 def flush_batch(conn, client, chunks_batch):
@@ -419,6 +481,152 @@ def query_project(project_name: str, query: str, top_k: int = 5):
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_k]
+
+
+# -----------------------------------------
+# Fájlkeresés név alapján
+# -----------------------------------------
+
+def find_files_by_name(project_name: str, file_patterns: list, root_dir: str = None) -> list:
+    """
+    Fájlok keresése név/minta alapján a projekt indexben.
+    
+    Args:
+        project_name: A projekt neve a vector store-ban
+        file_patterns: Lista a keresendő fájlnév mintákból
+        root_dir: Opcionális root directory (nem használjuk, de kompatibilitás miatt van)
+    
+    Returns:
+        Lista chunk dict-ekből: [{"content": ..., "file_path": ..., "chunk_index": ..., "score": 1.0}]
+    """
+    conn = get_conn()
+    init_db(conn)
+    
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM projects WHERE name = ?", (project_name,))
+    row = cur.fetchone()
+    if not row:
+        print(f"[find_files_by_name] Nincs ilyen projekt: {project_name}")
+        return []
+    
+    project_id = row[0]
+    
+    results = []
+    for pattern in file_patterns:
+        pattern_lower = pattern.lower()
+        # Keresés a fájlnevekben
+        cur.execute(
+            """
+            SELECT c.content, d.file_path, c.chunk_index
+            FROM chunks c
+            JOIN documents d ON c.document_id = d.id
+            WHERE d.project_id = ?
+            AND LOWER(d.file_path) LIKE ?
+            ORDER BY c.chunk_index
+            """,
+            (project_id, f"%{pattern_lower}%"),
+        )
+        
+        for content, file_path, chunk_index in cur.fetchall():
+            results.append({
+                "content": content,
+                "file_path": file_path,
+                "chunk_index": chunk_index,
+                "score": 1.0,  # Explicit keresés, magas relevancia
+            })
+    
+    # Duplikátumok eltávolítása (fájl + chunk_index alapján)
+    seen = set()
+    unique_results = []
+    for r in results:
+        key = (r["file_path"], r["chunk_index"])
+        if key not in seen:
+            seen.add(key)
+            unique_results.append(r)
+    
+    return unique_results
+
+
+def get_all_project_files(project_name: str, max_files: int = 50, prioritize_main: bool = True) -> list:
+    """
+    Az összes (vagy legfontosabb) projektfájl chunk-jainak lekérdezése.
+    
+    Args:
+        project_name: A projekt neve
+        max_files: Maximum hány fájlból kérjünk chunk-okat
+        prioritize_main: Ha True, a "fő" fájlokat (main.py, index.ts, App.tsx, stb.) előre veszi
+    
+    Returns:
+        Lista chunk dict-ekből
+    """
+    conn = get_conn()
+    init_db(conn)
+    
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM projects WHERE name = ?", (project_name,))
+    row = cur.fetchone()
+    if not row:
+        print(f"[get_all_project_files] Nincs ilyen projekt: {project_name}")
+        return []
+    
+    project_id = row[0]
+    
+    # Fájlok lekérdezése
+    cur.execute(
+        """
+        SELECT DISTINCT d.file_path
+        FROM documents d
+        WHERE d.project_id = ?
+        """,
+        (project_id,),
+    )
+    
+    all_files = [r[0] for r in cur.fetchall()]
+    
+    # Prioritizálás: fontosabb fájlok előre
+    if prioritize_main:
+        priority_patterns = [
+            "main.py", "app.py", "index.ts", "index.js", "App.tsx", "App.jsx",
+            "readme", "README", "config", "settings",
+            "routes", "api", "views", "models", "schemas",
+        ]
+        
+        def file_priority(path):
+            path_lower = path.lower()
+            for i, pattern in enumerate(priority_patterns):
+                if pattern.lower() in path_lower:
+                    return i
+            return len(priority_patterns) + 1
+        
+        all_files.sort(key=file_priority)
+    
+    # Limitálás
+    selected_files = all_files[:max_files]
+    
+    # Chunk-ok lekérdezése a kiválasztott fájlokhoz
+    results = []
+    for file_path in selected_files:
+        cur.execute(
+            """
+            SELECT c.content, d.file_path, c.chunk_index
+            FROM chunks c
+            JOIN documents d ON c.document_id = d.id
+            WHERE d.project_id = ? AND d.file_path = ?
+            ORDER BY c.chunk_index
+            LIMIT 3  -- Max 3 chunk per fájl
+            """,
+            (project_id, file_path),
+        )
+        
+        for content, fp, chunk_index in cur.fetchall():
+            results.append({
+                "content": content,
+                "file_path": fp,
+                "chunk_index": chunk_index,
+                "score": 0.8,  # Általános keresés, közepes relevancia
+            })
+    
+    return results
 
 
 # -----------------------------------------

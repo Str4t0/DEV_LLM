@@ -1,0 +1,70 @@
+ /* _pli_Exit                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        pli_Exit (PL/I runtime) [LINUX]              */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar, 2001                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Exit                                    */
+ /*                                                                  */
+ /*      Function:      PL/I 'EXIT' statement                        */
+ /*                                                                  */
+ /*      Dependencices: Linux syscall                                */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Call _pli_Exit                               */
+ /*                                                                  */
+ /*      Called from:   _pli_Init at end of process                  */
+ /*                     --??-- at end of thread.                     */                  
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*         2014-12-12: SYS_EXIT_GROUP                          0.9.6*/
+ /*	    2010-02-27: Source renamed 'osexit' per new standard.0.8d*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Exit: proc              external( '_pli_Exit' )
+                             options( linkage(system) );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     retc                  fixed bin(31);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_EXIT       by   1;
+ %replace SYS_EXIT_GROUP by 252;
+ dcl      syscall	     entry
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( '_pli_Syscall' );
+
+ dcl     pliretv             builtin;
+ 
+ /*------------------------------------------------------------------*/
+ /*      Code for EXIT Statement                                     */
+ /*------------------------------------------------------------------*/
+
+ /*------------------------------------------------------------------*/
+ /* Check thread being terminated.                                   */
+ /* . If Thread 1 (major task) execute 'SIGNAL FINISH',              */
+ /*   Normal return from FINISH calls Linux SYS_EXIT_GROUP           */
+ /*   to terminate all threads.                                      */
+ /* . If other than thread 1, call Linux SYS_EXIT                    */
+ /*   to terminate current thread only.                              */
+ /*------------------------------------------------------------------*/
+
+ retc = pliretv();
+ 
+ /* Probably need to do more here: e.g. call EndThread to clean up   */
+ /* stack, etc.                                                      */
+ retc = syscall( SYS_EXIT_GROUP, retc );                      /*0.9.6*/
+ 
+ end pli_Exit;

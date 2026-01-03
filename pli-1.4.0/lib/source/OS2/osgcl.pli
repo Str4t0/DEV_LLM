@@ -1,0 +1,127 @@
+ /* _pli_OSGCL                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_GCL (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2001                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GCL                                     */
+ /*                                                                  */
+ /*      Function:      Returns the command line arguments as        */
+ /*                     CHAR(*) VARYING;                             */
+ /*                                                                  */
+ /*      Dependencices: OS/2 - DosGetInfoBlocks                      */
+ /*                                                                  */
+ /*      Calling sequence: Called with one argument: The address     */
+ /*                     of the run-time parameters block.  Returns   */
+ /*                     the command-line text and fills in the       */
+ /*                     rtparms data based on command-line options.  */
+ /*                                                                  */
+ /*      Called by:     _pli_Init to init. parms for MAIN procedure. */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                   . Should update RTPARMS command line data      */
+ /*                     and update command line.                     */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2021-04-01: Kludge up unix-like argc/argv/envp   0.9.10d*/
+ /*          2007-07-31: Added note about 'NOEXECOPS' option.        */
+ /*                      _pli_Start will extract this flag and       */
+ /*                      store in global for use here.               */
+ /*          2007-07-19: Separating the runtime options from the     */
+ /*                      parms by a '/' turned out to be a *bad*     */
+ /*                      idea.  I don't know how to do this,         */
+ /*                      maybe a $PLI() option in the command line,  */
+ /*                      but for now I'll just back off.             */
+ /*          2007-03-20: Return address and length of command line   */
+ /*                      in RTPARMS rather than as returned value.   */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_GCL: proc(pRTParms)
+               options( LINKAGE(SYSTEM) )
+               external( '_pli_GCL' );
+
+ /*--------------------------*/
+ /* Parameters               */         
+ /*--------------------------*/
+ dcl     pRTParms            ptr;
+
+ /*--------------------------*/
+ /* AUTOMATIC Data           */         
+ /*--------------------------*/
+ dcl    (pDat,pDes)          ptr;            /* addr(loc), addr(desc)*/
+ dcl     retcode             fixed bin(31)   /* unsigned */ ;
+ dcl    (pPIB,pTIB)          ptr;
+ dcl     pCmd                ptr;
+ dcl    (pS,pE)              ptr;
+ dcl     i                   fixed bin(31);                /*0.9.10d*/
+
+ /*-----------------------------------*/
+ /* OS/2 DosGetInfoBlocks Function    */
+ /*-----------------------------------*/
+ dcl     DosGetInfoBlocks    entry(ptr,ptr)
+                             external( 'DosGetInfoBlocks' )
+                             returns( fixed bin(31) )   /* unsigned */
+                             options( asm linkage(system) );
+
+ /*--------------------------*/
+ /* Static/External data     */         
+ /*--------------------------*/
+ %include argc;                                            /*0.9.10d*/
+ dcl    arg               (3)ptr       static;             /*0.9.10d*/
+
+ /*--------------------------*/
+ /* Prototypes               */         
+ /*--------------------------*/
+ dcl     pVoid               ptr             based;
+ dcl     sArg		     char(1024)      based;
+ dcl     c                   char(1)         based;
+ dcl	 iStrLen	     fixed bin(15)   based;
+
+ dcl   ( addr,
+         substr,
+         sysnull )           builtin;
+
+ pDes = pRTParms->rtp_pCmd->pDesc;
+ retcode = DosGetInfoBlocks( addr(pTIB), addr(pPIB) );
+ pCmd = pPIB->pib_pchcmd;
+ pS = pCmd;
+ /* COMMENT: OS/2 command.exe provides an unparsed argument list    */
+ /*          with two null-terminated strings: 1) Program name      */
+ /*          2) Remainder of command, unparsed.                     */ 
+ argc_s.argc  = 2;                     /* Argument count     0.9.10d*/
+ argc_s.ppargv = addr(arg);                                /*0.9.10d*/
+ arg(3) = pPib->pib_pchenv;            /* ->Environment str  0.9.10d*/
+ argc_s.ppenv = addr(arg(3));          /* ENVP               0.9.10d*/
+ arg(1) = pCmd;                        /* ->Program name     0.9.10d*/
+ i = index(pCmd->sArg,'00'x);          /* Find end of prog na0.9.10d*/
+ pS = pCmd+i;                          /* ->Argument string  0.9.10d*/
+ arg(2) = pS;                                              /*0.9.10d*/
+ pE = pS;                                                  /*0.9.10d*/
+ /* The char at pS should be the blank following the program name.   */
+ do while( pS->c=' ' );                /* Find start of arg string   */
+   pS=pS+1;
+   end; /* do while */
+ i = index(pE->sArg,'00'x);            /* Find end of args    0.9.10d*/
+ pE = pE+i;                                                 /*0.9.10d*/
+ if i>0 then pE = pE-1;                                     /*0.9.10d*/
+ /* Now parse stuff between pS and pX to extract heap size,          */
+ /* thread stack sizes, etc.  Apparently it is impossible to         */
+ /* reallocate the stack for the main thread.                        */
+ /* 'NOEXECOPS' option added for MAIN procedure to prevent parse.    */
+ /* NOTE: None of the above currently inplemented                    */
+ pDes->pli_ded_STR.ST_len = pE-pS;    /* Return arg string length    */
+ pRTParms->rtp_pCmd->pData = pS;      /* .. and arg address          */
+
+ %include PIB;
+ %include TIB;
+ %include RTPARMS;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_GCL;

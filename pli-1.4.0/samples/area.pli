@@ -1,0 +1,164 @@
+/* AREA.PLI - Area sample program */
+/*********************************************************************/
+/* AREA: Iron Spring PL/I sample code to test AREA functionality.    */
+/*       This program stores and retrieves elements in a area, and   */
+/*       writes the area and reads it back into another.             */
+/*       The file created, named "area.dat" may be deleted or        */
+/*       printed such as the "filedump" sample.                      */
+/* This program requires at least Iron Spring PL/I 1.2.0 to compile. */
+/* To run, type ./area                                               */
+/*********************************************************************/
+area: proc(parm) options(main);
+  dcl parm     char(100) varying;
+  dcl SYSPRINT print env(v text);
+  dcl FF       record env(varls recsize(4096) );
+
+  /* Table of test data */
+  dcl data     char(160) var init(
+( 'When he married my mother, much against the wishes of his family, my ' ||
+  'grandfather bought him an annuity of two hundred a year, and desired ' )
+               );
+        
+  /* Table of what's stored where for use by tests */
+  dcl num_ent fixed bin(31) init(0);
+  dcl 1 wrd_array (25),
+        5 w_off  offset(area), 
+        5 w_size fixed bin(31),
+        5 w_wrd  char(32) var;
+
+  dcl elem          char(32) var based;
+  dcl (p,q)         ptr; 
+  dcl i             fixed bin(31) init(0);
+  dcl off           offset(area);          
+  dcl offb          offset(bigger_area);          
+  dcl o             offset;
+
+  dcl area        area(2048);           /* AUTO AREA       */
+  dcl bigger_area area(4096);
+
+  open file(SYSPRINT) output pagesize(0);
+
+  put skip list('AREA: Area sample program'); 
+  put skip list('STORAGE(area)=' || trim(stg(area)) );
+  put skip list('CSTG(area)='    || trim(cstg(area)) );
+
+  /* Build table of test data and add to area */
+  call load_area; 
+
+  /* Display a couple of random entries */
+  put skip list('Some elements from array');
+  call print_element(w_off(5),area);
+  call print_element(w_off(8),area);
+  call print_element(w_off(20),area);
+
+  /* Write area to file and read it back to a larger area */
+  /* It could also be read into a smaller area, as long   */
+  /* SIZE(bigger_area)>=CURRENTSIZE(area)                 */
+  /* In this case, it's effectively: bigger_area = area;  */
+  open  file(FF) output title('area.dat');
+  write file(FF) from(area);
+  close file(FF); 
+  open  file(FF) input title('area.dat');
+  read  file(FF) into(bigger_area);
+
+  put skip;
+  put skip list('STORAGE(bigger_area)=' || trim(stg(bigger_area)) );
+  put skip list('CSTG(bigger_area)='    || trim(cstg(bigger_area)) );
+  put skip;
+
+  /* Modify element in original area */
+  off = w_off(20);
+  off->elem = 'five';
+  offb = w_off(20);
+  /* Print element from original and new area */
+  call print_element(offb,bigger_area);
+  call print_element(off,area);
+
+  put skip(2) list('End test');
+
+print_element: proc(offset,area);
+  dcl     offset              offset;
+  dcl     area                area;
+  dcl     p                   ptr;
+  dcl     w                   char(32)  var  based;
+  p = ptr(offset,area);
+  put skip edit('element: "'||p->w||'"',
+                'at offset '||right(hexit(offset),4))
+               (a,col(24),a); 
+  end print_element;
+
+load_area: proc;
+  dcl i             fixed bin(31) init(0);
+  dcl wrd           char(32) var;
+  dcl o             offset;
+  call plifill( addr(wrd_array), '00'x, stg(wrd_array) );
+  put skip(2) list('Building table'); 
+  do i = 1 to 20;
+    wrd = getwrd;
+    allocate elem in(area) set(o);
+    w_off(i)  = o;  
+    w_size(i) = length(wrd)+2;
+    w_wrd(i)  = wrd;
+    num_ent   = i;
+    ptr(o,area)->elem  = wrd;
+    data = substr(data,2);    
+    end;
+  put skip;
+  end load_area;
+
+/* Insert an element */
+ insert: proc(wrd);
+   dcl    wrd                 char(32)  var;
+   dcl    p                   ptr;
+   allocate elem in(area) set(p);
+   w_off(i)  = offset(p,area);
+   w_size(i) = length(wrd)+2;
+   w_wrd(i)  = wrd;
+   p->elem   = wrd;
+   end insert;
+ 
+/* Delete an element */
+delete: proc(n);
+  dcl n fixed bin(31);
+  dcl p ptr;
+  dcl o offset(area);
+  dcl wrd           char(32) var;
+  o = w_off(n);
+  if n<1 | n>num_ent   then signal error;
+  if w_off(n)=sysnull  then signal error; 
+  w_off(n) = sysnull;
+  wrd = o->elem; 
+  put skip list('deleting "'||wrd||'" at '||hexit(o));
+  free o->elem in(area); 
+  end delete;
+
+/* Get a word from the input string */
+getwrd: proc returns(char(32) var);
+  dcl i fixed bin(31);
+  dcl w char(32) var;
+  do forever;
+    i = index(data,' ');
+    if i=0 then return;
+    else do;
+      w = substr(data,1,i-1);
+      data = substr(data,length(w)+1);
+      w = trim(w,' '," ,");
+      return(w);
+      end; /* else */
+    end; /* forever */
+    end getwrd;
+
+/* Convert offset to big-endian hex with zero-suppression */
+hexit: proc(o) returns(char(8) var);
+  dcl o offset;
+  dcl i fixed bin(31) based(addr(o));
+  dcl j fixed bin(7);
+  dcl k fixed bin(31);
+  dcl x char(8) var;
+  k = IBSW(i);
+  x = heximage(addr(k),4);
+  x = trim(x,'0');
+  return(x);
+  end hexit;
+
+  end area;

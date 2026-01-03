@@ -8,6 +8,12 @@ __pycache__/
 .venv/
 venv/
 backend/.env
+backend/.secret_key
+
+# === BACKUP ===
+backup/
+*.backup
+*.bak
 
 # === NODE / REACT ===
 node_modules/

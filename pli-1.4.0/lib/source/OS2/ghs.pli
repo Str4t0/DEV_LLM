@@ -1,0 +1,110 @@
+ /* _pli_GHS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        GHS     (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GHS Allocate heap storage               */
+ /*                                                                  */
+ /*      Function:      Heap storage allocator for BASED and         */
+ /*                     CONTROLLED storage.                          */
+ /*                                                                  */
+ /*      Dependencies:  OS/2 Memory management APIs.                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     The total size of storage to be allocated    */
+ /*                     is passed on the stack.  The storage         */
+ /*                     requested plus four bytes is allocated.      */
+ /*                     The size of the area is stored in the first  */
+ /*                     four bytes, and the address of the area+4    */
+ /*                     is returned in EAX.                          */
+ /*                                                                  */
+ /*                     If the requested storage could not be        */
+ /*                     allocated, the STORAGE condition is raised.  */
+ /*                                                                  */
+ /*                     Additional processing for CONTROLLED storage */
+ /*                     is done elsewhere.                           */
+ /*                                                                  */
+ /*      Called From:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2023-07-12: Add sentinel to end of area for debug  1.1.1*/
+ /*                      Nasty preproc memory overlay not fixed 1.1.1*/
+ /*          2010-07-22: Track approximate storage used.        0.9.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ GHS: proc(iSz)
+      returns( ptr )
+      external( '_pli_GHS' )
+      options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     iSz                 fixed bin(31);           /* Req size    */
+
+ /*-------------------------*/
+ /* External Data           */
+ /*-------------------------*/
+ dcl   1 Heap                                         /* -> Heap     */
+                             external( '_pli_Heap' ),
+         5 Heap_addr         ptr,                          /*20100722*/
+         5 Heap_size         fixed bin(31),                /*20100722*/
+         5 Heap_used         fixed bin(31);                /*20100722*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pBlk                ptr;
+ dcl     RC                  fixed bin(31) /* unsigned */ ;
+ dcl     iSize               fixed bin(31);
+ dcl     p                   ptr;                             /*1.1.1*/
+ dcl     db                  char(8)       based;             /*1.1.1*/
+ dcl     dword               fixed bin(31) based;
+
+ dcl     OSExit              entry                            /*1.1.1*/
+                             options(linkage(system))         /*1.1.1*/
+                             ext('_pli_Exit');                /*1.1.1*/
+ /*-------------------------*/
+ /* OS/2 Memory Functions   */
+ /*-------------------------*/
+ dcl     DosSubAllocMem      entry(
+                                    ptr,              /* pbBase      */
+                                    ptr,              /* ppb         */
+                                    fixed bin(31)     /* cb(UNSIGNED)*/
+                                  )
+                             external( 'DosSubAllocMem' )
+                             returns( fixed bin(31) ) /* APIRET      */
+                             options( ASM LINKAGE(SYSTEM) );
+
+ dcl    (addr,stg,sysnull)   builtin;
+
+ iSize = iSz;
+ if iSize<=0 then iSize=4;
+ iSize = iSize+4+8;                    /* Length + sentinel     DEBUG*/
+ RC = DosSubAllocMem( Heap_addr, addr(pBlk), iSize );      /*20100722*/
+ if RCª=0 then do;                                         /*20100722*/
+   display('DosSubAllocMem RC=' || trim(RC));                 /*DEBUG*/
+   /* NOTE: "SIGNAL STORAGE" is currently a diasaster in exception   */
+   /*       handling in this case.                                   */
+/* signal STORAGE;                                            /*DEBUG*/
+   call OSExit;                                               /*DEBUG*/
+   return(sysnull);                                           /*0.1.5*/
+   end;
+ Heap_used = Heap_used + iSize;                            /*20110526*/
+ pBlk->dword = iSize;                                         /*DEBUG*/
+ p = pBlk+iSize-8;                    /* p->addr(sentinel)      DEBUG*/
+ p->db = 'DEADBEEF';                                          /*DEBUG*/
+
+ pBlk = pBlk+stg( pBlk->dword );
+
+ return( pBlk );
+
+ end GHS;

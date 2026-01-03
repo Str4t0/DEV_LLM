@@ -1,0 +1,53 @@
+       DIRUPDT: PROC OPTIONS(MAIN);
+               DCL DIREC FILE RECORD KEYED ENV(INDEXED),
+                   ONCODE BUILTIN,
+                   OUTREC CHAR(23),
+                   NUMBER CHAR(3) DEF OUTREC POS(21),
+                   NAME CHAR(20) DEF OUTREC,
+                   CODE CHAR(1),
+                   EOF BIT(1) INIT('0'B);
+               ON ENDFILE(SYSIN) EOF='1'B;
+               ON KEY(DIREC) BEGIN;
+                IF ONCODE=51 THEN PUT FILE(SYSPRINT) SKIP EDIT
+                                  ('NOT FOUND:',NAME)(A(15),A);
+                IF ONCODE=52 THEN PUT FILE(SYSPRINT) SKIP EDIT
+                                  ('DUPLICATE:',NAME)(A(15),A);
+                /* Following stmt added to sample program */
+                IF ONCODE=50 THEN PUT FILE(SYSPRINT) SKIP EDIT
+                                  ('KEY ERROR:',NAME)(A(15),A);
+                END;
+               OPEN FILE(DIREC) DIRECT UPDATE;
+               PUT SKIP LIST('This update should have two errors:');
+               PUT SKIP LIST('KEY ERROR:     HARVEY,C.D.W.'|| 
+                             ' attempt to add duplicate');
+               PUT SKIP LIST('INVALID CODE:  PITT,W.H.' ||
+                             ' code not A,C,or D');           
+       
+
+                
+               GET FILE(SYSIN) EDIT(NAME,NUMBER,CODE)
+                 (COLUMN(1),A(20),A(3),A(1));
+               DO WHILE (^EOF);
+               PUT FILE(SYSPRINT) SKIP EDIT (' ',NAME,'#',NUMBER,' ',CODE)
+                  (A(1),A(20),A(1),A(3),A(1),A(1));
+               SELECT (CODE);
+                  WHEN('A') WRITE FILE(DIREC) FROM(OUTREC) KEYFROM(NAME);
+                  WHEN('C') REWRITE FILE(DIREC) FROM(OUTREC) KEY(NAME);
+                  WHEN('D') DELETE FILE(DIREC) KEY(NAME);
+                  OTHERWISE PUT FILE(SYSPRINT) SKIP
+                    EDIT('INVALID CODE:',NAME)(A(15),A);
+               END;
+               GET FILE(SYSIN) EDIT(NAME,NUMBER,CODE)
+               (COLUMN(1),A(20),A(3),A(1));
+               END;
+               CLOSE FILE(DIREC);
+               PUT FILE(SYSPRINT) PAGE;
+               OPEN FILE(DIREC) SEQUENTIAL INPUT;
+               ON ENDFILE(DIREC) EOF='1'B;
+               READ FILE(DIREC) INTO(OUTREC) KEYTO(NAME);
+               DO WHILE (^EOF);
+               PUT FILE(SYSPRINT) SKIP EDIT(NAME,NUMBER)(A);
+               READ FILE(DIREC) INTO(OUTREC) KEYTO(NAME);
+               END;
+               CLOSE FILE(DIREC);
+       END DIRUPDT;

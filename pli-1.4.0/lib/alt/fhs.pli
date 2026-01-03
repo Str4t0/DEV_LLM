@@ -1,0 +1,68 @@
+ /* _pli_FHS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        FHS     (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_FHS Free heap storage.                  */
+ /*                                                                  */
+ /*      Function:      Heap storage free.                           */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*			Linux: This is the alternate version of fhs  */
+ /*			intended to be linked with programs that     */
+ /*			use libc and want to use C memory management.*/
+ /*                                                                  */
+ /*                     This version calls C free() to free storage. */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     The address of the storage to be freed is    */
+ /*                     passed on the stack. The storage is freed    */
+ /*                     and control is returned to the caller.       */
+ /*                                                                  */
+ /*                     Additional processing for CONTROLLED storage */
+ /*                     is done elsewhere.                           */
+ /*                                                                  */
+ /*      Called From:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . It would be nice if handling of AREAs was    */
+ /*                     integrated with handling the default heap.   */
+ /*                     On the other hand, AREAs have some require-  */
+ /*                     ments not found in the heap (Read/Write of   */
+ /*                     entire areas, e.g.) and OS/2 provides a nice */
+ /*                     simple, presumably fast API for handling     */
+ /*                     heaps that it's a shame not to use.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ FHS: proc(pBlk)
+      external( '_pli_FHS' )
+      options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pBlk                ptr;                     /* -> Block    */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      free   	     entry( ptr )
+ 			     options( asm linkage(system) )
+			     ext( 'free' );
+
+ call free(pBlk);	     /* Free the memory block		     */
+ return;                     /* No data returned                     */
+
+ end FHS;

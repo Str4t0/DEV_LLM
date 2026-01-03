@@ -1,0 +1,636 @@
+ /* _pli_IOR                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_IOR (PL/I runtime)                      */
+ /*      Version:       1.1                                          */
+ /*      Date:          Feb, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_IOR                                     */
+ /*                                                                  */
+ /*      Function:      IOR is the initial I/O router procedure.     */
+ /*                     All accesses to a File Control Block (FCB)   */
+ /*                     go through IOR for serialization.            */
+ /*                                                                  */
+ /*      Required data is passed in a parameter list called the      */
+ /*      I/O Request Block (IORB).                                   */
+ /*                                                                  */
+ /*      Most function codes relate directly to PL/I I/O statements, */
+ /*      and pass a full IORB as the argument.                       */
+ /*      Functions 30, 31, and 35 (LINENO, COUNT, and status)        */
+ /*      pass only the first eight bytes of the IORB.                */
+ /*      Functions 50 and 51 (initialize and terminate) are called   */
+ /*      from startup code, and pass only the first four bytes       */
+ /*      of the IORB.                                                */
+ /*                                                                  */
+ /*      The FCBs for open files are chained for validation.         */
+ /*      Other methods such as a btree or hash table coule be used.  */
+ /*      This program uses a mutex semaphore to ensure single-       */
+ /*      threading during scanning or updating of the chain.         */
+ /*      Each FCB has a lock indicating an I/O operation             */
+ /*      currently in progress on this FCB by a task.  If a          */
+ /*      request is made for a locked FCB by another task,           */
+ /*      that task waits on an event semaphore.  One semaphore       */
+ /*      is used to wait on all locked FCBs.  At the completion      */
+ /*      of any I/O operation this semaphore is posted to wake up    */
+ /*      any waiting tasks.  This will cause some inefficiency       */
+ /*      if there is lots of activity against the same FCB by        */
+ /*      multiple tasks, since all will wake up and only one will    */
+ /*      gain access to the FCB.  On the other hand this avoids      */
+ /*      creating a semaphore per FCB.  The idea is to keep the      */
+ /*      mutual exclusion zone as short as possible.                 */
+ /*                                                                  */
+ /*      Interaction with condition-handling:                        */
+ /*        Conditions raised from I/O routines will leave the FCB    */
+ /*        in a locked state.  The condition handler mainline        */
+ /*        extracts data needed by the ON-Unit (ONFILE, etc),        */
+ /*        and unlocks the FCB via function 35 (status).             */
+ /*        Conditions raised by open code (SIGNAL ENDPAGE(), etc.)   */
+ /*        will be recognized by the fact that the FCB is not locked */
+ /*        by the current task and will therefore not unlock         */
+ /*        the FCB.                                                  */
+ /*                                                                  */
+ /*      For normal PL/I I/O requests IOR performs implicit open     */
+ /*      if required, and calls the appropriate executor to          */
+ /*      complete the requested operation.                           */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Single argument: Address of I/O Request      */
+ /*                     Block (IORB).                                */
+ /*                                                                  */
+ /*      Returns:       Normally zero.  COUNT and LINENO functions   */
+ /*                     return the result of the BIF.                */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   * Remove kludge in 'creat'                     */
+ /*                   * Need to chack that the requested oprtaion    */
+ /*                     is valid with this set of FCB attributes.    */
+ /*                   * Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2017-09-03: Fix inf loop if file has conflicting attr0.9.2*/
+ /*        2011-05-06: New mutex API, PL/I EVENT variable.      0.9.2*/
+ /*	   2010-11-01: Zero links in 'terminate' 		0.9.2*/
+ /*        2010-06-28: Change to call OSGetProcInfo.            0.9.1*/
+ /*        2010-03-22: Need to propagate ONCB chain to GET and PUT.  */
+ /*        2010-03-08: Don't do implicit open for CLOSE statement0.8d*/
+ /*                    if file not currently open.                   */
+ /*        2009-02-24: Replace DosxxxMutexSem calls with OSMutex,    */
+ /*                    and DosxxxEventSem with OSEvent.              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_IOR: proc(pIORB)
+               returns( fixed bin(31) )
+               options( linkage(system) )
+               ext( '_pli_IOR' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pIORB               ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     IO_FCBFlink         ptr            static    init( SYSNULL );
+ dcl     IO_FCBBlink         ptr            static    init( SYSNULL );
+ dcl     IO_hmtx             fixed bin(31)  static;
+ dcl     IO_hevt             event          static;           /*0.9.2*/
+ dcl     err_file            char(9) var    static
+                   init( '<unknown>' );
+ dcl      indexed_file       bit(32)        static  init('02000000'bx);
+ dcl      UNIMPLEMENTED      condition;                       /*1.2.1*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     fun                 fixed bin(31);
+ dcl     RC                  fixed bin(31);
+ dcl     IOR_RC              fixed bin(31);
+ dcl     pF                  ptr;
+ dcl     pN                  ptr;
+ dcl     pFCB                ptr;
+ dcl     pGBL                ptr;
+ dcl     bMustWait           bit(1)              init( '1'b );
+ dcl     bUNDEFINEDFILE      bit(1)              init( '0'b );
+ dcl   1  procinfo,           /* like pliprocinfo               0.9.1*/
+          5 pi_len            fixed bin(31),                  /*0.9.1*/
+          5 pi_pid            fixed bin(31),                  /*0.9.1*/
+          5 pi_tid            fixed bin(31);                  /*0.9.1*/
+ dcl	 get_put_entry       entry variable; 	  
+ dcl	 isam_entry          entry variable;                 /*0.9.10*/	  
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     this_file           file           based;
+ dcl     PGT          (0:127)ptr            based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetDSA              entry
+                             external( '_pli_GetDSA' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+ dcl     GetProcInfo         entry( ptr )                     /*0.9.1*/
+                             returns( fixed bin(31) )         /*0.9.1*/
+                             external( '_pli_OSGetProcInfo' ) /*0.9.1*/
+                             options( LINKAGE(SYSTEM) );      /*0.9.1*/
+
+ dcl     PLI_Open            entry( ptr, ptr )
+                             external( '_pli_Open' );
+ dcl     PLI_Close           entry( ptr, ptr )
+                             external( '_pli_Close' );
+ dcl     PLI_Read            entry( ptr, ptr )
+                             external( '_pli_Read' );
+ dcl     PLI_Write           entry( ptr, ptr )
+                             external( '_pli_Write' );
+ dcl     mutex_init          entry(ptr,fixed bin(31))         /*0.9.2*/
+                             options( linkage(system) )       /*0.9.2*/
+                             ext( '_pli_mutex_init' );        /*0.9.2*/
+ dcl     mutex_wait          entry(ptr)             	      /*0.9.2*/
+                             options( linkage(system) )       /*0.9.2*/
+                             ext( '_pli_mutex_wait' );        /*0.9.2*/
+ dcl     mutex_post          entry(ptr)             	      /*0.9.2*/
+                             options( linkage(system) )       /*0.9.2*/
+                             ext( '_pli_mutex_post' );        /*0.9.2*/
+ dcl     mutex_destroy       entry(ptr)             	      /*0.9.2*/
+                             options( linkage(system) )       /*0.9.2*/
+                             ext( '_pli_mutex_destroy' );     /*0.9.2*/
+ dcl     OSEvent             entry( fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) /*maybe*/ )
+                             options( linkage(system) )
+                             external( '_pli_OSEvent' );
+ 
+ dcl    (addr,binvalue,low,plifill,stg,string,substr,sysnull)  /*0.8d*/
+                             builtin;
+ dcl    (barrier,cs)         builtin;                         /*0.9.2*/			     
+
+
+ pF  = pIORB->IOR_pFile;               /* A(FILE)                    */
+ fun = pIORB->IOR_Func;                /* Get function code          */
+ IOR_RC = 0;                           /* Prime return code          */
+ /*-----------------------------------*/
+ /* Find the address of Global Data   */
+ /*-----------------------------------*/
+ pGBL = GetDSA();                      /* -> Current DSA             */
+ pGBL = pGBL - stg( sysnull->dsa_below_ebp );
+ pGBL = pGBL->dsa_edi;                 /* Get PGT address            */
+ pGBL = pGBL->PGT(127);                /* A(Global_Data)             */
+ isam_entry = pGBL->GBL_ISAM_EP;       /* ADDR(ISAM) or SYSNULL()9.10*/
+ addr(isam_entry)->ent_static_DSA = GETDSA();                /*0.9.10*/
+ pi_len = stg(procinfo);               /* (short control blk)   0.9.1*/
+ RC = GetProcInfo( addr(procinfo) );   /* Get current proc in   0.9.1*/
+
+ /*-----------------------------------*/
+ /* Program Init and Termination      */
+ /*-----------------------------------*/
+ if fun=50 then do;                    /* Initialize                 */
+   call initialize;
+   return(0);
+   end;
+ if fun=51 then do;                    /* Terminate                  */
+   call terminate;
+   return(0);
+   end;
+
+ pN = pF->FC_pName;                    /* A(File_Name)               */
+ if pN=SYSNULL then pN = addr(err_file);
+
+ /* +-------------------------------------------*/
+ /* | * Mutual Exclusion Loop -- single thread  */
+ /* | * Loop is performed at least once         */
+ /* | *-----------------------------------------*/
+ /* | */ do while( bMustWait );
+ /* | */   bMustWait = '0'b;           /* Reset 'must wait' flag     */
+ /* | */
+ /* | */   call mutex_wait( addr(IO_hmtx) ); /* Lock the FCB chain   */                  
+ /* |      NOTE: Should use timeout and check return code.           */
+ /* | */
+ /* | */   if pF->FC_pFCB = SYSNULL    /* File not open              */
+ /* | */   then pFCB = creat;          /* Explicit or implicit open  */
+ /* | */   else pFCB = scan;           /* File open                  */
+ /* | */   call barrier;               /* Cache coherence       0.9.2*/
+ /* | */
+ /* |-------------------------------------------*/
+ /* |      If 'must wait' bit is set get ready  */
+ /* |      to wait on an I/O complete event.    */
+ /* |-------------------------------------------*/
+ /* | */   if bMustWait                /* Need to wait for FCB       */
+ /* | */   then completion(IO_hevt)='0'b; /* initialize event   0.9.2*/
+ /* | */
+ /* | */   call mutex_post( addr(IO_hmtx) ); /* Unlock the FCB chain */         
+ /* | */
+ /* |-------------------------------------------*/
+ /* |      FCB is currently in use, wait until  */
+ /* |      something finishes, then check again.*/
+ /* |-------------------------------------------*/
+ /* | */   if bMustWait                /* Need to wait for FCB       */
+ /* | */   then wait( IO_hevt );       /* Wait on Event Sem     0.9.2*/
+ /* | */
+ /* | */   end; /* mutex loop */
+ /* +-------------------------------------------*/
+
+ /********************************************************************/
+ /* At this point the FCB is locked, and the FCB chain is unlocked.  */
+ /********************************************************************/
+ 
+ /*------------------------------------------------------------------*/
+ /* Builtin functions COUNT and LINENO, and the 'status' function    */
+ /* (and CLOSE, for compatibility with IBM PL/I)                     */
+ /* do not perform an implicit open.                                 */
+ /* If the file was not found just return zero.                      */
+ /*------------------------------------------------------------------*/
+ if pFCB=SYSNULL then do;              /* LINENO, COUNT, status,     */
+   if fun=30 | fun=31 | fun=35 | fun=2 /* .. or CLOSE                */
+   then return(0);
+   else bUNDEFINEDFILE='1'b;           /* Else force UNDF            */
+   end; /* SYSNULL */
+
+ /*------------------------------------------------------------------*/
+ /* Test for UNDEFINEDFILE.  This occurs when 'scan' does not find   */
+ /* an FCB for a supposedly-open file.  This check is done outside   */
+ /* the mutual-exclusion loop so that the FCB chain is unlocked.     */
+ /*------------------------------------------------------------------*/
+ if bUNDEFINEDFILE then do;            /* UNDEFINEDFILE indicated    */
+   signal UNDEFINEDFILE(pF->this_file);
+   /* Control never returns here from UNDEFINEDFILE                  */
+   /* The condition handler will unlock the FCB.                     */
+   end;
+
+ /*------------------------------------------------------------------*/
+ /* Test for implicit open.                                          */                                 
+ /*------------------------------------------------------------------*/
+ IOR_RC = 0;                           /* Prime return code          */
+ pFCB->FCB_pFile = pF;                 /* Set A(FILE) in FCB         */
+ if substr(pFCB->FCB_status,1,1)='0'b &/* Not open             0.9.10*/
+    fun^=35                            /* (prevent infinite loo0.9.10*/
+ then call PLI_Open( pIORB, pFCB );    /* Open the FCB               */
+ /* COMMENT: OPEN of an already-open file is ignored.                */
+ /*          This seems to correspond to IBM PL/I.                   */
+
+ /* NOTE: UNDEFINEDFILE -- needs to have a bit in the IORB that      */
+ /*       is cleared on first call and set if UNDF is raised.        */
+ /*       If second entry is made when this bit is set raise         */
+ /*       the ERROR condition. (or use IOR_Func).                    */
+
+ /*------------------------------------------------------------0.9.10*/
+ /* For INDEXED files call the ISAM routine; all others done he0.9.10*/
+ /*------------------------------------------------------------0.9.10*/
+ if (pFCB->FCB_envflags&indexed_file)^='00000000'bx          /*0.9.10*/
+ then do;                                                    /*0.9.10*/
+   call isam_entry( pIORB, pFCB );                           /*0.9.10*/
+   /* The following duplicates the cleanup logic done here for       */
+   /* non-isam files after the file is closed.                       */
+   if fun=2 then do;                   /* Additional close logic 9.10*/
+     /* If the CLOSE fails, FCB_LastSt holds the O/S error code.     */
+     /* Lock the FCB chain to free closed FCB */
+     call mutex_wait( addr(IO_hmtx) ); /* Lock the FCB chain         */
+     call destroy( pFCB );             /* Delete FCB                 */
+     call mutex_post( addr(IO_hmtx) ); /* Unlock FCB chain           */
+     pFCB=SYSNULL;                     /* Indicate FCB freed         */
+     pF->FC_pFCB = SYSNULL;            /* File closed        20050314*/
+     end; /* close */
+   end; /* isam */
+ else call file_op;                                          /*0.9.10*/
+  /* NOTE: Problem... if the I/O routine raises an I/O condition on */
+  /*       this file, the FCB will be unlocked.  Even worse, if the */
+  /*       file is closed in the ON-Unit, the FCB goes away.  We    */
+  /*       probably need to re-verify the FCB address and re-lock   */
+  /*       before continuing.                                       */
+
+ /*---------------------------------------------*/
+ /* Unlock the FCB, post the 'I/O Complete'     */
+ /* semaphore to restart any tasks waiting      */
+ /* for this FCB.                               */
+ /*---------------------------------------------*/
+ if pFCBª=SYSNULL then do;             /* All but CLOSE      20050314*/
+   call mutex_wait( addr(IO_hmtx) );   /* Lock the FCB               */
+   pFCB->FCB_pFile = SYSNULL;          /* Clear active file          */
+   /* NOTE: The following should probably be done via CS builtin.    */
+   pFCB->FCB_TID   = -1;               /* Unlock this FCB            */
+   call mutex_post( addr(IO_hmtx) );   /* Unlock FCB                 */
+   end; /* pFCBª=SYSNULL */            /*                    20050314*/
+ call barrier;                         /* Cache coherence       0.9.2*/
+ completion(IO_hevt)='1'b;             /* Post any pending I/O  0.9.2*/
+ return( IOR_RC );                     /* 0, LINENO, COUNT, addr(ERR)*/
+
+ /* NOTE 'Status' function (fun=35) will leave an unopened FCB in    */
+ /*      limbo if condition is raised by OPEN.  This is probably     */
+ /*      how it should be.                                           */
+
+ /*============================================================0.9.10*/
+ /* This is the logic for "normal" (non-ISAM) files            0.9.10*/
+ /*============================================================0.9.10*/
+ file_op: proc;                                              /*0.9.10*/
+ /*------------------------------------------------------------------*/
+ /* Test for implicit open.                                          */                                 
+ /*------------------------------------------------------------------*/
+ IOR_RC = 0;                           /* Prime return code          */
+ pFCB->FCB_pFile = pF;                 /* Set A(FILE) in FCB         */
+ if substr(pFCB->FCB_status,1,1)='0'b  /* Not open                   */
+ then do;                              /* Implicit or Explicit open  */
+   /* 2=CLOSE, 30=LINENO(), 31=COUNT(), 35=STATUS()                  */
+   if funª=30 & funª=31 & funª=35 &    /* No implicit open for th0.8d*/
+      funª=2
+   then call PLI_Open( pIORB, pFCB );  /* Open the FCB               */
+   /* COMMENT: At this point we can't say if the file is INDEXED     */
+   /* COMMENT: OPEN of an already-open file is ignored.              */
+   /*          This seems to correspond to IBM PL/I.                 */
+   end; /* open file */
+
+ /* NOTE: UNDEFINEDFILE -- needs to have a bit in the IORB that      */
+ /*       is cleared on first call and set if UNDF is raised.        */
+ /*       If second entry is made when this bit is set raise         */
+ /*       the ERROR condition. (or use IOR_Func).                    */
+
+ /*---------------------------------------------*/
+ /* Perform the requested I/O operation         */
+ /* if the file attributes permit.              */
+ /*---------------------------------------------*/
+ select( fun );
+   when(  1 ) /* continue */ ;         /* OPEN                       */
+   when(  2 ) do;                      /* CLOSE                      */
+     call PLI_Close( pIORB, pFCB );    /* Close the FCB              */
+     /* If the CLOSE fails, FCB_LastSt holds the O/S error code.     */
+     /* Lock the FCB chain to free closed FCB */
+     call mutex_wait( addr(IO_hmtx) ); /* Lock the FCB chain         */
+     call destroy( pFCB );             /* Delete FCB                 */
+     call mutex_post( addr(IO_hmtx) ); /* Unlock FCB chain           */
+     pFCB=SYSNULL;                     /* Indicate FCB freed         */
+     pF->FC_pFCB = SYSNULL;            /* File closed        20050314*/
+     end; /* close */
+   when( 10 )                          /* READ                       */
+     call PLI_Read( pIORB, pFCB );     /* Read a record              */
+     /* Needs RECORD INPUT or RECORD UPDATE */
+   when( 11 )                          /* WRITE                      */
+     call PLI_Write( pIORB, pFCB );    /* Write a record             */
+     /* Needs RECORD OUTPUT or RECORD UPDATE */
+   when( 12 )                          /* REWRITE                    */
+     signal condition(UNIMPLEMENTED);
+   when( 13 )                          /* LOCATE                     */
+     signal condition(UNIMPLEMENTED);
+   when( 14 )                          /* DELETE                     */
+     signal condition(UNIMPLEMENTED);
+   when( 15 )                          /* UNLOCK                     */
+     signal condition(UNIMPLEMENTED);
+   /*----------------------------------------------------------------*/
+   /*  COMMENT: GET and PUT - are called via entry variables         */
+   /*        in the global data area.                                */
+   /*        These are WXTERNs (Weak External references.)           */
+   /*        If GET/PUT are actually used, the compiled code         */
+   /*        will generate EXTERNs.  This allows stream I/O          */
+   /*        procedures to be excluded and not linked if not used.   */
+   /*  COMMENT: Fix 2010-03-22.  ON-Units not being propagated to    */
+   /*           GET and PUT for Endpage, etc.                   0.9.0*/
+   /*----------------------------------------------------------------*/
+   when( 20 ) do;                      /* GET                        */
+     if (pFCB->FCB_attrib&'00200200'bx)='00000000'bx /* ªSTREAM INPUT*/
+     then signal UNDEFINEDFILE(pF->this_file);
+     get_put_entry = pGBL->GBL_GET_EP;                     /*20100322*/
+     addr(get_put_entry)->ent_static_DSA = GETDSA();       /*20100322*/
+     call get_put_entry( pIORB, pFCB );                    /*20100322*/
+     end; /* get */
+   when( 21 ) do;                      /* PUT                        */
+     if (pFCB->FCB_attrib&'00208000'bx)='00000000'bx /* ªSTREAM OUTPU*/
+     then signal UNDEFINEDFILE(pF->this_file);
+     get_put_entry = pGBL->GBL_PUT_EP;                     /*20100322*/
+     addr(get_put_entry)->ent_static_DSA = GETDSA();       /*20100322*/
+     call get_put_entry( pIORB, pFCB );                    /*20100322*/
+     end; /* put */
+   /*-----------------------*/
+   /* Internal Non-I/O      */
+   /*-----------------------*/
+   /* For COUNT, LINENO, and Status set value in IOR_RC              */
+   /* (no attribute check required here)                             */
+   when( 30 )                          /* LINENO Builtin             */
+     IOR_RC = pFCB->FCB_LineNo;
+   when( 31 )                          /* COUNT Builtin              */
+     IOR_RC = pFCB->FCB_Count;
+   /* SAMEKEY is not implemented      */
+   when( 35 ) do;                      /* Status Internal function   */
+     IOR_RC = binvalue( pFCB->FCB_pError );
+     pFCB->FCB_pError,pFCB->FCB_pFile = SYSNULL;
+     end; /* Status */
+   otherwise  signal ERROR;
+   end; /* select */
+  end file_op;                                               /*0.9.10*/
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /* Initialize sets up resources for IOR.                            */
+ /* It is called once by _pli_Start.                                 */
+ /*------------------------------------------------------------------*/
+ initialize: proc;
+   dcl   RC                  fixed bin(31) /* unsigned */ ;
+   call mutex_init( addr(IO_hmtx), 0 );    /* Create Mutex      0.9.2*/
+   end initialize;
+
+ /*------------------------------------------------------------------*/
+ /* Terminate closes all open files and cleans up resources          */
+ /* owned by IOR.                                                    */
+ /* It is called once per process when all but the main thread have  */
+ /* completed, so there is no need to lock the FCB chain.            */
+ /*------------------------------------------------------------------*/
+ terminate: proc;
+   dcl   RC                  fixed bin(31) /* unsigned */ ;
+   dcl  (pF,pNext)           ptr;
+   dcl   dummy_file          file variable;
+
+   /* Close all open files   */
+   pF = IO_FCBFlink;
+   IO_FCBFlink,IO_FCBBlink = sysnull(); 
+   do while( pFª=SYSNULL );
+     pNext = pF->FCBNext;
+     /* Files opened unsuccessfully may retain an FCB 'NOT OPEN'     */
+     if substr(pF->FCB_status,1,1)='1'b          /* File is open     */
+     then do;
+       /* Establish a dummy 'FILE' in case CLOSE*/
+       /* needs to signal an I/O condition.     */
+       addr(dummy_file)->FC_pFCB  = pF;
+       addr(dummy_file)->FC_pName = pF->FCB_pFileName;
+       pF->FCB_pFile = addr(dummy_file);
+       if (pF->FCB_envflags&indexed_file)^='00000000'bx      /*0.9.10*/
+       then call isam_entry( SYSNULL, pF );                  /*0.9.10*/
+       else call PLI_Close( SYSNULL, pF );/* Close the FCB           */
+       end; /* file open */
+     call destroy(pF);                   /* Delete the FCB           */
+     pF = pNext;
+     end; /* do while */
+
+   /* Clean up semaphores and reset chains */
+   if IO_hmtxª=0                                              /*0.9.1*/
+   then call mutex_destroy( addr(IO_hmtx) );   /* Close semaphores    0.9.2*/
+   if completion(IO_hevt)='0'b                                      /*0.9.1*/
+   then completion(IO_hevt)='1'b;                                   /*0.9.2*/
+   IO_hmtx=0;                                                       /*0.9.2*/
+   IO_FCBFlink,IO_FCBBlink = SYSNULL;
+
+   end terminate; 
+
+ /*------------------------------------------------------------------*/
+ /* Creat builds an FCB and adds it to the FCB chains.  It does the  */
+ /* minimum processing possible, since it runs with the FCB chain    */
+ /* locked.  If the requested operation is the COUNT or LINENO BIF,  */
+ /* creat returns SYSNULL to indicate file not open.                 */
+ /*------------------------------------------------------------------*/
+ creat: proc returns( ptr );
+   dcl   pFCB                ptr;
+
+   if fun=30 | fun=31 | fun=35 |       /* LINENO, COUNT, status,     */
+      fun=2                            /* .. or CLOSE?               */
+   then return( SYSNULL );             /* Yes, don't create FCB      */
+
+   allocate FCB set(pFCB);
+   call PLIFILL( pFCB, '00'x, stg(SYSNULL->FCB) );             /*0.8d*/
+
+   pFCB->FCB_TID = pi_tid;             /* Lock by this thread   0.9.1*/
+   if IO_FCBFlink=SYSNULL              /* First FCB on chain         */
+   then IO_FCBFlink,IO_FCBBlink=pFCB;
+   else do;                            /* Otherwise add to chains    */
+     IO_FCBFlink->FCBPrev = pFCB;
+     pFCB->FCBNext = IO_FCBFlink;
+     IO_FCBFlink = pFCB;
+     end; /* else */
+   pFCB->FCB_pFileName = pN;           /* FCB  -> file name          */
+
+/* The necessity for the kludge was removed by changes to DCL20.9.10b*/
+/* to initialize the file name address in the FILE block      0.9.10b*/
+goto kludge_not_needed;
+
+/*************************************************************0.9.10b*/
+/* KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE    0.9.10b*/
+/*                                                            0.9.10b*/
+/* NOTE: This is a TERRIBLE kludge for the way ld handles            */
+/*       relocation in common sections. If a file is declared twice  */
+/*       in a compilation unit the address of the filename           */
+/*       contained therein is relocated incorrectly (relocated       */
+/*       twice?), thus the address is invalid. This kludge checks    */
+/*       to make sure that it at least points to something that      */
+/*       LOOKS LIKE a varying string. If not it plugs in the         */
+/*       default address of the filename so that execution can       */
+/*       continue.                                                   */
+/*                                                                   */
+   
+on error begin;                                             /*0.9.10b*/
+  pFCB->FCB_pFileName = pF+12;                              /*0.9.10b*/
+  pF->FC_pName        = pF+12;                              /*0.9.10b*/
+  on error system;                                          /*0.9.10b*/
+  goto ok;                                                  /*0.9.10b*/
+  end;                                                      /*0.9.10b*/
+if pN->FCB_filename = 'TRAP' then /*dummy*/ ;               /*0.9.10b*/
+ok:                                                         /*0.9.10b*/
+/* KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE KLUDGE    0.9.10b*/
+/*************************************************************0.9.10b*/
+kludge_not_needed:
+
+   pF->FC_pFCB         = pFCB;         /* FILE -> FCB                */
+   pFCB->FCB_pFile     = pF;           /* Set A(FILE) in FCB    0.9.3*/
+
+   return( pFCB );
+   end creat;
+
+ /*------------------------------------------------------------------*/
+ /* Destroy removes an FCB from the active chain and frees it.       */
+ /*------------------------------------------------------------------*/
+ destroy: proc(pFCB);
+   dcl   pFCB                ptr;
+
+   if pFCB->FCBPrev = SYSNULL          /* First FCB on chain?        */
+   then do;
+     IO_FCBFlink = pFCB->FCBNext;
+     if IO_FCBFlink ª= SYSNULL
+     then IO_FCBFlink->FCBPrev = SYSNULL;
+     end;
+   else pFCB->FCBPrev->FCBNext = pFCB->FCBNext;
+   if pFCB->FCBNext = SYSNULL          /* Last FCB?                  */
+   then do;
+     IO_FCBBlink = pFCB->FCBPrev;
+     if IO_FCBBlink ª= SYSNULL
+     then IO_FCBBlink->FCBNext = SYSNULL;
+     end;
+   else pFCB->FCBNext->FCBPrev = pFCB->FCBPrev;
+   free pFCB->FCB;                     /* Free FCB storage           */
+
+   end destroy;
+
+ /*------------------------------------------------------------------*/
+ /* Scan chases the chain of active FCBs to ensure that the          */
+ /* requested file is open.  It sets the UNDEFINEDFILE flag if       */
+ /* the file is not found.  If the file is found it checks the TID   */
+ /* to see if the file is in use.  If not in use it sets the TID     */
+ /* to the current thread id to lock the file, otherwise it sets     */
+ /* a bit to force the mainline to rescan the FCB chain.             */
+ /* The idea is that 'in use' files may be in the process of         */
+ /* being closed.                                                    */
+ /*------------------------------------------------------------------*/
+ scan: proc returns( ptr );
+   dcl   RC                  fixed bin(31) /* unsigned */ ;
+   dcl   pFCB                ptr;
+
+   pFCB = IO_FCBFlink;                 /* -> First FCB               */
+   do while( pFCBª=SYSNULL );
+     if pF->FC_pFCB=pFCB then leave;   /* File found                 */
+     pFCB = pFCB->FCBNext;             /* Otherwise chase chain      */
+     end; /* do while */
+   if pFCB=SYSNULL then bUNDEFINEDFILE='1'b;
+   else do;                            /* Make sure file not in use  */
+     /* This will handle one freakish condition:  If a FILE variable */
+     /* is reused, it may point to a valid FCB for a different file  */
+     /* depending on how heap storage is reused.  This check makes   */
+     /* sure it is the correct file.                                 */
+     if pF->FC_pNameª=pFCB->FCB_pFileName
+     then bUNDEFINEDFILE='1'b;
+     end; /* else */
+
+   if bUNDEFINEDFILE then return( SYSNULL );
+
+   /*----------------------------------------------------------------*/
+   /* An ON-Unit entered as a result of an I/O operation to this     */
+   /* file will be entered with FCB_TID cleared as a result of       */
+   /* a 'STATUS' call.  The ON-Unit is free to preform I/O on        */
+   /* the file.                                                      */
+   /* NOTE: Non IO-conditions raised during I/O should probably      */
+   /*       clear the TID.                                           */
+   /*----------------------------------------------------------------*/
+
+   /*----------------------------------------------------------------*/
+   /* The Status function expects to find the FCB locked by the      */
+   /* current thread.  Also, use of a file in a Non-I/O On-Unit      */
+   /* invoked by an I/O operation on that file will leave the FCB    */
+   /* locked.  This problem was identified when an ERROR On-Unit     */
+   /* entered because of an invalid format statement for SYSPRINT    */
+   /* tried to write a message to SYSPRINT.                          */
+   /* NOTE: This will be a problem when tasking is implemented,      */
+   /*       because an ON-unit entered from an I/O procedure may     */
+   /*       return abnormally and leave the FCB locked.              */ 
+   /*----------------------------------------------------------------*/
+   if pFCB->FCB_TID = pi_tid           /* This FCB locked by cur0.9.1*/
+   then return( pFCB );                /* Yes, okay              0.5e*/
+
+   if pFCB->FCB_TID ª= -1              /* This FCB locked            */
+   then do;                            /* Wait for FCB available     */
+     if fun=35 then return( SYSNULL ); /* Should not occur           */
+     bMustWait='1'b;                   /* Else wait for FCB avail.   */
+     end;
+   else pFCB->FCB_TID = pi_tid;        /* Else lock FCB         0.9.1*/
+
+   return( pFCB );
+   end scan;
+
+ %page;
+ %include iorb;
+ %include fcb;
+ %include file;
+ %include dsa;
+ %include gbl;
+ %include entry;                                            /*20100322*/
+
+ end pli_IOR;

@@ -1,0 +1,380 @@
+ /* BeginThread - PL/I thread interface                              */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.2         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        BeginThread                                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          October, 2010                                */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      This is the Linux version of BeginThread     */
+ /*			code to create a thread.                     */
+ /*			Calls: OSCreateThread.			     */
+ /*                                                                  */
+ /*                     It is mostly common with the OS/2 version,   */
+ /*                     except that it uses the established PL/I     */
+ /*                     exception handler for the new thread and     */
+ /*                     terminates the thread with a return.         */
+ /*                                                                  */
+ /*      Entry Points:                                               */
+ /*                     _pli_BeginThread                             */
+ /*                       Called to start a thread.                  */
+ /*                     _pli_Thrd                                    */
+ /*                       Thread entry point from CLONE() syscall.   */
+ /*                     _pli_EndThread                               */
+ /*                       Called from SIG when a SIGCHLD signal      */
+ /*                       is received to clean up stack and TCB.     */
+ /*                                                                  */
+ /*      Calling Sequence: (see below)                               */
+ /*                                                                  */
+ /*      Parameters:                                                 */
+ /*                                                                  */
+ /*      Description:                                                */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*	      * The thread procedure is a 'LIMITED ENTRY' (4 bytes)  */
+ /*		but we currently have no way to specify this, so we  */
+ /*		play games using PTR.  This needs to be fixed.       */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+BeginThrd: package exports( BeginThread, EndThread );
+
+ /*------------------------*/
+ /* EXTERNAL data          */
+ /*------------------------*/
+ dcl	  thread_mutex	      fixed bin(31)  static    init(0)
+              ext( '_pli_thread_mutex' );
+
+ /*------------------------*/
+ /* STATIC data            */
+ /*------------------------*/
+ dcl      zombie_TCB_chain    ptr       static    init( sysnull );
+
+ /*------------------------*/
+ /* Prototypes             */
+ /*------------------------*/
+ dcl      EVENT               event     based;
+ 
+ /*------------------------*/
+ /* EXTERNAL entries       */
+ /*------------------------*/
+ dcl     OSCreateThread       entry( ptr,   	    /* pfnFunction   */
+ 			 	     bit(32) )      /* ulFlags       */
+			     returns( fixed bin(31) )
+			     ext( '_pli_OSCreateThread' )
+			     options( LINKAGE(SYSTEM) );		     		
+ dcl     getgbl              entry     
+                             returns( ptr )          
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_GetGbl' );       			     
+ dcl     getdsa              entry     
+                             returns( ptr )          
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_GetDSA' );
+
+ dcl     mutex_init          entry(ptr,fixed bin(31))                /*0.9.3*/                             options( linkage(system) )
+                             ext( '_pli_mutex_init' );
+ dcl     mutex_wait          entry(ptr)              
+                             options( linkage(system) )
+                             ext( '_pli_mutex_wait' );
+ dcl     mutex_post          entry(ptr)              
+                             options( linkage(system) )
+                             ext( '_pli_mutex_post' );
+ 
+ %replace SYS_EXIT        by   1;
+ %replace SYS_SIGPROCMASK by 126;
+ %replace SYS_WAITID      by 284;
+ dcl      syscall	     entry
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( '_pli_Syscall' );
+
+ dcl    ( 
+         addr,
+	 allocate,	         
+	 binvalue,
+	 completion,
+         cs,
+	 entryaddr,      
+         heximage,
+         null,
+         plifill,
+	 plifree,
+	 status,
+         stg,
+         sysnull
+        )                    builtin;
+ %page;	
+	  
+
+BeginThread: proc(pfnThread,ulArg,pTask,pEvent,
+	          ulFlags,ulStackSize,ulPriority)
+ 	      returns(ptr)
+	      options( LINKAGE(SYSTEM) )
+              ext( '_pli_BeginThread' );
+
+ /*------------------------*/
+ /* Parameters             */
+ /*------------------------*/
+ dcl	 pfnThread   	     ptr;            /* Thread proc          */
+ dcl	 ulArg		     fixed bin(31);  /* Thread argument      */
+ dcl     pTask		     ptr;	     /* ->TASK variable	     */
+ dcl     pEvent		     ptr;	     /* ->EVENT variable     */
+ dcl     ulFlags             bit(32);        /* Thread flags         */
+         /* '01000000'bx: Start thread suspended                     */
+ dcl     ulStackSize         fixed bin(31);  /* Thread stack size    */	 
+ dcl     ulPriority          fixed bin(31);  /* Thread priority      */	 
+
+ /*------------------------*/
+ /* AUTOMATIC data         */
+ /*------------------------*/
+ dcl     rc                  fixed bin(31);
+ dcl     thread_stack_size   fixed bin(31); /* Rounded stack size    */
+ dcl     pTCB                ptr;           /* ->New TCB             */
+ dcl	 pDSA		     ptr;	    /* ->My DSA		     */
+ dcl	 pStack		     ptr;	    /* ->Thread Stack	     */
+ dcl     callers_chc	     ptr;	    /* Caller's ON-unit chain*/
+ dcl     p 		     ptr;
+
+ /*------------------------*/
+ /* Prototypes             */
+ /*------------------------*/
+ dcl   1 tos                 based,
+	 5 tos_argument      ptr,
+         5 tos_proc_addr     ptr;
+ 
+ pTCB = sysnull();
+ /* Magic -- clear caller's established ON-Units and then establish  */
+ /* a new one for ERROR.					     */
+ pDSA = getdsa();
+ pDSA = pDSA - stg( null()->dsa_below_ebp );
+ callers_chc = pDSA->dsa_chc;		/* Save on-unit chain	     */	
+ pDSA->dsa_chc = sysnull();
+ /*on error goto cleanup;*/
+ 
+ /*------------------------------------*/
+ /* Create the TCB                     */
+ /*------------------------------------*/
+ allocate TCB set(pTCB);
+ call plifill( pTCB, '00'x, stg(pTCB->TCB) );
+ pTCB->TCB_entry = pfnThread;		/* Save real entry address   */
+ pTCB->TCB_arg   = ulArg;		/*  and argument	     */
+ pTCB->TCB_priority = ulPriority;	/* Thread priority	     */
+ pTCB->TCB_pEvent = pEvent;		/* Save EVENT variable addr  */
+ if pEvent^=sysnull() then do;		/* Initialize event var.     */
+   call plifill( pEvent, '00'x, stg(null()->EVENT) );
+   completion(pEvent->EVENT)='0'b;
+   end;
+ 
+ /* Round requested stack size         */
+ thread_stack_size = (ulStackSize + 4095) / 4096;
+ thread_stack_size = thread_stack_size * 4096;
+ 
+ /*------------------------------------*/
+ /* Create New Thread                  */
+ /*------------------------------------*/
+ pStack = allocate( thread_stack_size ); /* Allocate thread stack      */
+ pTCB->TCB_Stack = pStack;               /* Save stack address         */
+ p = pStack + thread_stack_size - stg(null()->tos);
+ p->tos_proc_addr = entryaddr(startup);
+ p->tos_argument  = pTCB; 
+ rc = OSCreateThread( p,             		/* +08 */
+		      ulFlags );    		/* +0C */
+ if rc<=0 then goto cleanup;	        /* Error on create           */
+ pTCB->TCB_tid = rc;
+ if pTask^=sysnull then do;		/* Update task variable	     */
+   pTask->TASK_pTCB = pTCB;
+   end;
+     
+ /*------------------------------------*/
+ /* Exit                               */
+ /*------------------------------------*/
+ pDSA->dsa_chc = callers_chc;		/* Restore on-unit chain     */
+ return(pTCB);           
+     
+ /*------------------------------------*/
+ /* Error Handler                      */
+ /*------------------------------------*/
+ cleanup:
+ if pTCB^=sysnull() then do;
+   if pTCB->TCB_stack^=sysnull		/* Free allocated stack      */
+   then call plifree(pTCB->TCB_stack);
+   free pTCB->TCB;			/* Free allocated TCB        */
+   end;
+ pDSA->dsa_chc = callers_chc;		/* Restore on-unit chain     */
+ signal error;				/* Resignal error	     */
+
+ end BeginThread;                  	/* End of procedure          */
+
+     
+ /*------------------------------------------------------------------*/
+ /* Cleanup procedure for thread.                                    */
+ /* Threads are exited from 'edit_thread' below.  This chains the    */
+ /* TCB to a "zombie" TCB chain and makes a SYS_EXIT syscall to      */
+ /* terminate the thread.  Linux sends a SIGCHLD signal to the       */
+ /* parent process, where the signal handler calls EndThread         */
+ /* to clean up the thread's data structures for all threads         */
+ /* on the "zombie" chain.                                           */
+ /*------------------------------------------------------------------*/
+EndThread: proc                        
+	   options( LINKAGE(SYSTEM) )
+           ext( '_pli_EndThread' );
+
+ /*------------------------*/
+ /* AUTOMATIC data         */
+ /*------------------------*/
+ dcl     rc                  fixed bin(31);
+ dcl     pTCB 		     ptr;	     /* ->Terminating TCB    */
+ dcl     pParent             ptr; 
+ dcl     pEv		     ptr;
+ dcl     NotLastChild        bit(1);
+ dcl     my_siginfo          like siginfo; 
+ dcl     flags               bit(32)    static    init( '05000000'bx );
+ /* '01000000'bx: WNOHANG    */                  
+ /* '02000000'bx: WSTOPPED   */                  
+ /* '04000000'bx: WEXITED    */                 
+ /* '08000000'bx: WCONTINUED */                  
+ /* '00000020'bx: _WNOTHREAD */                  
+ /* '00000040'bx: _WALL      */ 
+ /* '00000080'bx: _WCLONE    */ 
+ %replace P_ALL  by 0;
+ %replace P_PID  by 1;
+ %replace P_PGID by 2;
+
+ /*------------------------*/
+ /* Chase zombie TCB chain */
+ /*------------------------*/
+ call mutex_wait( addr(thread_mutex) ); /* Lock the TCB chain        */
+ do while( '1'b );
+   pTCB = zombie_TCB_chain;             /* Get first TCB on chain    */
+   if pTCB^=sysnull then do;            /* End of chain              */
+     zombie_TCB_chain = pTCB->TCB_next; 
+     call mutex_post( addr(thread_mutex) );/* Unlock the TCB chain   */ 
+     end;
+   if pTCB=sysnull then leave;            /* End of chain            */
+   call plifill( addr(my_siginfo), '00'x, stg(my_siginfo) );  
+   rc = SYSCALL( SYS_WAITID, P_PID, pTCB->TCB_TID, 
+                 addr(my_siginfo), flags, 0 );
+   /* If there is a parent TCB (=this is task) check to see if this  */ 
+   /* is the last child.                                             */
+   pParent = pTCB->TCB_parent;
+   if pParent^=sysnull then do;
+     if (pParent->TCB_flags&'01'bx)^='00'bx then do;
+       NotLastChild = CheckParent(pTCB);
+       if ^NotLastChild & pParent->TCB_child=sysnull
+       then pParent->TCB_flags = 
+            pParent->TCB_flags & 'FE'bx;
+       end;
+     end;		       
+   if pTCB->TCB_stack^=sysnull then do;	/* Free allocated stack      */
+     call plifree(pTCB->TCB_stack);
+     /* Free heap also, when this is implemented.                    */
+     free pTCB->TCB;			/* Free allocated TCB        */
+     end;
+   end; /* do while */
+ 
+ /* See if this is the last child of a parent on the zombie chain    */
+ CheckParent: proc(pTCB) returns(bit(1));
+   dcl    pTCB                ptr;
+   dcl    p                   ptr;
+   p = pTCB->TCB_next;
+   do while(p^=sysnull);
+     if p->TCB_parent = pTCB->TCB_parent
+     then return( '1'b );
+     p = p->TCB_next;
+     end;
+   return( '0'b );
+   end CheckParent;
+
+ end EndThread;                  	/* End of procedure          */
+     
+ /*------------------------------------------------------------------*/
+ /* Startup procedure for new thread				     */
+ /* This is the root procedure for the thread.           	     */
+ /*------------------------------------------------------------------*/
+ startup: proc(pTCB) 
+	  options( FROMALIEN LINKAGE(SYSTEM) )
+          ext( '_pli_Thrd' );	  
+   dcl   pTCB                ptr;           /* ->New TCB             */
+   dcl	 pDSA		     ptr;	    /* ->My DSA		     */
+   dcl   pCh		     ptr;
+   dcl   pEv		     ptr;
+   dcl   rc                  fixed bin(31);
+   dcl   real_entry	     entry variable
+   			     options( LINKAGE(SYSTEM) );
+   dcl   SIGINT_id           fixed bin(31)   static    init(2);			     
+			     
+   /* No need to establish exception handler.                        */
+   /* Block SIGINT for started threads.                              */
+   %replace SIG_BLOCK   by 0;
+   %replace SIG_UNBLOCK by 1;
+   rc = SYSCALL( SYS_SIGPROCMASK, SIG_BLOCK, addr(SIGINT_id), 0 );
+   addr(real_entry)->ent_entry_point = pTCB->TCB_entry;
+   pTCB->TCB_Exit = thread_exit;
+   call mutex_wait( addr(thread_mutex) );/* Lock the TCB chain       */ 
+   pCh = getgbl();			/* Get addr(global_data)     */
+   pTCB->TCB_next = pCh->GBL_TCB_anchor;/* Chain this TCB	     */
+   pCh->GBL_TCB_anchor = pTCB;
+     
+   call mutex_post( addr(thread_mutex) );/* Unlock the TCB chain     */ 
+   /* COMMENT: At this point the new thread could be either a thread */
+   /*	     or a task, so it's only linked onto the common chain.   */
+   /*          If it's a task, the task chains will be updated later.*/
+   call real_entry(pTCB->TCB_arg);
+   
+   /* Normal return from a non-task thread comes here.               */
+   /* Other-than-normal return will have already raised FINISH,      */
+   /* and will be to 'thread_exit'.                                  */
+   signal finish;                        /* End of thread/task       */
+    
+ /*------------------------------------------------------------------*/
+ /* Normal exit from thread                                          */
+ /*------------------------------------------------------------------*/
+ thread_exit: 
+   call mutex_wait ( addr(thread_mutex) );/* Lock the TCB chain      */ 
+   pCh = getgbl();			/* Get addr(global_data)     */
+   /* Unlink this TCB from the active chain.                         */
+   if pCh->GBL_TCB_anchor = pTCB	/* Unchain this TCB	     */
+   then pCh->GBL_TCB_anchor = pTCB->TCB_next;
+   else do;
+     pCh = pCh->GBL_TCB_anchor;
+     do while(pCh^=sysnull);
+       if pCh->TCB_next = pTCB then leave;
+       pCh = pCh->TCB_next;
+       end; /* do while */
+     end;
+   if pCh^=sysnull 
+   then pCh->TCB_next = pTCB->TCB_next;
+   /* For Linux, chain this TCB to the "zombie" chain, so that       */
+   /* the stack, heap, and TCB can be freed by the parent task       */
+   /* on receipt of a SIGCHLD signal generated by SYS_EXIT.          */
+   pTCB->TCB_next   = zombie_TCB_chain;
+   zombie_TCB_chain = pTCB;
+   call mutex_post ( addr(thread_mutex) );      /* Unlock TCB chain  */ 
+   /* If this thread/task has an associated event, post it complete  */
+   pEv = pTCB->TCB_pEvent;
+   if pEv^=sysnull then do;
+     status(pEv->EVENT) = pTCB->TCB_status;
+     completion(pEv->EVENT)='1'b;
+     end;
+		 
+   rc = syscall( SYS_EXIT, 0 );                 /* Terminate thread  */
+	  
+   end startup;
+%page;   
+
+ %include tcb;
+ %include gbl;
+ %include entry;
+ %include dsa;
+ %include event;
+ %include task;
+ %include siginfo;
+
+ end BeginThrd;                         /* End of package            */

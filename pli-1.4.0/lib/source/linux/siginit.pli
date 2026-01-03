@@ -1,0 +1,186 @@
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        SigInit  (PL/I Runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_SigInit                                 */
+ /*                                                                  */
+ /*      Function:      This procedure is called from INIT to        */
+ /*                     establish the PL/I signal handler for        */
+ /*                     system trap conditions.                      */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2016-10-14: Reverse stogare of saved signal info, 0.9.10*/
+ /*                      set SIGPROCMASK correctly.                  */
+ /*          2012-01-08: Major modification for Clerity -       0.9.3*/
+ /*                      ability to save and restore signal handlers.*/
+ /*                                                                  */
+ /********************************************************************/
+ SigInit: proc(pSave,pRest)                                   /*0.9.3*/       
+          options( Linkage(system) )
+          ext( '_pli_SigInit' );
+
+ /*-------------------------*/                                /*0.9.3*/
+ /* Parameters              */                                /*0.9.3*/
+ /*-------------------------*/                                /*0.9.3*/
+ dcl     (pSave,pRest)        ptr;                            /*0.9.3*/
+
+ %replace SIGHUP     by  1; /* Hang-up        */
+ %replace SIGINT     by  2; /* Keyboard Intr  */
+ %replace SIGQUIT    by  3; /* Quit from Kbd  */
+ %replace SIGILL     by  4; /* Illegal Instr. */
+ %replace SIGTRAP    by  5; /* Debug brkpt    */
+ %replace SIGABRT    by  6; /* Abn. Term.     */
+ %replace SIGIOT     by  6; /* Same as SIGABRT*/
+ %replace SIGBUS     by  7; /* Bus error      */
+ %replace SIGFPE     by  8; /* FPU except..   */
+ %replace SIGKILL    by  9; /* Force Terminate*/
+ %replace SIGUSR1    by 10; /* User signal    */
+ %replace SIGSEGV    by 11; /* Inv. Mem. ref. */
+ %replace SIGUSR2    by 12; /* User signal    */
+ %replace SIGPIPE    by 13; /* No readers     */
+ %replace SIGALRM    by 14; /* RT clock       */
+ %replace SIGTERM    by 15; /* Process term.  */
+ %replace SIGSTKFLT  by 16; /* FPU stack err. */
+ %replace SIGCHLD    by 17; /* Child term.    */
+ %replace SIGCONT    by 18; /* Resume exec.   */
+ %replace SIGSTOP    by 19; /* Stop exec.     */
+ %replace SIGTSTP    by 20; /* Stop from TTY  */
+ %replace SIGTTIN    by 21; /* Bkgd req input */
+ %replace SIGTTOU    by 22; /* Bkgd req output*/
+ %replace SIGURG     by 23; /* Urgent socket c*/
+ %replace SIGXCPU    by 24; /* CPU limit exc. */
+ %replace SIGXFSZ    by 25; /* File size exc. */
+ %replace SIGVTALRM  by 26; /* Virt time clk  */
+ %replace SIGPROF    by 27; /* Prof tmr clk   */
+ %replace SIGWINCH   by 28; /* Wind. resize   */
+ %replace SIGGIO     by 29; /* I/O now possibl*/
+ %replace SIGPOLL    by 29; /* Same as SIGIO  */
+ %replace SIGPWR     by 30; /* Power failure  */
+ %replace SIGSYS     by 31; /* Bad system call*/
+ %replace SIGUNUSED  by 31; /* Same as SIGSYS */
+
+ /*-------------------------*/
+ /* Automatic Storage       */
+ /*-------------------------*/
+ dcl      j                   fixed bin(7);
+ dcl      rc                  fixed bin(31);
+ 
+ /* PL/I definition of C 'sigaction' structure */
+ dcl    1 sigaction,
+          5 sa_act_handler    union,
+            10 sa_handler     fixed bin(31),/* addr(handler)          */
+	    /* SIG_ERR = -1   Error return from signal                */
+	    /* SIG_DFL =  0   Default signal handling                 */
+	    /* SIG_IGN =  1   Ignore signal                           */
+	    10 sa_sigaction   ptr,
+	  5 sa_mask           bit(32),
+	  5 sa_flags          bit(32),
+	  /* Symbol          C definition  PL/I definition            */
+	  /* SA_NOCLDSTOP    0x00000001u   '01000000'bx               */
+          /* SA_NOCLDWAIT    0x00000002u   '02000000'bx               */
+          /* SA_SIGINFO      0x00000004u   '04000000'bx               */
+          /* SA_ONSTACK      0x08000000u   '00000008'bx               */
+          /* SA_RESTART      0x10000000u   '00000010'bx               */
+          /* SA_NODEFER      0x40000000u   '00000040'bx               */
+          /* SA_RESETHAND    0x80000000u   '00000080'bx               */
+
+/*
+ * SA_FLAGS values:
+ *
+ * SA_ONSTACK indicates that a registered stack_t will be used.
+ * SA_RESTART flag to get restarting signals (which were the default long ago)
+ * SA_NOCLDSTOP flag to turn off SIGCHLD when children stop.
+ * SA_RESETHAND clears the handler when the signal is delivered.
+ * SA_NOCLDWAIT flag on SIGCHLD to inhibit zombies.
+ * SA_NODEFER prevents the current signal from being masked in the handler.
+ *
+ * SA_ONESHOT and SA_NOMASK are the historical Linux names for the Single
+ * Unix names RESETHAND and NODEFER respectively.
+ */
+	  5 sa_restorer       ptr;      /* Not used, should be zero   */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ 
+ /* List of signals to handle */
+ dcl      signal_list     (40)fixed bin(31)  static    init(
+          SIGHUP,    SIGINT,    SIGQUIT,   SIGILL,             
+	  SIGABRT,   SIGBUS,    SIGFPE,    SIGSEGV,                
+	  SIGPIPE,   SIGALRM,   SIGTERM,   SIGSTKFLT,
+	  SIGCHLD,   SIGTSTP,   SIGTTIN,   SIGTTOU,
+	  SIGTTIN,   SIGTTOU,   SIGURG,    SIGXCPU,  
+	  SIGXFSZ,   SIGVTALRM, SIGPROF,   SIGGIO,
+	  SIGPOLL,   SIGPWR,    SIGSYS,   -1 );
+	  
+ /* Not caught: SIGTRP, SIGKILL, SIGUSRx, SIGCONT,                   */
+ /*             SIGSTP,  SIGWINCH.				     */
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_SIGACTION by 67;   
+ dcl      syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+ dcl      trap                entry
+                              ext( '_pli_Trap' );
+
+ dcl    (addr,entryaddr,hbound,stg,sysnull) 
+                              builtin;
+
+ /*-------------------------*/
+ /* Start of Procedure      */
+ /*-------------------------*/
+ sa_sigaction = entryaddr(trap);        /* addr(trap handler)         */
+ sa_mask      = (32)'0'b;
+ /* Don't set SA_RESETHAND ('00000080'bx) 2016-10-13            0.9.10*/
+ sa_flags     = '04000040'bx;           /* SA_SIGINFO           0.9.10*/
+ /* See values for 'SA_FLAGS' above                             0.9.10*/
+ sa_restorer  = sysnull();
+ 
+ /*-------------------------------------------------------------------*/
+ /* The default actions for all signals we handle are set the same    */
+ /* per the 'sa_flags' value - currently:                             */
+ /*            SA_NODEFER: Current signal is not masked in handler    */
+ /*            SA_SIGINFO: Signal handler takes three arguments       */
+ /* '_pli_Trap' is nominated as the handler for all signals           */
+ /*-------------------------------------------------------------------*/
+ do j=1 to hbound(signal_list,1);
+   if signal_list(j)=-1 then leave;     /* end of list                */
+   /* If restoring previous signal handlers, set sigaction       0.9.3*/
+   /* to saved values.                                           0.9.3*/
+   if pRest^=sysnull() then do;                                /*0.9.3*/
+     call plimove( addr(sigaction), pRest, stg(sigaction) );   /*0.9.3*/
+     pRest = pRest - stg(sigaction);                           /*0.9.3*/
+     end;                                                      /*0.9.3*/
+   rc = syscall( SYS_SIGACTION, signal_list(j), 
+                 addr(sigaction), pSave );                     /*0.9.3*/
+   /* If saving old signal handler values, bump address of       0.9.3*/
+   /* location to save next value.                               0.9.3*/		 
+   if pSave^=sysnull()                                         /*0.9.3*/
+   then pSave = pSave - stg(sigaction);                       /*0.9.10*/
+   if rc^=0 then do;
+     display( 'SIGACTION ' || signal_list(j)||
+              ' returned ' || rc );
+     call pliretc(16);
+     stop;
+     end;  
+   end; /* do j */
+
+ end SigInit;  
+ 

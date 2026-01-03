@@ -1,0 +1,9 @@
+;--------------------------------------
+; PMSAMP.DEF module definition
+;--------------------------------------
+
+NAME        PMHANOI WINDOWAPI
+
+DESCRIPTION 'Towers of Hanoi - PM version'
+PROTMODE
+EXPORTS     MAIN CLIENT   

@@ -1,0 +1,399 @@
+ /* _pli_F2I                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_F2I (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Oct, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_F2I                                     */
+ /*                                                                  */
+ /*      Function:      Convert an x87 floating point number         */
+ /*                     to an intermediate decimal floating-point    */
+ /*                     value for output or assignment.  The number  */
+ /*                     is always converted with eighteen digits of  */
+ /*                     precision and no rounding.  Any required     */
+ /*                     rounding is performed by the caller.         */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Intel Floating-point formst.                 */
+ /*                     PL/I Descriptor format.                      */
+ /*                                                                  */
+ /*      Internal floating-point format:                             */
+ /*          x87 "double extended precision" (real10) format         */
+ /*          can represent slightly fewer than 20 decimal digits.    */
+ /*          The internal format is a standard 18-digit BDC number,  */
+ /*          representing the fraction, and a two-byte binary        */
+ /*          power-of-ten exponent as follows:                       */
+ /*                                                                  */
+ /*            +-- Low-order two digits of fraction (H-L)            */
+ /*            |                                                     */
+ /*            |         +-- High-order two digits of fraction       */
+ /*            |         |                                           */
+ /*            |         |    +-- Sign                               */
+ /*            v         v    v                                      */
+ /*          +---+     +---+---+ +---+---+                           */
+ /*          | | | ''' | | |0|S| | Exp   |                           */
+ /*          +---+     +---+---+ +---+---+                           */
+ /*                          |        |                              */
+ /*                          |       +--- power of 10 (i.e. 10**n)   */
+ /*                          +-- unused                              */
+ /*          Note that this potentially loses a little accuracy      */
+ /*          in the fraction, but I think the gain in usability      */
+ /*          is worth it.                                            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Result data (12 or 24 bytes)      |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Source descriptor                 |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Source data                       |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*          . The cross-compiler has problems with large floating-  */
+ /*            point numbers, and the current version of the native  */
+ /*            compiler F-P code is incomplete, so the tables of     */
+ /*            F-P values are coded as hexadecimal constants.        */
+ /*            These need to be coded properly.                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2008-10-08: Fix returned value when input=0.        0.7a*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_FLT2INT: proc(pData,pDesc,pResult)
+                             external( '_pli_F2I' )
+                             options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pData               ptr;
+ dcl     pDesc               ptr;
+ dcl     pResult             ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pD                  ptr;
+ dcl     pR                  ptr;
+ dcl     source              float dec(20);      /* Extracted source */
+ dcl     result              like IntFlt;        /* Converted result */
+ dcl     flt_size            fixed bin(7);       /* Size of source   */
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+
+ /* Positive powers of ten                                           */
+ /* NOTE: Currently defined as CHARACTER because the compiler        */
+ /*       doesn't yet handle FLOAT constants.                        */
+ dcl 1 PotTblX         (0:13)char(10)  static    init(
+          '0000000000000080FF3F'x,    /*  0 1.0e0     */
+          '00000000000000A00240'x,    /*  1 1.0e1     */
+          '00000000000000C80540'x,    /*  2 1.0e2     */
+          '000000000000409C0C40'x,    /*  3 1.0e4     */
+          '000000000020BCBE1940'x,    /*  4 1.0e8     */
+          '00000004BFC91B8E3440'x,    /*  5 1.0e16    */
+          '9EB5702BA8ADC59D6940'x,    /*  6 1.0e32    */
+          'D5A6CFFF491F78C2D340'x,    /*  7 1.0e64    */
+          'E08CE980C947BA93A841'x,    /*  8 1.0e128   */
+          'C7910EA6AEA019E3A346'x,    /*  9 1.0e512   */
+          '170C7581867576C9484D'x,    /* 10 1.0e1024  */
+          'E55D3DC55D3B8B9E925A'x,    /* 11 1.0e2048  */
+          '9B97208A025260C42575'x,    /* 12 1.0e4096  */
+          '7FFF800000000080FF7F'x     /* 13 Infinity  */
+         );
+
+ dcl 1 PotTbl          (0:13)float dec(20) unaligned
+                             based( addr(PotTblX) );
+
+ dcl     tenpower       (0:7)fixed bin(31)  static    init(
+              1,        10,       100,      1000,
+          10000,    100000,   1000000,  10000000 );
+
+   /* Digit positions for digits 0:17 within BCD number              */
+ dcl     d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FB15                fixed bin(15)       based;
+ dcl     LD07                float dec(7)        based;
+ dcl     LD15                float dec(15)       based;
+ dcl     LD20                float dec(20)       based;
+
+ dcl     b80                 bit(80)             based;
+
+ %include intflt;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (ADDR,FLOOR,MAX,MIN,MOD,NULL,PLIFILL,PLIMOVE)
+                             builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure Entry                                                  */
+ /*------------------------------------------------------------------*/
+ pD = pData;                           /* ->Input data               */
+ pR = pResult;                         /* ->Result                   */
+
+ /*-----------------------------------*/
+ /* Initialize result                 */
+ /*-----------------------------------*/
+ if (pDesc->LD_cplx&'80'bx)='00'bx     /* Real input?                */
+ then flt_size = stg(result);          /* Yes, real result also      */
+ else flt_size = 2*stg(result);        /* Otherwise complex result   */
+ call PLIFILL( pR, '00'x, flt_size );  /* Zero the result            */
+
+ /*-----------------------------------*/
+ /* Determine hardware input size     */ 
+ /*-----------------------------------*/
+ select( pDesc->LD_id );
+   when( '43'x ) do;                   /* FLOAT BINARY               */
+     select;                           /* Choose input HW size       */
+       when( pDesc->LB_prec<=23 ) flt_size=4;                 /*0.9.3*/
+       when( pDesc->LB_prec<=49 ) flt_size=8;                 /*0.9.3*/
+       otherwise                  flt_size=10;
+       end; /* prec */
+     end; /* FLOAT BIN */
+   when( '44'x ) do;                   /* FLOAT DECIMAL              */
+     select;                           /* Choose input HW size       */
+       when( pDesc->LD_prec<=7  ) flt_size=4;                 /*0.9.3*/
+       when( pDesc->LD_prec<=15 ) flt_size=8;                 /*0.9.3*/
+       otherwise                  flt_size=10;
+       end; /* prec */
+     end; /* FLOAT DEC */
+   otherwise signal ERROR;             /* Not FLOAT input            */
+   end; /* LD_id */
+
+ call get_input(pD);                   /* Get real value, update pD  */
+ call convert;                         /* Convert the value          */
+ call PLIMOVE( pR, addr(result),       /* Move real result           */
+                   stg(result) );
+ pR = pR + stg(null()->IntFlt);        /* Update result address      */
+ if (pDesc->LD_cplx&'80'bx)ª='00'bx    /* Complex input?             */
+ then do;
+   call get_input(pD);                 /* Get imag value             */
+   call convert;                       /* Convert imag value         */
+   call PLIMOVE( pR, addr(result),     /* Move imag result           */
+                     stg(result) );
+   end; /* complex */
+ return;                               /* All done, simple, eh?      */
+
+ /*------------------------------------------------------------------*/
+ /* Get source value from location 'pD', and update 'pD'.            */
+ /*------------------------------------------------------------------*/
+ get_input: proc(pD);
+   dcl   pD                  ptr;
+   select( flt_size );       /* FLOAT BIN DEC have same internal fmt.*/
+     when( 4)  source = pD->LD07;
+     when( 8)  source = pD->LD15;   
+     otherwise source = pD->LD20;
+     end; /* select */
+   pD = pD+flt_size;         /* Update input pointer                 */
+   end get_input;
+
+ /*------------------------------------------------------------------*/
+ /* Convert the value from 'source' into 'result'                    */
+ /*------------------------------------------------------------------*/
+ convert: proc;
+   dcl   i                   fixed bin(7);
+   dcl   sgn                 bit(1);
+   dcl   exp                 fixed bin(31);
+   dcl   value               fixed bin(31);
+   dcl   tmp                 float dec(20);
+   dcl   n                   fixed bin(7);
+   dcl   ResDig              fixed bin(7);
+   dcl   pS                  ptr;
+
+   value =  0;
+   call PLIFILL( addr(result), '00'x, stg(result) );           /*0.7a*/
+
+   /*---------------------------------*/
+   /* Handle special cases            */
+   /*---------------------------------*/
+   pS = addr(source);
+   if pS->b80 = (80)'0'b then return;  /* Zero                       */
+   if pS->b80 = '00000000000000000080'bx 
+   then return;                        /* Minus Zero                 */
+   if pS->b80 = EXTENDED_PLUSINF  |    /* +Infinity                  */
+      pS->b80 = EXTENDED_MINUSINF |    /* +Infinity                  */
+      pS->b80 = EXTENDED_NAN           /* NaN                        */
+   then signal ERROR;                  /* Yes, can't convert         */
+   sgn=substr(pS->EXT_sign_exp,9,1);   /* Get sign of input          */
+   substr(pS->EXT_sign_exp,9,1)='0'b;  /*  and clear sign        0.8b*/
+   exp = addr(pS->EXT_sign_exp)->FB15;
+   /* Since we're always working with ext format one bias is enough  */
+   exp = exp-16383;                    /* Unbias exponent            */
+   /* Estimate decimal position by estimating 1+log10(x)             */
+   /* log10(x) = log2(x) * log10(2) where log10(2) is approx .30103  */
+   tmp = exp*30103;
+   exp = tmp/100000;
+
+   /*----------------------------------------------------------------*/
+   /* Scale the number prior to conversion                           */
+   /*----------------------------------------------------------------*/
+   if expª=0 then do;
+     if exp<0 then do;                 /* Need to scale up           */
+       exp = (-exp+3)/4;
+       exp = -(exp*4);
+       call scale( source, -exp );     /* Scale up                   */
+       end; /* exp<0 */
+     else if exp>0 then do;            /* Need to scale down         */
+       if source < 1.0e8               /* PotTbl(4) = 1.0E8          */
+       then exp=0;
+       else if source < 1.0e16         /* PotTbl(5) = 1.0E16         */
+       then do;
+         /* divide by 1.0E8 and get the remainder, set exp=8         */
+         value  = source/1.0e8;
+         source = source - value * 1.0e8;
+         exp = 8;
+         end;
+       else do;                        /* Number is >= 1.0E16        */
+         exp = exp/4;                  /* Round exp to power of 2    */
+         exp = exp*4;
+         call scale( source, -exp );
+         end;
+       end; /* exp>0 */
+     end; /* expª=0 */
+
+   /*----------------------------------------------------------------*/
+   /* Set up to convert fraction eight digits at a time              */
+   /*----------------------------------------------------------------*/
+   ResDig = 17;                        /* ->High_order digit pos.    */
+   exp = exp+7;                        /* eight digits minus one     */
+   do while( ResDig>=0 );
+     if value=0 then do;
+       value = source;                 /* Get next eight digits      */
+       source = (source - value) * 1.0e8;           /* Mult x 1.0e8  */
+       end; /* value=0 */
+     call put_digits(value);           /* Format eight digits        */
+     value = 0;
+     end; /* do while */ 
+
+   addr(result.IF_frac)->BCD_sign=sgn; /* Set sign                   */
+   result.IF_exp = exp;                /* Set exponent               */
+   return;
+
+   /*---------------------------------*/
+   /* Extract eight digits            */
+   /*---------------------------------*/
+   put_digits: proc(n);
+   dcl   tenpower      (0:7)fixed bin(31)  static    init(
+                       1,                      10,
+                     100,                    1000,
+                   10000,                  100000,
+                 1000000,                10000000 );          /*0.9.9*/
+     dcl n                   fixed bin(31);
+     dcl i                   fixed bin(31);
+     dcl p10                 fixed bin(31);
+     dcl digit               fixed bin(31);
+
+     do i= 7 to 1 by -1;
+       if ResDig<0 then return;        /* Done 18 digits             */
+       p10 = tenpower(i);              /* Value for this digit       */
+       digit = n/p10;
+       n = n - digit*p10;
+       call put(digit);
+       end; /* do i */
+     call put(n);                      /* Put last digit             */
+     return;
+
+   put: proc(v);
+     dcl   v                 fixed bin(31);
+     dcl   b32               bit(32);
+     dcl   b4                bit(4);
+     if ResDig<0 then return;
+     if v=0 then do;
+       if ResDig=17                   /* Drop leading zeroes        */
+       then exp = exp-1;              /* and renormalize            */
+       else ResDig = ResDig-1;
+       end; /* v=0 */
+     else do;
+       b32 = '0'b || v;                /* Convert to bit string      */
+       b4  = substr(b32,29,4);
+       addr(result.IF_frac)->BCD_dig( d(ResDig) ) = b4;
+       ResDig = ResDig-1;
+       end; /* vª=0 */
+     end put;
+
+     end put_digits;
+
+   /*---------------------------------*/
+   /* Scale by a power of ten         */
+   /*---------------------------------*/
+   scale: proc( Flt, scale );
+     dcl Flt                 float dec(20);
+     dcl scale               fixed bin(31);
+     if scale>4096 then do;            /* > max exponent?           */
+       call DoScale( Flt, 4096 );
+       scale = scale-4096;
+       end;
+     else if scale<-4096 then do;       /* > min exponent?           */
+       call DoScale( Flt, -4096 );
+       scale = scale+4096;
+       end;
+     call DoScale( Flt, scale );
+
+     DoScale: proc( Flt, scale );
+       dcl Flt               float dec(20);
+       dcl scale             fixed bin(31);
+       dcl fact              float dec(20);
+       fact = PotTbl(0);                    /* 1.0e+00               */
+       if scale<0 then do;
+         call CalcScale( fact, -scale );
+         Flt = Flt/fact;
+         end;
+       else do;
+         call CalcScale( fact, scale );
+         Flt = Flt*fact;
+         end;
+       end DoScale;
+
+     CalcScale: proc( Flt, scale );
+       dcl Flt     float dec(20);
+       dcl scale   fixed bin(31);
+       dcl pow     fixed bin(7);
+       dcl tmp     float dec(20);
+       dcl n       fixed bin(31);
+       if scale>=8192 then signal ERROR;    /* Scale factor too big  */
+       n = scale;
+       pow = 1;
+       do while( n>0 );
+         if mod(n,2)ª=0 then do;            /* For odd scale factors */
+           Flt = Flt * PotTbl(pow);
+           end; /* odd n */
+         n = n/2;
+         pow = pow+1;
+         end; /* do while */
+       end CalcScale;
+
+     end scale;
+
+   end convert;
+
+ %include desc;
+ %include flt;
+ %include bcdinc;
+
+ end pli_FLT2INT;

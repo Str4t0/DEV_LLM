@@ -1,0 +1,55 @@
+ /* _pli_Delay                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        Delay   (PL/I runtime)                       */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Delay                                   */
+ /*                                                                  */
+ /*      Function:      System-indepent portion of PL/I DELAY        */
+ /*                     statement.                                   */
+ /*                                                                  */
+ /*      Dependencices: None                                         */
+ /*                                                                  */
+ /*      Called From:   Compiled code for PL/I DELAY statement.      */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL msec fixed bin(31);                      */
+ /*                     DCL _pli_Delay entry( fixed bin(31) )        */
+ /*                         options( linkage(system) );              */
+ /*                     CALL _pli_Delay(msec)                        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2016-09-04: Return immediately if delay time<=0     0.9.10*/
+ /*        2009-12-19: Changed to call OSSleep inst of DosSleep. 0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Delay: proc(msec) external( '_pli_Delay' )
+                   options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     msec                fixed bin(31);           /* unsigned    */
+
+ /*-------------------------*/
+ /* OS-dependent sleep.     */
+ /*-------------------------*/
+ dcl     OSSleep             entry( fixed bin(31) )
+                             options( linkage(system) )
+                             ext( '_pli_OSSleep' );
+
+ /*------------------------------------------------------------------*/
+ /* Delay: Suspend current thread for 'msec' milliseconds            */
+ /*------------------------------------------------------------------*/
+ if msec>0 then call OSSleep( msec );                        /*0.9.10*/
+ return;
+
+ end pli_Delay;

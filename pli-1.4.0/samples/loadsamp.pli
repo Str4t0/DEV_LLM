@@ -1,0 +1,23 @@
+       TELNOS: PROC OPTIONS(MAIN);
+
+               DCL DIREC FILE RECORD SEQUENTIAL KEYED ENV(INDEXED),
+                   CARD CHAR(80),
+                   NAME CHAR(20) DEF CARD POS(1),
+                   NUMBER CHAR(3) DEF CARD POS(21),
+                   OUTREC CHAR(23) DEF CARD POS(1),
+                   EOF BIT(1) INIT('0'B);
+
+               ON ENDFILE(SYSIN) EOF='1'B;
+
+               OPEN FILE(DIREC) OUTPUT; 
+
+               GET FILE(SYSIN) EDIT(CARD)(A(80));   
+               DO WHILE (^EOF);
+               PUT FILE(SYSPRINT) SKIP EDIT (CARD) (A);
+               WRITE FILE(DIREC) FROM(OUTREC) KEYFROM(NAME);
+               GET FILE(SYSIN) EDIT(CARD)(A(80));
+               END;
+
+               CLOSE FILE(DIREC);
+
+               END TELNOS;

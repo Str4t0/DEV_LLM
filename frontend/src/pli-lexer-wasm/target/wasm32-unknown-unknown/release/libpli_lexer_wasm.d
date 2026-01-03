@@ -1,0 +1,1 @@
+D:\Programozas\Progs\DevAPI\Install\llm_dev_env\frontend\src\pli-lexer-wasm\target\wasm32-unknown-unknown\release\libpli_lexer_wasm.rlib: D:\Programozas\Progs\DevAPI\Install\llm_dev_env\frontend\src\pli-lexer-wasm\src\lib.rs

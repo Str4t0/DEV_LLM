@@ -1,0 +1,228 @@
+ /* _pli_cvtime                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.5         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSTime (PL/I runtime)  [OS/2]           */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar 2022                                     */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GMTime                                  */
+ /*                     _pli_MKTime                                  */
+ /*                                                                  */
+ /*      Function:      Operating system dependent time functions:   */
+ /*                        gmtime, mktime                            */
+ /*                                                                  */
+ /*      These are the PL/I equivalents of the posix functions       */
+ /*      gmtime_r and mktime.                                        */
+ /*                                                                  */
+ /*      Note that our gmtime is actually posix gmtime_r, I wanted   */
+ /*      to maintain compatibility as far as possible, but I'm       */
+ /*      not going to include all the unix cruft. If the caller      */
+ /*      wants to declare it as gmtime_r, go ahead.                  */
+ /*                                                                  */
+ /*      The Unix epoch is 00:00:00 UTC on 1 January 1970            */
+ /*                                                                  */
+ /*      These procedures could profitable be declared with          */
+ /*      linkage(system), but it is probably simpler for the users   */
+ /*      to use standard linkage.                                    */
+ /*                                                                  */
+ /*      Dependencies: None                                          */
+ /*                                                                  */
+ /*      _pli_GMTime                                                 */
+ /*      Calling sequence:                                           */
+ /*                     pTm = _pli_GMTime( pTime, pRes)              */
+ /*                     pTm       = The address of the the returned  */
+ /*                                 tm structure (same as pResult)   */
+ /*                     pTime     = Address of a fixed bin(31) field */
+ /*                                 with unix 'epoch' (time_t)       */
+ /*                     pRes      = Address of a tm structure to     */ 
+ /*                                 contain the result.              */
+ /*      Returns:       Address of input tm struct, or sysnull       */
+ /*                     if an error occurred.                        */
+ /*                                                                  */
+ /*      _pli_MKTime                                                 */
+ /*      Calling sequence:                                           */
+ /*                     epoch = _pli_MKTime( pTm )                   */
+ /*                     epoch     = The address of a fixed bin(31)   */
+ /*                                 field containing the 'epoch'.)   */
+ /*                     pTm       = Address of a tm structure        */
+ /*                                 containg the date to convert.    */
+ /*      Returns:       Converted epoch value to -1 if error occurred*/
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   gmtime should set tm_wday, tm_yday.            */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /* Adapted from emx time.c, original copyright follows.             */
+ /*                                                                  */
+ /* time.c -- Time and date
+   Copyright (c) 1994-1995 by Eberhard Mattes
+
+This file is part of emx.
+
+emx is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2, or (at your option)
+any later version.
+
+emx is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with emx; see the file COPYING.  If not, write to
+the Free Software Foundation, 59 Temple Place - Suite 330,
+Boston, MA 02111-1307, USA.
+
+As special exception, emx.dll can be distributed without source code
+unless it has been changed.  If you modify emx.dll, this exception
+no longer applies and you must remove this paragraph from all source
+files for emx.dll.  */
+ /********************************************************************/
+
+cvtime: package exports( gmtime, mktime );
+
+ %include tm;
+
+ /*------------------------*/
+ /* STATIC data            */
+ /*------------------------*/
+%replace SECSPERDAY by 86400;   /* 60*60*24 */
+%replace FB31MAX by 4294967294; /* Should use UNSIGNED */
+/* Day number, relative to 01-Jan-1970, of 01-Jan for the years 1970
+   through 2106 */
+dcl       year_table   (0:137)fixed bin(31)  static    init(
+      0,   365,   730,  1096,  1461,  1826,  2191,  2557,  2922,
+   3287,  3652,  4018,  4383,  4748,  5113,  5479,  5844,  6209,
+   6574,  6940,  7305,  7670,  8035,  8401, 
+   8766,  9131,  9496,  9862, 10227, 10592, 10957, 11323, 11688,  
+  12053, 12418, 12784, 13149, 13514, 13879, 14245, 14610, 14975,
+  15340, 15706, 16071, 16436, 16801, 17167, 17532, 17897, 18262,
+  18628, 18993, 19358, 19723, 20089, 20454, 20819, 21184, 21550,
+  21915, 22280, 22645, 23011, 23376, 23741, 24106, 24472, 24837,
+  25202, 25567, 25933, 26298, 26663, 27028, 27394, 27759, 28124,
+  28489, 28855, 29220, 29585, 29950, 30316, 30681, 31046, 31411,
+  31777, 32142, 32507, 32872, 33238, 33603, 33968, 34333, 34699,
+  35064, 35429, 35794, 36160, 36525, 36890, 37255, 37621, 37986,
+  38351, 38716, 39082, 39447, 39812, 40177, 40543, 40908, 41273,
+  41638, 42004, 42369, 42734, 43099, 43465, 43830, 44195, 44560,
+  44926, 45291, 45656, 46021, 46387, 46752, 47117, 47482, 47847,
+  48212, 48577, 48942, 49308, 49673, FB31MAX);
+
+/* Day number, relative to 01-Jan, of day 01 for January through
+   December. */
+dcl       month_table_non_leap (0:12)fixed bin(31)  static    init(
+  0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, FB31MAX);
+dcl       month_table_leap (0:12)fixed bin(31)  static    init(
+  0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, FB31MAX);
+
+ /*------------------------*/
+ /* mktime                 */
+ /*------------------------*/
+/* Convert a date_time structure to Unix time_t  */
+mktime: proc(pSrc) returns( fixed bin(31) )
+                   ext( '_pli_MKTime' );
+  dcl    pSrc                 ptr;      /* ->tm struct               */
+  dcl    (t,y)                fixed bin(31);
+  if (pSrc->tm_mday < 1       | pSrc->tm_mday > 31   | 
+      pSrc->tm_mon  < 1       | pSrc->tm_mon  > 12   |
+      pSrc->tm_year < 1970    | pSrc->tm_year > 2105 |
+      pSrc->tm_sec  >= 60     | pSrc->tm_min  >= 60  | 
+      pSrc->tm_hour >= 24)
+  then return(-1);
+
+  t = pSrc->tm_year * 365 + 
+     (pSrc->tm_mon - 1) * 31 + 
+      pSrc->tm_mday;
+  if (pSrc->tm_mon <= 2) then do;
+    /* Jan and Feb. */
+    y = pSrc->tm_year - 1;
+    end;
+  else do;
+    /* Mar through Dec. */
+    y = pSrc->tm_year;
+    t = t-(4 * pSrc->tm_mon + 23) / 10;
+    end;
+  t = t + (y / 4);
+  t = t - (3 * (y / 100 + 1)) / 4;
+  t = t-719528;                  /* 01-Jan-1970 */
+  return( 
+         ((t * 24 + pSrc->tm_hour) * 
+           60 + pSrc->tm_min) * 
+           60 + pSrc->tm_sec
+        );
+  end mktime;
+
+
+/* Return '1'b if Y is a leap year, return '0'b otherwise. */
+leap_year: proc(y) returns( bit(1) );
+  dcl     y                   fixed bin(31);
+  if mod(y,4)^= 0
+  then return('0'b);
+  else if mod(y,100)^=0
+  then return('1'b);
+  else if mod(y,400)^=0
+  then return('0'b);
+  else return('1'b);
+  end leap_year;
+
+ /*------------------------*/
+ /* gmtime                 */
+ /*------------------------*/
+/* Convert a Unix time_t to date_time structure. */
+gmtime: proc(pDst,pTime) returns( ptr )               
+                   ext( '_pli_GMTime' );
+  dcl     pDst                ptr;      /* ->date_time struct        */
+  dcl     pTime               ptr;      /* ->Input time              */
+  dcl     epoch               fixed bin(31)  based(pTime);
+  dcl     t                   fixed bin(31);
+  dcl    (lo,hi,i)            fixed bin(31);
+  dcl    (days,rem)           fixed bin(31);
+  dcl     p                   ptr;
+  dcl     month_table   (0:12)fixed bin(31)     based(p);     
+
+  call plifill(pDst,'00'x, stg(tm) );
+  t = epoch;
+  /* Compute day of week. Code stolen from Apple gmtime.c */
+  days = epoch/SECSPERDAY;                                    
+  rem  = mod(epoch,SECSPERDAY);
+  do while(rem>=SECSPERDAY);
+    rem = rem-SECSPERDAY;
+    days = days+1;
+    end;
+  days = mod(days+4,7);
+  if days<0 then days = days+7;
+  pDst->tm_wday = days;
+  pDst->tm_sec  = mod(t,60); t = t/60;
+  pDst->tm_min  = mod(t,60); t = t/60;
+  pDst->tm_hour = mod(t,24); t = t/24;
+
+  /* Find an i such that year_table[i] <= t < year_table[i+1]. */
+
+  lo = 0; hi = hbound(year_table) - 2;
+  do forever;
+    i = (lo + hi) / 2;
+    if year_table(i) > t
+    then hi = i - 1;
+    else if year_table(i+1) <= t
+    then lo = i + 1;
+    else leave;
+    end; /* forever */
+  pDst->tm_year = i + 1970;
+  t = t - year_table(i);
+
+  if leap_year(pDst->tm_year)
+  then p = addr(month_table_leap);
+  else p = addr(month_table_non_leap);
+  do i=0 by 1 while( t>=month_table(i+1) ); end;
+  pDst->tm_mon= i + 1;
+  pDst->tm_yday = t + 1;
+  pDst->tm_mday = t - month_table(i) + 1;
+  return( pDst );
+  end gmtime;
+
+  end cvtime;

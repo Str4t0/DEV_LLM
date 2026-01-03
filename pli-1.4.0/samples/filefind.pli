@@ -1,0 +1,433 @@
+ /* FileFind: Find first file matching input filespec.               */
+ /********************************************************************/
+ /*           Piping Rock PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        FileFind.                                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2006                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Find first occurrence of a filename          */
+ /*                     matching a caller-supplied set of            */
+ /*                     specifications.                              */
+ /*                                                                  */
+ /*                     Returns the full pathname if found, or the   */
+ /*                     null string if not found or an error         */
+ /*                     occurred.                                    */
+ /*                                                                  */
+ /*                     DosSearchPath not used because:              */
+ /*                     A) It will return name with widlcards if     */
+ /*                        the input has wildcards.                  */
+ /*                     B) DosSearchPath doesn't offer the same      */
+ /*                        flexibility with extensions.              */
+ /*                                                                  */
+ /*      Calling Sequence:                                           */
+ /*                     DCL FileSpec        CHAR(260) VARYING;       */
+ /*                     DCL (pName,pDirLst,pExtLst) PTR;             */
+ /*                     DCL FileFind ENTRY(PTR,PTR,PTR)              */
+ /*                                  RETURNS( CHAR(260) VARYING );   */
+ /*                     FileSpec = FileFind(pName,pDirLst,pExtLst);  */
+ /*                                                                  */
+ /*                     The constant '260' is MAX_PATH.              */
+ /*                                                                  */
+ /*                     pName->CHAR(260) VARYING.  Complete or       */
+ /*                       partial filename.  May contain wildcards.  */
+ /*                                                                  */
+ /*                     pDirLst->List of pointers to the names of    */
+ /*                       directories to be searched, in order.      */
+ /*                       The last entry in the list should have     */
+ /*                       the value SYSNULL.  The names should be    */
+ /*                       CHAR(260) VARYING [or shorter], and        */
+ /*                       may contain full or partial path names.    */
+ /*                       Use '.' for the current working directory, */
+ /*                       etc., or '*Var' to search the directory    */
+ /*                       or directories identified in the           */
+ /*                       Environment Variable 'Var'.                */
+ /*                     pDirList->+--------+     Points to/Example   */
+ /*                               |  PTR   |-->CHAR(n) VARYING       */
+ /*                               +--------+   '.'                   */
+ /*                               |  PTR   |-->CHAR(n) VARYING       */
+ /*                               +--------+   'C:\'                 */
+ /*                               |  PTR   |-->CHAR(n) VARYING       */
+ /*                               +--------+   '*DPATH'              */
+ /*                               |  ...   |                         */
+ /*                               +--------+                         */
+ /*                               |SYSNULL |                         */
+ /*                               +--------+                         */
+ /*                                                                  */
+ /*                     pExtLst->List of pointers to the possible    */
+ /*                       extensions to be searched for, including   */
+ /*                       the '.' if desired. The last entry in      */
+ /*                       the list should have the value SYSNULL.    */
+ /*                       pExtLst may be SYSNULL to indicate         */
+ /*                       that the provided filename should not      */
+ /*                       have an extension appended.                */
+ /*                     pExtList->+--------+     Points to/Example   */
+ /*                               |  PTR   |-->CHAR(n) VARYING       */
+ /*                               +--------+   '.CPY'                */
+ /*                               |  PTR   |-->CHAR(n) VARYING       */
+ /*                               +--------+   '.INC'                */
+ /*                               |  ...   |                         */
+ /*                               +--------+                         */
+ /*                               |SYSNULL |                         */
+ /*                               +--------+                         */
+ /*                                                                  */
+ /*      Remarks:         OS/2 filenames are case-insensitive:       */
+ /*                       ABC, aBc, abc, etc are all equivalent.     */
+ /*                       when comparing extensions, FileFind        */
+ /*                       maps the strings to be compared using      */
+ /*                       DosMapCase with the default codepage       */
+ /*                       before comparing.  Linux considers         */
+ /*                       these all different filenames.             */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                       OS/2 Control Program API:                  */
+ /*                       DosFindFirst, DosFindNext, DosFindClose,   */
+ /*                       DosScanEnv,   DosMapCase.                  */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ FileFind: proc(pName,pDirLst,pExtLst)
+           ext( '_pli_FileFind' )
+           returns( char(260) varying );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     (pName,pDirLst,pExtLst)
+                              ptr;
+
+ dcl      FileName            char(260) varying   based(pName);
+ dcl      DirList             ptr                 based;
+ dcl      ExtList             ptr                 based;
+ dcl      DirName             char(260) varying   based;
+ dcl      Ext                 char(260) varying   based;
+ /* Extensions should include '.' if desired. e.g. '.PLI'          */
+
+ /*-------------------------*/
+ /* Auto Data               */
+ /*-------------------------*/
+ dcl      FoundFile           char(260) varying;
+ dcl      p                   ptr;
+ dcl      pD                  ptr;
+ dcl      NoExt               bit(1)             init( '0'b );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      fn                  char(260)          based;
+ dcl      VarStr              char(0)  varying   based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      DosFindFirst       entry( ptr,              /* pszFileSpec */
+                                    ptr,              /* phDir       */
+          /* Values for hDir:                                        */
+          /*    HDIR_SYSTEM               0001X                      */
+          /*    HDIR_CREATE               -1                         */
+                                    fixed bin(31),    /* flAttribute */
+          /* Values for flAttribute:                                 */
+          /*    MUST_HAVE_ARCHIVED        2000X                      */
+          /*    MUST_HAVE_DIRECTORY       1000X                      */
+          /*    MUST_HAVE_SYSTEM          0400X                      */
+          /*    MUST_HAVE_HIDDEN          0200X                      */
+          /*    MUST_HAVE_READONLY        0100X                      */
+          /*    FILE_ARCHIVED             0020X                      */
+          /*    FILE_DIRECTORY            0010X                      */
+          /*    FILE_SYSTEM               0004X                      */
+          /*    FILE_HIDDEN               0002X                      */
+          /*    FILE_READONLY             0001X                      */
+          /*    FILE_NORMAL               0000X                      */
+                                    ptr,              /* pfindbuf    */
+                                    fixed bin(31),    /* cbBuf       */
+                                    ptr,              /* pcFileNames */
+                                    fixed bin(31) )   /* ulInfoLevel */
+          /* Values for ulInfoLevel:                                 */
+          /*    FIL_STANDARD              1                          */
+          /*    FIL_QUERYEASIZE           2                          */
+          /*    FIL_QUERYEASFROMLIST      3                          */
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) )
+                             ext( 'DosFindFirst' );
+ dcl      DosFindNext        entry( fixed bin(31),    /* hDir        */
+                                    ptr,              /* phFindBuf   */
+                                    fixed bin(31),    /* cbFindBuf   */
+                                    ptr )             /* pcFileNames */
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) )
+                             ext( 'DosFindNext' );
+ dcl      DosFindClose       entry( fixed bin(31) )   /* hDir        */
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) )
+                             ext( 'DosFindClose' );
+ dcl      DosScanEnv         entry( ptr,              /* pszName     */
+                                    ptr )             /* ppszValue   */
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) )
+                             ext( 'DosScanEnv' );
+ dcl      DosMapCase         entry( fixed bin(31),    /* cb          */
+                                    ptr,              /* pcc         */
+                                    ptr )             /* pch         */
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) )
+                             ext( 'DosMapCase' );
+
+
+ dcl    1 FILEFINDBUF3       based,    /* FIL_STANDARD               */
+          5 NextEntryOffset  fixed bin(31),
+          5 fDateCreation    bit(16),
+          5 fTimeCreation    bit(16),
+          5 fDateLastAccess  bit(16),
+          5 fTimeLastAccess  bit(16),
+          5 fDateLastWrite   bit(16),
+          5 fTimeLastWrite   bit(16),
+          5 cbFile           fixed bin(31),
+          5 cbFileAlloc      fixed bin(31),
+          5 attrFile         fixed bin(31),
+          5 cchName          bit(8),
+          5 achName          char(256);
+
+ dcl    1 FILEFINDBUF4       based,     /* FIL_QUERYEASIZE           */
+          5 NextEntryOffset  fixed bin(31),
+          5 fDateCreation    bit(16),
+          5 fTimeCreation    bit(16),
+          5 fDateLastAccess  bit(16),
+          5 fTimeLastAccess  bit(16),
+          5 fDateLastWrite   bit(16),
+          5 fTimeLastWrite   bit(16),
+          5 cbFile           fixed bin(31),
+          5 cbFileAlloc      fixed bin(31),
+          5 attrFile         fixed bin(31),
+          5 cbList           fixed bin(31),
+          5 cchName          bit(8),
+          5 achName          char(256);
+
+ dcl    1 FDATE              unaligned based,
+          5 year             bit(7),
+          5 month            bit(4),
+          5 day              bit(5);
+
+ dcl    1 FTIME              unaligned based,
+          5 hours            bit(5),
+          5 minutes          bit(6),
+          5 twosecs          bit(5);
+
+ dcl    1 COUNTRYCODE        unaligned based,
+          5 country          fixed bin(31),
+          5 codepage         fixed bin(31);
+
+ dcl     (ADDR,LENGTH,NULL,PLIFILL,STG,SUBSTR,SYSNULL)
+                             builtin;
+ %page;
+ /*------------------------------------------------------------------*/
+ /*       Start of Program                                           */
+ /*------------------------------------------------------------------*/
+
+ /*-------------------------*/
+ /* Check Arguments         */
+ /*-------------------------*/
+ if pName=SYSNULL    | pName=NULL   |  /* No input supplied          */
+    pDirLst=SYSNULL  | pDirLst=NULL
+ then return('');
+ if LENGTH(FileName)=0                 /* No filename                */
+ then return('');
+
+ if pExtLst=SYSNULL  | pExtLst=NULL    /* No extension list          */
+ then NoExt = '1'b;
+ else if pExtLst->ExtList = NULL    |
+         pExtLst->ExtList = SYSNULL
+      then NoExt = '1'b;
+
+ /*-------------------------*/
+ /* Scan Directories        */
+ /*-------------------------*/
+ FoundFile = '';
+ pD = pDirLst;
+ do while( pD->DirListª=SYSNULL );
+   call filefind1(pD);                 /* Scan one directory         */
+   if LENGTH(FoundFile)>0              /* File was found             */
+   then return(FoundFile);
+   pD = pD + STG(pD->DirList);         /* ->Next directory           */
+   end; /* do while */
+ return('');                           /* File not found             */
+
+ /*------------------------------------------------------------------*/
+ /* filefind1 looks at one entry in 'DirList' and parses it as an    */
+ /* environment variable name ('*envvar'), or a path name.           */
+ /* If it is an environment variable, the value is assumed to        */
+ /* be a list of paths to search.  Each path is passed to            */
+ /* filefind2 for search.  If a match is found, filefind2            */
+ /* returns the full pathname.  If no match is found the null        */
+ /* string is returned.  Filefind1 exits after the first match.      */
+ /*------------------------------------------------------------------*/
+ filefind1: proc(pD);
+   dcl    pD                  ptr;
+   dcl    pEnv                ptr;
+   dcl    pc                  ptr;
+   dcl    RC                  fixed bin(31);
+   dcl    ds                  char(260) varying;
+   dcl    fs                  char(260) varying   based;
+   dcl    xs                  char(260)           based;
+   dcl    c                   char(1)             based;
+
+   if substr(pD->DirList->fs,1,1)='*'       /* This is Env Var       */
+   then do;
+     ds = toupper (                         /* Upper-case name       */
+                    substr(pD->DirList->fs,2)
+                  ) ||
+            '00'x;                          /* And null-terminate    */
+     RC = DosScanEnv( addr(ds)+STG(NULL->VarStr), addr(pEnv) );
+     if RCª=0 then return;                  /* Not found             */
+     do while( pEnv->cª='00'x );            /* Scan environment var  */
+       pc = pEnv;                           /* Find end of filespec  */
+       /* OS/2 uses semicolon to separate pathnames in environment   */
+       /* variables.  Linux uses colon.                              */
+       do while( pc->cª='00'x & pc->cª=';' );
+         pc = pc+1;
+         end;
+       ds = substr(pEnv->xs,1,(pc-pEnv));
+       pEnv = pc;
+       if pEnv->cª='00'x then pEnv=pEnv+1;
+       call filefind2( addr(ds) );          /* Scan one directory    */
+       if length(FoundFile)>0 then return;  /* Found!                */
+       end; /* do while */
+     return;                                /* Not found             */
+     end; /* Env Var */
+   else do;                                 /* This is Directory Spec*/
+     ds = pD->DirList->fs;
+     call filefind2( addr(ds) );            /* Scan one directory    */
+     return;
+     end;
+
+   end filefind1;
+
+ /*------------------------------------------------------------------*/
+ /* filefind2 is passed one path name to search.  It builds the      */
+ /* complete filespec, and does a DosFindFirst.  If a match is       */
+ /* found and no list of extensions was provided then this is the    */
+ /* file.  If a list of extensions was provided the file found is    */
+ /* checked against the list and the first match is returned.        */
+ /* If no match, DosFindNext is executed to return the next          */
+ /* file to check in this path.                                      */
+ /* This is not the most efficient algorithm possible, but it is     */
+ /* flexible.  Another alternative would be to build a list of       */
+ /* filenames with all requested extensions, and execute the scan    */
+ /* once for each in turn until a match is found.                    */
+ /*------------------------------------------------------------------*/
+ filefind2: proc(p);
+   dcl    p                   ptr;     /* ->Path String              */
+   dcl   (pL,pX)              ptr;
+   dcl    RC                  fixed bin(31);
+   dcl    hDir                fixed bin(31);
+   dcl    entry_cnt           fixed bin(31);
+   dcl  1 findbuf             like FILEFINDBUF3;
+   dcl    FileSpec            char(260) varying;
+   dcl    fs                  char(260) varying   based;
+
+   /*---------------------------------*/
+   /* Build filespec to search        */
+   /*---------------------------------*/
+   FileSpec = p->fs;                   /* Build FileSpec             */
+   /* OS/2 uses '\' or '/' as a path separator ('\' preferred).      */
+   /* Linux recognizes only '/'.                                     */
+   if substr(FileSpec,LENGTH(FileSpec),1)ª='\'
+   then FileSpec = FileSpec || '\';    /* Add '\' if required        */
+   FileSpec = FileSpec || FileName;    /* Add filename               */
+   if ªNoExt                           /* Any extensions to check?   */
+   then FileSpec = FileSpec || '*';    /* Yes, add wildcard          */
+   FileSpec = FileSpec || '00'x;       /* Null-terminate             */
+   hDir = -1;                          /* HDIR_CREATE                */
+   /*---------------------------------*/
+   /* Find first matching file        */
+   /*---------------------------------*/
+   call PLIFILL( addr(findbuf), '00'x, STG(findbuf) );
+   entry_cnt = 1;                      /* Number of entries requested*/
+   RC = DosFindFirst( addr(FileSpec) + /* pszFileSpec                */
+                        stg(NULL->VarStr),
+                      addr(hDir),      /* phDir                      */
+                      1,               /* FILE_READONLY              */
+                      addr(findbuf),   /* pfindbuf                   */
+                      STG(findbuf),    /* cbBuf                      */
+                      addr(entry_cnt), /* pcFileNames                */
+                      1 );             /* FIL_STANDARD               */
+
+   if RCª=0 then goto not_found;       /* Not Found or error         */
+   /*---------------------------------*/
+   /* Check one file                  */
+   /*---------------------------------*/
+   do while('1'b);
+     if NoExt then goto file_found;    /* Match if no extension list */
+     /*--------------------------*/
+     /* Check Extension List     */
+     /*--------------------------*/
+     pL = pExtLst;                     /* Otherwise check extensions */
+     do while( pL->ExtListª=SYSNULL );
+       pX = pL->ExtList;               /* ->Extension text           */
+       /* Compare only if the lengths match                          */
+       if LENGTH(FileName) + LENGTH(pX->EXT) = findbuf.cchName
+       then do;
+         if toupper(         /* Do a case-insensitive comparison     */
+                     SUBSTR( findbuf.achName,
+                             findBuf.cchName-LENGTH(pX->EXT)+1,
+                             LENGTH(pX->EXT)
+                           )
+                   ) =
+            toupper(pX->EXT)
+         then goto file_found;         /* This file matches          */
+         end; /* length ok */
+       pL = pL + STG(pL->ExtList);     /* Next extension             */
+       end; /* do while */
+     /*--------------------------*/
+     /* Find next matching file  */
+     /*--------------------------*/
+     entry_cnt = 1;                    /* Number of entries requested*/
+     call PLIFILL( addr(findbuf), '00'x, STG(findbuf) );
+     RC = DosFindNext( hDir,           /* hDir                       */
+                       addr(findbuf),  /* pfindbuf                   */
+                       STG(findbuf),   /* cbBuf                      */
+                       addr(entry_cnt) );   /* pcFileNames           */
+     if RCª=0 then goto not_found;     /* Not Found or error         */
+     end; /* do while */
+
+   /*---------------------------------*/
+   /* Build full filespec if found    */
+   /*---------------------------------*/
+ file_found:
+   FileSpec = p->fs;                   /* Rebuild FileSpec           */
+   if substr(FileSpec,LENGTH(FileSpec),1)ª='\'
+   then FileSpec = FileSpec || '\';    /* Add '\' if required        */
+   FoundFile = FileSpec || SUBSTR(findbuf.achName,1,findbuf.cchName);
+   /*---------------------------------*/
+   /* Return to caller                */
+   /*---------------------------------*/
+ not_found:
+   RC = DosFindClose(hDir);            /* Cleanup                    */
+   return;                             /* exit                       */
+
+   end filefind2;
+
+ /*------------------------------------------------------------------*/
+ /* toupper translates a string to upper-case using DosMapCase       */
+ /* with the codepage for the default system country code.           */
+ /* Strings must be less than or equal to 260 characters.            */
+ /*------------------------------------------------------------------*/
+ toupper: proc(s)
+         returns( char(260) varying );
+   dcl    s                   char(260)          varying;
+   dcl    t                   char(260)          varying;
+   dcl    RC                  fixed bin(31);
+   dcl    dft_country         like COUNTRYCODE;
+   t = s;                              /* Make a copy of string      */
+   dft_country = 0;                    /* Use default ctry/codepage  */
+   RC = DosMapCase( LENGTH(t), addr(dft_country),
+                    addr(t) + STG(NULL->VarStr) );
+   return( t );                        /* Return translated string   */
+   end toupper;
+
+   end FileFind;

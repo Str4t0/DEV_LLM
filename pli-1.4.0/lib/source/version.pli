@@ -1,0 +1,73 @@
+ /* _pli_Version                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.7         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Version  (PL/I runtime)                 */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2008                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Version                                 */
+ /*                                                                  */
+ /*      Function:      Return library version information.          */
+ /*                                                                  */
+ /*      Dependencices: None                                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DECLARE pVer POINTER;                        */
+ /*                     DECLARE VER ENTRY RETURNS(PTR)               */
+ /*                                 EXT( '_pli_Version' );           */
+ /*                     pVer = VER;                                  */
+ /*                                                                  */
+ /*                     pVer is a pointer to a list of pointers, as  */
+ /*                       pVx (1)ptr based;                          */
+ /*                     [dimension immaterial unless SUBSCRIPTRANGE  */
+ /*                      is enabled.]                                */
+ /*                     pVx(1) -> FIXED DEC(5,2) version number      */
+ /*                      e.g 6.00                                    */
+ /*                     pVx(2 thru n-1) -> CHAR(128) VARYING         */
+ /*                      descriptive version info.                   */
+ /*                     pVx(n) is SYSNULL to indicate end of list.   */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2023-01-22: Make addr_array static.                  1.0.0*/
+ /*        2020-10-06: INIT no longer ignores invalid static  0.9.10d*/
+ /*                    initializers.                          0.9.10d*/
+ /*                                                                  */
+ /********************************************************************/
+ 
+ pli_Ver:  proc returns( ptr )
+               ext( '_pli_Version' );
+
+ /*-------------------------*/
+ /* STATIC Data             */
+ /*-------------------------*/
+ dcl     addr_array       (5)ptr        static;               /*1.0.0*/
+
+ /*------------------------------------------------------------------*/
+ /*    Change the following                                          */                           
+ /*------------------------------------------------------------------*/
+ dcl     num_ver             fixed dec(5,2) static    init( 
+            1.40 );                                      /*+++Chg+++ */
+ dcl     c_ver1              char(40)  varying   static    init(
+           /*         1         2         3         4 */
+           /*.........0.........0.........0.........0 */
+            'Iron Spring PL/I Library version 1.4.0' );  /*+++Chg+++ */
+ dcl     c_ver2              char(40)  varying   static    init(
+            'Copyright Iron Spring Software,  2025');
+ dcl     c_ver3              char(40)  varying   static    init(
+            'Released under the terms of the Gnu LGPL' );
+
+ dcl    (addr,sysnull)       builtin;
+
+ addr_array(1) = addr(num_ver);
+ addr_array(2) = addr(c_ver1);
+ addr_array(3) = addr(c_ver2);
+ addr_array(4) = addr(c_ver3);
+ addr_array(5) = sysnull();
+ return( addr(addr_array) );
+
+ end pli_Ver;

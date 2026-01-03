@@ -1,0 +1,320 @@
+ /* _pli_Write                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Write (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2005                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Write                                   */
+ /*                                                                  */
+ /*      Function:      Implementation of PL/I 'WRITE' statement.    */
+ /*                                                                  */
+ /*      Write is called by the I/O router (IOR) after               */
+ /*      IOR has created, chained, and locked the FCB.               */
+ /*                                                                  */
+ /*      GIO passes FROM, KEYFROM, and KEYTO arguments as character  */
+ /*      strings the length of the actual argument.  If the original */
+ /*      argument is a VARYING string. the passed string will be     */
+ /*      VARYING, otherwise it will be NONVARYING.                   */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Control block formats:                       */
+ /*                       FILE, FCB, IORB, KEY, Locator/Descriptor   */
+ /*                       String descriptor.                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Address of FCB, Address of IORB.             */
+ /*      WRITE option data: (in the following order if present)      */
+ /*          Keyword   Bitmask    Index                              */
+ /*          FROM    '00000040'x     25 -> Buffer loc/desc           */
+ /*          KEYFROM '00000008'x     29 -> Key loc/desc              */
+ /*          KEYTO   '00000004'x     30 -> Key loc/desc              */
+ /*          EVENT   '00000010'x     28 -> EVENT variable            */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . The EVENT option is not really supported.    */
+ /*                     We need to kick off a thread to do the I/O.  */
+ /*                     Until this is done we should post the        */
+ /*                     event complete immediately.                  */
+ /*                                                                  */
+ /*                   . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2017-09-01: Fix misidentified FROM option bit.    0.9.10*/
+ /*          2011-08-17: Fix problem with keyed write.          0.9.3*/
+ /*          2010-06-23: New version of OSRead and OSSeek.      0.9.1*/
+ /*          2009-03-13: Correct positioning for keyed write.    0.7c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Write: proc(pIORB,pFCB)
+               ext( '_pli_Write' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pIORB               ptr;
+ dcl     pFCB                ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     ERROR_INTERRUPT     fixed bin(31)       static    init(95);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pX                  ptr;
+ dcl     pF                  ptr;
+ dcl     pN                  ptr;
+ /* WRITE option data (bit values originally from 'keyword')         */
+ dcl   1 bOpt                unaligned,/* Option flags               */
+         5 fil1              bit(24),                        /*0.9.10*/
+         5 O_old_from_bit    bit(1),        /* '00000080'bx    0.9.10*/
+         5 O_FROM            bit(1),        /* '00000040'bx    0.9.10*/
+         5 fil2              bit(1),
+         5 O_EVENT           bit(1),        /* '00000010'bx          */
+         5 O_KEYFROM         bit(1),        /* '00000008'bx          */
+         5 O_KEYTO           bit(1),        /* '00000004'bx          */
+         5 fil3              bit(2);
+ dcl     pDat                ptr;           /* FROM value            */
+ dcl     pEvt                ptr;           /* EVENT value           */
+ dcl     pKey                ptr;           /* KEY or KEYFROM value  */
+ dcl     pRec                ptr;
+ dcl     lRec                fixed bin(31);
+ dcl     i                   fixed bin(31);
+ dcl     pK                  ptr;           /* ->Record key          */
+ dcl     CurrKey             like key;      /* Record key            */
+ dcl     bFromVarying        bit(1)              init( '0'b );
+
+ /*-------------------------*/
+ /*      Prototypes         */
+ /*-------------------------*/
+ dcl     this_file           file                based;
+ dcl     pVoid               ptr                 based;
+ dcl     sVoid               char(0)  varying    based;
+ dcl     iVoid               fixed bin(15)       based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     OSSeek              entry( fixed bin(31), fixed bin(31),
+                                    fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSSeek' );
+ dcl     OSRead              entry( fixed bin(31), ptr, fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSRead' );
+ dcl     BufO                entry( ptr, ptr, fixed bin(31) )
+                             options( linkage(system) )       /*0.9.4*/
+                             external( '_pli_BufO' );
+ dcl     BufF                entry( ptr )
+                             external( '_pli_BufF' );
+
+ dcl    (
+          addr,allocate,length,null,plimove,
+          stg,string,substr,sysnull
+         )                   builtin;
+
+ pF  = pIORB->IOR_pFile;               /* addr(FILE)                 */
+ pN  = pF->FC_pName;                   /* addr(File_Name)            */
+
+ /*-----------------------------------*/
+ /* Get WRITE option values           */
+ /*-----------------------------------*/
+ string(bOpt) = pIORB->IOR_bOpt;       /* Get option flags           */
+ /* The following fixes a problem where the IORB bits were     0.9.10*/
+ /* specified incorrectly. We don't want to change this        0.9.10*/
+ /* due to compatibility problems with old code.               0.9.10*/
+ if O_old_from_bit = '1'b                                    /*0.9.10*/
+ then O_FROM = O_old_from_bit;         /* Fix overlap w/SET    0.9.10*/
+ pX  = pIORB->IOR_pOpt;                /* addr(Options)              */
+ if O_FROM then do;                    /* FROM specified             */
+   pDat = pX->pVoid;                   /* pDat->Record Loc/Desc      */
+   pX = pX + stg(NULL->IOR_optP);      /* Bump option pointer        */
+   end; /* FROM */
+ if O_KEYFROM | O_KEYTO then do;       /* KEYTO or KEYFROM specified */
+   pKey = pX->pVoid;                   /* pKey->Key Loc/Desc         */
+   pX = pX + stg(NULL->IOR_optP);      /* Bump option pointer        */
+   /*----------------------------------------------------------- */
+   /* Cross-check the KEYTO and KEYFROM options vs. an           */
+   /* ENVIRONMENT option of KEYED.  This can only be done here.  */
+   /* IBM PL/I returns ONCODE 1009 (ERROR).                      */
+   /*----------------------------------------------------------- */
+   if substr(pFCB->FCB_attrib,22,1)='0'b /* File KEYED?              */
+   then signal ERROR;                  /* No, error.                 */
+   end; /* KEYFROM|KEYTO */
+ if O_EVENT then do;                   /* EVENT specified            */
+   pEvt = pX->pVoid;                   /* pEvt->Event Loc/Desc       */
+   pX = pX + stg(NULL->IOR_optP);      /* Bump option pointer        */
+   end; /* EVENT */
+
+ /*-----------------------------------*/
+ /* Set up arguments for BufO         */
+ /*-----------------------------------*/
+ pRec = pDat->pData;
+ lRec = pDat->pDesc->ST_len;           /* Get caller's buffer length */
+ if pDat->pDesc->ST_id='11'x then do;  /* FROM(varying_string)       */
+   lRec = length(pRec->sVoid);         /* Get actual record length   */
+   pRec = pRec + stg(NULL->sVoid);     /* Skip over prefix           */
+   bFromVarying='1'b;                  /* Flag for later             */
+   end; /* VARYING */
+
+ /*-----------------------------------*/
+ /* Check length of record to write   */
+ /*-----------------------------------*/
+ if (pFCB->FCB_envflags&'000007C0'bx)ª='00000000'bx
+ then do;                              /* RECFM=V[BS] or U           */
+   if lRec > pFCB->FCB_recsize then do;
+     signal RECORD(pF->this_file);     /* IBM ONCODE=22              */
+     lRec = pFCB->FCB_recsize;         /* Truncate if normal return  */
+     end;
+   end; /* RECFM=V */
+ else do;                              /* RECFM=F[BS]                */
+   if lRec ª= pFCB->FCB_recsize then do;
+     signal RECORD(pF->this_file);     /* IBM ONCODE=22              */
+     lRec = pFCB->FCB_recsize;         /* Truncate if normal return  */
+     end;
+   /* NOTE: We should only use the data available, is there a record */
+   /*       buffer we can move a short string to first?              */
+   end; /* RECFM=F */
+
+ /*-----------------------------------*/
+ /* Seek if KEYED write,              */
+ /* build record key                  */
+ /*-----------------------------------*/
+ if O_KEYFROM
+ then call set_file_pos(pKey);         /* Set to KEY position        */
+ /* Key is file_pos, reserved_0, record_length */
+ pK = addr(CurrKey);                   /* ->Key_Workarea             */
+ call PLIMOVE( pK,                     /* Move two dword file pos    */
+               addr(pFCB->FCB_CurrPos),
+               8 );
+ pK->KEY.KEY_addr = pK->KEY.Key_addr + /* Add Buffer position        */
+     (pFCB->FCB_pBuf - pFCB->FCB_aBuf);
+ /* COMMENT: If we ever support an 8-byte file position, need to     */
+ /*          handle overflow here.                                   */
+ call PLIMOVE( addr(pK->KEY.KEY_len),  /* Move record length         */
+               addr(lRec),
+               stg(pK->KEY.KEY_len) );
+
+ /*-----------------------------------*/
+ /* Write next record to buffer       */
+ /*-----------------------------------*/
+ call BufO( pFCB, pRec, lRec );        /* Write the record           */
+ /* COMMENT: If this is a 'text' file (LF or CRLF), no check is      */
+ /*          currently made that the data does not contain           */
+ /*          imbedded CR/LF's.  If the user does not ensure this,    */
+ /*          unpredictable results may occur when the file is later  */
+ /*          read.  For VARLS or pure-binary REFCM U files, this     */
+ /*          will not be a problem.                                  */
+
+ /*-----------------------------------*/
+ /* Return KEYTO(), Post EVENT()      */
+ /*-----------------------------------*/
+ if O_KEYTO then do;                   /* KEYTO(): Set caller's key  */
+   pRec = pKey->pData;                 /* addr(caller's key)         */
+   i = pKey->pDesc->ST_len;            /* Caller's key length        */
+   if i>STG(NULL->key) then i=STG(NULL->key); /* Truncate if needed  */
+   if pKey->pDesc->ST_id='11'x then do;/* KEYTO(varying_string)      */
+     pRec->iVoid = i;
+     pRec = pRec + stg(NULL->sVoid);   /* Skip over prefix           */
+     end;
+   call PLIMOVE( pRec, PK, i );        /* Return key to caller       */
+   end; /* KEYTO */
+
+ /* NOTE: EVENT not implemented */
+
+ return;
+
+ /*-----------------------------------*/
+ /* Set File position for keyed write */
+ /*-----------------------------------*/
+ set_file_pos: proc(pKey);
+   dcl   pKey                ptr;
+   dcl   p                   ptr;
+   dcl   k                   char(12);
+   dcl   kl                  fixed bin(31);
+   dcl   isVar               bit(1);
+   dcl   j                   fixed bin(31);
+   dcl   RC                  fixed bin(31);
+
+   /*---------------------------------*/
+   /* Get and Check key               */
+   /*---------------------------------*/
+   p = pKey->LocDesc.pDesc;
+   k = (12)'00'x;                       /* Zero out key               */
+   kl = p->ST_len;                      /* Get key (max) length       */
+   if p->ST_id = '11'x then isVar='1'b; /* Set 'VARYING' flag         */
+   else                     isVar='0'b;
+   p = pKey->LocDesc.pData;
+   if isVar then do;
+     kl = p->iVoid;                     /* VARYING: Get current length*/
+     p = p+stg(NULL->sVoid);
+     end;
+   if kl < stg(NULL->KEY)
+   then signal ERROR;                   /* NOTE: KEY?                 */
+   call plimove( addr(k), p, stg(NULL->KEY) );  /* Get key value      */
+   if (pFCB->FCB_status&FCB_buf_dirty)^='00000000'bx          /*0.9.3*/
+   then call BufF(pFCB);                  /* Write dirty buffer       */
+   /* BufF will zero FCB_recsize, so the next call to BufI            */
+   /* will read data at the 'current' file position.                  */
+   /* Verify that the start of the requested record is in the         */
+   /* current buffer;                                                 */
+   pFCB->FCB_LastSt = 0;                 /* Clear error status        */
+   RC = OSSeek( pFCB->FCB_HFILE,         /* Seek from BOF             */
+                addr(k)->KEY.KEY_addr,
+                0 );
+   if RC<0 then do;                      /* Seek was unsuccessful0.9.1*/
+     pFCB->FCB_LastSt = -RC;                                   /*0.9.1*/
+     signal ERROR;    
+     end;                                                      /*0.9.1*/
+   pFCB->FCB_CurrPos = RC;               /* Record new pos.           */
+   /* Read the block containing record to be written.                 */
+   /* NOTE: If the blksize equals the recsize, this is unnecessary    */
+   RC = OSRead(pFCB->FCB_HFILE,          /* Read a block              */
+               pFCB->FCB_aBuf,
+               pFCB->FCB_blksize );
+   if RC<0 then do;                      /* Error occurred            */
+     pFCB->FCB_LastSt = -RC;
+     if pFCB->FCB_LastSt=ERROR_INTERRUPT /* Read Interrupted          */
+     then /* nothing for now */ ;                              /*0.9.3*/
+     else signal ERROR;
+     end;
+   pFCB->FCB_bufsize = RC;              /* How much was read?         */
+   pFCB->FCB_pBuf = pFCB->FCB_aBuf;     /* Reset buffer pointer       */
+   if pFCB->FCB_LastSt=ERROR_INTERRUPT  /* Read Interrupted           */
+   then do;                                                     /*0.7c*/
+     signal TRANSMIT( pF->this_file );                          /*0.7c*/
+     return;                                                    /*0.7c*/
+     end; /* interupt */                                        /*0.7c*/
+   if pFCB->FCB_bufsize=0 then do;      /* End-of-File?               */
+     pFCB->FCB_status = pFCB->FCB_status | /* Yes, set ENDFILE   0.9.3*/
+                        FCB_endfile;                           /*0.9.3*/
+     return;
+     end;
+   RC = OSSeek( pFCB->FCB_HFILE,        /* Re-seek to key             */
+                addr(k)->KEY.KEY_addr,
+                0 );
+   if RC<0 then do;                     /* Seek was unsuccessful 0.9.1*/
+     pFCB->FCB_LastSt = -RC;                                   /*0.9.1*/
+     signal ERROR;    
+     end;                                                      /*0.9.1*/
+   pFCB->FCB_CurrPos = RC;              /* Record new pos.            */
+   end set_file_pos;
+ %page;
+
+ %include IORB;
+ %include FCB;
+ %include FILE;
+ %include KEY;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_Write;

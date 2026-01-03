@@ -1,0 +1,237 @@
+ /* _pli_CLX                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CLX (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CLX                                     */
+ /*                                                                  */
+ /*      Function:      Convert FLOAT numbers to FIXED (BIN or DEC). */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Intel BCD format.                            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +C | -> Descriptor for FIXED output)      |  */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Output area (big enough)          |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Descriptor for FLOAT input        |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> FLOAT input                       |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Converted scaled FIXED data.                 */
+ /*                                                                  */
+ /*                     Conversion is described in SC26-3114-01,     */
+ /*                     pp.86 ff.                                    */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      Errors:        May raise FIXEDOVERFLOW or SIZE.             */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CLX: proc(pFlt,pLDesc,pFix,pXDesc)
+          external( '_pli_CLX' )
+          options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFlt                ptr;                     /* -> Input    */
+ dcl     pLDesc              ptr;                     /* -> Descript.*/
+ dcl     pFix                ptr;                     /* -> Output   */
+ dcl     pXDesc              ptr;                     /* -> Descript.*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     LPrec               fixed bin(31);
+ dcl    (XPrec,XScale)       fixed bin(31);
+ dcl    (bFOFL,bSIZE)        bit(1)                   init( '0'b );
+ 
+ /*-------------------------*/
+ /* Internal Float Format   */
+ /*-------------------------*/
+ dcl   1 IntFlt           (2),         /* Internal FP format         */
+         5 IF_frac           fixed dec(18),      /* Fraction         */
+         /* High-order digit is most significant                     */
+         5 IF_exp            fixed bin(15);      /* Power of 10 exp. */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ /* Digit positions for digits 0:17 within BCD number                */
+ dcl     d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl    XD18                 fixed dec(18) based;
+ dcl    XB07                 fixed bin(7)  based;
+ dcl    XB15                 fixed bin(15) based;
+ dcl    XB31                 fixed bin(31) based;
+
+ %include CONDMASK;
+
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     F2I                 entry( ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_F2I' );
+
+ dcl    (addr,string)        builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* Get input and output attributes                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ LPrec  = pLDesc->LD_prec;             /* Get input attributes       */
+ XPrec  = pXDesc->XD_prec;             /*  and output attributes     */
+ XScale = pXDesc->XD_scale;
+ if pLDesc->LD_id='43'x                /* Float Binary?              */
+ then LPrec = B2D(LPrec);              /* Yes, convert precision     */
+ if pXDesc->XB_id='43'x then do;       /* Fixed Binary?              */
+   XPrec  = B2D(XPrec);                /* Yes, convert precision     */
+   XScale = B2D(XScale);
+   end;
+ call plifill( addr(IntFlt), '00'x, stg(IntFlt) );
+
+ /*---------------------------------------------*/
+ /* Convert Real Component                      */
+ /*---------------------------------------------*/
+ call F2I( pFlt, pLDesc, addr(IntFlt) );/* Conv to intermediate float */
+ call convert(1); 
+ if (pXDesc->XB_flgs&'80'bx)ª='0'bx    /* Is output complex?         */
+ then call convert(2);                 /* Yes, convert imag part     */
+
+ return;
+
+ /*---------------------------------------------*/
+ /* Convert Real or Imaginary Part of Source    */
+ /*---------------------------------------------*/
+ convert: proc(n);
+ dcl     n                   fixed bin(7);
+ dcl    (i,j)                fixed bin(31);
+ dcl     shift               fixed bin(31);
+ dcl    (frac,tmp)           fixed dec(18);
+ dcl    (binfrac,bintmp)     fixed bin(31);
+
+ frac = IF_frac(n);                    /* Get the value               */
+ shift = 17 - XScale - IF_exp(n);      /* Get shift amount            */
+ /* If shift is negative we're always going to be shifting off some   */
+ /* significant digits, so we want to raise FOFL.  If shift is        */
+ /* positive the result may be too large, so we'll want to raise SIZE.*/
+ if shift<0 then do;                   /* FOFL                        */
+   frac=0;                             /* Zero result (could truncate */
+   shift = 0;                          /*  high-order digits)         */
+   bFOFL='1'b;
+   end; /* shift<0 */
+ if shift>0 then do;
+   if shift<=hbound(tenpower,1)
+   then frac = frac/tenpower(shift);
+   else frac = frac/10**shift;
+   end; /* shift>0 */
+ /* The result is now a correctly scaled dec num of 18 digs or less. */
+ if pXDesc->XD_id='42'x then do;       /* Decimal putput             */
+   if abs(frac)>=tenpower(XPrec)       /* SIZE occurred              */
+   then do;
+     if M_size then do;                /* Is SIZE enabled?           */
+       bSIZE='1'b;                     /* Indicate it occurred.      */
+       tmp = frac/tenpower(XPrec);     /* Compute overflow           */
+       tmp = tmp*tenpower(XPrec);
+       frac = frac-tmp;                /* Truncate hi-order digs.    */
+       end; /* SIZE enabled */
+     /* COMMENT: "If the SIZE condition is raised and it is          */
+     /*           disabled, the program is in error."                */
+     /*                                        -SC26-3114-01, p.320  */
+     /*          At this point we could do whatever we want, however */
+     /*          compiled code just ignores the error and stores     */
+     /*          the too-big value, so let's do the same.            */
+     end; /* SIZE */
+   pFix->XD18 = frac;                  /* Store the result           */
+   pFix = pFix + stg(null()->XD18);
+   return;
+   end; /* decimal */
+
+ /* BINARY result, convert scaled value to BINARY.                   */
+ /* NOTE: This conversion should be done entirely in binary,         */
+ /*       or some results may be incorrect.                          */
+ binfrac = frac / 10**XScale * 2**pXDesc->XB_scale;
+ XPrec  = pXDesc->XB_prec;             /* Reset bin prec and  scale  */
+ XScale = pXDesc->XB_scale;
+
+ if dec(abs(binfrac))>=twopower(XPrec) then do;
+   if M_size then do;                  /* Is SIZE enabled?           */
+     bSIZE='1'b;                       /* Indicate it occurred.      */
+     bintmp = dec(binfrac)/dec(twopower(XPrec)); /* Compute overflow */
+     bintmp = bintmp*twopower(XPrec);
+     binfrac = binfrac-bintmp;         /* Truncate hi-order digs.    */
+     end; /* SIZE enabled */
+   end; /* SIZE */
+  select;                              /* Store the result           */
+    when(XPrec<=7) do;
+      pFix->XB07 = binfrac;
+      pFix = pFix + stg(null()->XB07);
+      end; /* 7 */
+    when(XPrec<=15) do;
+      pFix->XB15 = binfrac;
+      pFix = pFix + stg(null()->XB15);
+      end; /* 7 */
+    otherwise do;
+      pFix->XB31 = binfrac;
+      pFix = pFix + stg(null()->XB31);
+      end; /* 7 */
+    end; /* select */
+
+  return;
+
+
+ end convert;
+
+ /*------------------------------------------------------------------*/
+ /* B2D: Convert number of binary digits to number of decimal digits */
+ /*------------------------------------------------------------------*/
+ B2D: proc(n) returns( fixed bin(7) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   do i=1 to 33;
+     if w<n_3dot32(i) then leave;                             /*0.9.3*/
+     end;
+   if neg then i=-i;
+   return(i);
+   end B2D;
+ %page;
+
+ %include BCDINC;
+ %include DESC;
+ %include N3DOT32;
+ %include tenpower;
+ %include twopower;
+
+ end pli_CLX;

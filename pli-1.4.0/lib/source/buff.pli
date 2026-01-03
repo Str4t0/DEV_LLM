@@ -1,0 +1,99 @@
+ /* _pli_BufF                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_BufF (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Feb, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_BufF                                    */
+ /*                                                                  */
+ /*      Function:      Flush an output buffer as required.          */
+ /*                                                                  */
+ /*      BufF is called by I/O procedures when a file is closed or   */
+ /*      when an output buffer has been filled. (Is this all?)       */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Control block formats:                       */
+ /*                       FCB                                        */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     call _pli_BufF( aFCB )                       */
+ /*                     aFCB = Address of FCB                        */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2010-06-23: Changed to use new OSWrite.            0.9.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_BufF: proc(pFCB)
+               ext( '_pli_BufF' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFCB                ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pF                  ptr;
+ dcl     this_file           file      based;
+ dcl     RC                  fixed bin(31);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     OSWrite             entry( fixed bin(31), ptr, fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSWrite' );
+
+ dcl    (addr,length,stg,substr,sysnull)
+                             builtin;
+
+ /*-------------------------------------------------------*/
+ /* Flush output buffer                                   */
+ /* This code is similar to code in _pli_BufO             */
+ /*-------------------------------------------------------*/
+ pF = pFCB;                            /* A(FCB)                     */
+ pF->FCB_bufsize = pF->FCB_pBuf - pF->FCB_aBuf;
+ /*-----------------------------------*/
+ /* If an error occurs while flushing */
+ /* the buffer, set a flag to prevent */
+ /* FINISH from retrying the flush.   */
+ /*-----------------------------------*/ 
+ if substr(pF->FCB_status,31,1)        /* Prevent recursion on error */
+ then return;
+ substr(pF->FCB_status,31,1)='1'b;     /* Make sure we don't retry   */
+ if pF->FCB_bufsize=0                  /* Nothing to write           */
+ then return;
+ substr(pF->FCB_status,32,1)='0'b;     /* Reset 'dirty' bit          */
+ substr(pF->FCB_status,31,1)='0'b;     /* Clear 'flushing' bit   0.7c*/
+ RC = OSWrite( pF->FCB_HFILE, pF->FCB_aBuf, pF->FCB_bufsize );
+ if RC<0 then do;
+   pF->FCB_LastSt = -RC;
+   signal TRANSMIT( pF->FCB_pFile->this_file );
+   end;
+ /* Normal return from TRANSMIT ON-Unit returns here.                */
+ /* Note that the file position will be incorrect.                   */
+ /* Update the current output file position by adding the number of  */
+ /* bytes just written.  Note max of 2GB file size.                  */
+ pF->FCB_CurrPos = pF->FCB_CurrPos + pF->FCB_bufsize;
+ pF->FCB_pBuf = pF->FCB_abuf;          /* Reset buffer pointer       */
+ pF->FCB_bufsize = 0;                  /*   and buffer size          */
+ return;
+
+ %page;
+ %include fcb;
+
+ end pli_BufF;

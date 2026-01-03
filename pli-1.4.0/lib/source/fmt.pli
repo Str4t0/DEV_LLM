@@ -1,0 +1,501 @@
+ /* _pli_Fmt                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Fmt (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Fmt                                     */
+ /*                                                                  */
+ /*      Function:      Fmt is the FORMAT interpreter.               */
+ /*                                                                  */
+ /*      Fmt maintains its context in the IORB or the equivalent     */
+ /*      for PUT STRING.  It is called one or more times per data    */
+ /*      list element.  It interprets all R(<remote-format>)         */
+ /*      specifications and repetition factors, and returns one      */
+ /*      data or control format specification per call.              */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     format specification.                        */
+ /*                     ENTRY VARIABLE format.                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2017-06-07: Fix repetition factor logic           0.9.10*/
+ /*          2011-01-30: Fix SKIP format item with no skip cnt. 0.9.2*/
+ /*          2010-05-18: Fix code for remote formats.           0.9.1*/
+ /*          2009-08-21: Added code to extract cplx format specs 0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Fmt: proc(pWork)
+               ext( '_pli_Fmt' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pWork               ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     ppFmt               ptr;           /* -> Format address     */
+ dcl     pBegin              ptr;           /* -> Format start addr  */
+ dcl     pItem               ptr;           /* -> Curr format item   */
+ dcl     i                   fixed bin(7);
+ dcl     p                   ptr;
+ dcl     skip_id             fixed bin(31)        init(0);   /*0.9.10*/
+
+ dcl   1 FmtWork,                           /* Workarea for fmt item */
+         5 fw_nond           fixed bin(7),  /* 1 = non-data item     */
+         5 fw_np             fixed bin(7),  /* # parameters          */
+         5 fw_id             fixed bin(7);  /* Format id             */
+
+ dcl   1 FmtCode,                           /* Workarea for fmt item */
+         5 fc_nond           bit(1),        /* 1 = non-data item     */
+         5 fc_np             bit(2),        /* # parameters          */
+         5 fc_id             bit(5);        /* Format id             */
+
+ /*-------------------------*/
+ /* Workarea from caller    */
+ /*-------------------------*/
+ dcl     pParm               ptr;
+ dcl   1 FmtParm             based(pParm),
+         5 fp_ppFmt          ptr,           /* -> addr( Format_addr )*/
+         5 fp_paFmt          ptr,           /* -> addr( Format_chain)*/
+         /* Note double-indirection.  These are the address of the   */
+         /*      address of the current format item, and the         */
+         /*      address of the address of the format chain.         */
+         5 fp_pDSA           ptr,           /* -> addr( Current_DSA )*/
+         5 fp_fmtid          fixed bin(7),  /* Base format id        */
+         5 fp_nond           fixed bin(7),  /* 1=non-data item       */
+         5 fp_np_real        fixed bin(7),  /* Real parameter count  */
+         5 fp_np_imag        fixed bin(7),  /* Imag parameter count  */
+         5 fp_fmtid_real     fixed bin(7),  /* Real part of C format */
+         5 fp_fmtid_imag     fixed bin(7),  /* Imag part of C format */
+         /* The significance of the operands varies by format id,    */
+         /* they represent widths, positions, scale factors, etc.    */
+         5 fp_opnd_real   (4)fixed bin(31), /* Variable dep. on fmt  */
+         5 fp_opnd_imag   (4)fixed bin(31), /* Variable dep. on fmt  */
+         5 fp_end            char(0);       /* End of FmtParm block  */
+
+ /*-----------------------------------*/
+ /* This is an overlay for the remote */
+ /* format workarea on the stack.     */
+ /*-----------------------------------*/
+ dcl   pWrk                  ptr;
+ dcl 1 RmtFmt_WA             based(pWrk),
+       5 RF_prior            ptr,           /* -> Prior workarea     */
+       5 RF_pFmt             ptr,           /* -> Format statement   */
+       5 RF_DSA              ptr;           /* -> Format DSA         */
+
+ dcl     pFmt                ptr            based;
+ dcl     zStr                char(1024)     based;
+ dcl     zChar               char(1)        based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+
+ dcl    (
+         addr,
+         binvalue,
+         null,
+         ptrvalue,
+         stg,
+         string,
+         sysnull
+        )
+                             builtin;
+ 
+ %page;
+ /*------------------------------------------------------------------*/
+ /* Procedure entry, save a few items for efficiency.                */
+ /*------------------------------------------------------------------*/
+ pParm  = pWork;                       /* Save parameter blk addr    */
+ ppFmt  = fp_ppFmt;                    /* A(format_address)          */
+                                       /* note double indirection.   */
+ pBegin = ppFmt->pFmt;                 /* A(next_format_item)        */
+
+ /*-----------------------------------*/
+ /* Retrieve the next format item,    */
+ /* processing repetitions and        */
+ /* R() format items here.            */
+ /*-----------------------------------*/
+ loop: do while( '1'b );                                   /*0.9.10e*/
+
+   pItem = ppFmt->pFmt;                /* A(curr_format_item)        */
+   /* Retrieve next format item       */
+   addr(FmtCode)->zChar = ppFmt->pFmt->zChar;
+   ppFmt->pFmt = ppFmt->pFmt+1;
+   /* Extract format spec info        */
+   fw_nond       = fc_nond;            /* Data/Non-data              */
+   fw_np         = fc_np;              /* Number of parameters       */
+   fw_id         = fc_id;              /* Format id                  */
+   fp_fmtid      = fw_id;              /* Move to parameter list     */
+   fp_nond       = fw_nond;
+   fp_np_real    = fw_np;
+   fp_np_imag    = 0;
+   fp_fmtid_real,fp_fmtid_imag = -1;   /* Debug                      */
+   fp_opnd_real  = 0;                                          /*0.8c*/
+
+   /*---------------------------------*/
+   /* Extract format-item operands.   */
+   /* Special handling for P- and C-  */
+   /* format items.                   */
+   /*---------------------------------*/
+   select( fw_id );
+
+     when(2) do;                       /* C-format spec              */
+       call get_complex_specs;
+       end; /* C-format */
+
+     when(8) do;                       /* P-format spec              */
+       call get_pic_spec(1);           /* Extract pic info       0.8c*/
+       end; /* P-format */
+
+     otherwise do;
+       do i=1 to fw_np;                /* Extract parameters         */
+         call get_operand(i,1);                                /*0.8c*/
+         end; /* do i */
+       if fw_id = 11 &                 /* 'SKIP,' is 'SKIP(1),' 0.9.2*/
+          fw_np = 0 then do;                                  /*0.9.2*/
+         fp_np_real      = 1;                                 /*0.9.2*/
+	 fp_opnd_real(1) = 1;                                 /*0.9.2*/
+	 end; /* SKIP */                                      /*0.9.2*/
+       end; /* otherwise */
+
+     end; /* select */
+
+   /*----------------------------------------------------------------*/
+   /* Process R, FRMT, REP, ENDR format codes.                       */
+   /* The ENDR points back to the REP, so we set flag to skip that.  */
+   /* If the repetition factor was zero REP skips to the ENDR.       */
+   /*----------------------------------------------------------------*/
+   /* Skip repeated items where the repetition factor is <=0         */
+   /*   until the matching ENDR is encountered.                      */
+   if skip_id^=0 then do;               /* Skip this item      0.9.10*/
+     if fw_id=30 & skip_id=fp_opnd_real(1)                   /*0.9.10*/
+     then skip_id = 0;                                       /*0.9.10*/
+     end;                                                    /*0.9.10*/
+   else select( fw_id );
+     when(10) call process_R_format;
+     when(28) /* Not used */ ;
+     when(29) call process_REP;
+     when(30) call process_ENDR;
+     when(31) call process_ENDF;
+
+     /************ This is the normal exit from FMT ******************/
+     otherwise leave loop;             /* Return fmt-item to c0.9.10e*/
+     /****************************************************************/
+
+     end; /* select */
+
+   /* If we are back at the beginning we have some sort of loop in   */
+   /* the format process.                                            */
+   /*if ppFmt->pFmt = pBegin then signal ERROR;*/
+
+   end; /* do while */
+
+/* fp_ppFmt->pFmt = ppFmt->pFmt;                            /*0.9.10e*/
+   return;                                                  /*0.9.10e*/
+
+ %page;
+ /*---------------------------------------------*/
+ /* Process a Picture format item               */
+ /*---------------------------------------------*/
+ get_pic_spec: proc(r);
+   dcl   r                   fixed bin(7);
+   p = ppFmt->pFmt;                    /* Addr(picture_descriptor)   */
+   /* Update address of next format item                             */
+   if p->NP_id = '47'x
+   then ppFmt->pFmt = ppFmt->pFmt  +        /* Character picture     */
+                      p->CP_piclen +
+                      STG( NULL->pli_ded_CP );
+   else ppFmt->pFmt = ppFmt->pFmt  +        /* Numeric picture       */
+                      p->NP_piclen +
+                      STG( NULL->pli_ded_NP );
+   if r=1                              /* Real component         0.8c*/
+   then fp_opnd_real(1) = BINVALUE(p); /* -> PIC descriptor          */
+   else fp_opnd_imag(1) = BINVALUE(p); /* -> PIC descriptor      0.8c*/
+   end get_pic_spec;
+
+ /*---------------------------------------------*/
+ /* Process a Remote-format item                */
+ /*---------------------------------------------*/
+ process_R_format: proc;
+   dcl   pDSA                ptr;
+
+   /*---------------------------------*/
+   /* This is an overlay for the      */
+   /* generated FORMAT statement      */
+   /* in the code segment             */
+   /*---------------------------------*/
+   dcl   pHdr                ptr;
+   dcl 1 Format_Hdr          based(pHdr) unaligned,           /*0.9.1*/
+         5 Fmt_fill          char(5),       /* Jump instruction      */
+         /* This is the 'sizeof_jump' definition in 'TGTDEF'.        */
+         5 Fmt_lit           char(4),       /* Literal 'FRMT'        */
+         5 Fmt_addr          ptr,           /* addr(format_text)     */
+         5 Fmt_work          fixed bin(31), /* DSA offset of workarea*/
+         5 Fmt_Hdr_end       char(0);
+
+   /* A remote-format item has the address of the remote format      */
+   /* statement as operand(1), and the optional address of the thunk */
+   /* to retrieve the DSA address as operand(2).                     */
+
+   pHdr = PTRVALUE( fp_opnd_real(1) );
+   if fw_np=2 then pDSA = PTRVALUE( fp_opnd_real(2) );
+   else            pDSA = fp_pDSA;
+   /* Check the chain to see if this format statement already in use.*/
+   /* If so we have an infinite loop.                                */
+   pWrk = fp_paFmt->pFmt;                   /* Remote chain          */
+   do while( pWrkª=SYSNULL );               /* Chase the chain       */
+     if pWrk->RF_pFmt = fp_ppFmt->pFmt then signal ERROR;
+     pWrk = pWrk->RF_prior;
+     end; /* do while */
+   /* This format was not found; add it to the active chain.         */
+   pWrk = pDSA - Fmt_work;                  /* -> This workarea      */
+   RF_prior = fp_paFmt->pFmt;               /* Linkback              */
+   fp_paFmt->pFmt = pWrk;                   /* addr(fmt_item)        */
+   RF_pFmt = fp_ppFmt->pFmt;                /* addr(new_format)      */
+   fp_ppFmt->pFmt = pHdr->Fmt_addr;         /* addr(next_format_0.9.1*/
+   RF_DSA  = fp_pDSA;
+   /*fp_pDSA = pDSA;                     /* addr(format_DSA)         */
+
+   end process_R_format;
+
+ /*---------------------------------------------*/
+ /* Process a repetition-factor                 */
+ /*---------------------------------------------*/
+ process_REP: proc;
+   dcl   pWrk                ptr;
+   dcl   initial_counter     fixed bin(31)  based(pWrk);
+
+   /* A repetition factor has the offset of the counter workarea in  */
+   /* the current DSA as operand(1), and the repetition factor as a  */
+   /* constant or thunk as operand(2).                               */
+   pWrk = fp_pDSA - fp_opnd_real(1);   /* Locate the workarea        */
+   initial_counter = fp_opnd_real(2);  /* Initialize the counter     */
+
+   /* If the repetition count is not greater than zero, we need to   */
+   /* skip the format-list or format-item that follows.              */
+   /* Currently we have to skip ahead until the matching 'ENDR' is   */
+   /* found.  It would be better to generate the offset to the match,*/
+   /* but this is expected to occur infrequently.  This could be     */
+   /* handled later by making the offset an optional operand, so old */
+   /* code could continue to work.                                   */
+   if initial_counter<=0 then do;
+     call skip_repeated_list( fp_opnd_real(1) );
+     end;
+
+   /*---------------------------------*/
+   /* Skip repeated item or list if   */
+   /* repetition factor <= zero       */
+   /*---------------------------------*/
+   skip_repeated_list: proc(Wrk);
+     dcl Wrk                 fixed bin(31);
+     skip_id = Wrk;                                          /*0.9.10*/
+     end skip_repeated_list;
+
+   end process_REP;
+
+ /*---------------------------------------------*/
+ /* Process the end of a repeated item or list  */
+ /*---------------------------------------------*/
+ process_ENDR: proc;
+   dcl   pWrk                ptr;
+   dcl   counter             fixed bin(31)  based(pWrk);
+
+   /* A ENDR has the offset of the counter workarea in the current   */
+   /* DSA as operand(1), and offset back to the repeated item or     */
+   /* list as operand(2).                                            */
+   pWrk = fp_pDSA - fp_opnd_real(1);   /* Locate the workarea        */
+   counter = counter-1;                /* Decrement the counter      */
+   if counter<=0 then return;          /* Repetitions complete       */
+   fp_ppFmt->pFmt = pItem -            /* Back up to start of l0.9.10*/
+                    fp_opnd_real(2);
+   end process_ENDR;
+
+ /*---------------------------------------------*/
+ /* Process the end of a format specification   */
+ /*---------------------------------------------*/
+ process_ENDF: proc;
+
+   /* A ENDF has the offset back to the beginning of the format in   */
+   /* operand(1).  ENDF will be encountered only after all requested */
+   /* repetitions have been completed.  If this is the end of a      */
+   /* remote format specification, the stack is popped and process-  */
+   /* ing continues in the calling format with the specification     */
+   /* following the R().  If the stack is empty it is the end of     */
+   /* the initial format, and processing continues back at the       */
+   /* beginning.                                                     */
+   if fp_paFmt->pFmtª=SYSNULL then do;      /* Stack not empty       */
+     pWrk = fp_paFmt->pFmt; 
+     fp_paFmt->pFmt = RF_prior;             /* Remove from chain     */
+     fp_ppFmt->pFmt = RF_pFmt;
+     fp_pDSA  = RF_DSA;
+     end;
+   else fp_ppFmt->pFmt = pItem -            /* Back to start of Fmt  */
+                         fp_opnd_real(1);
+   end process_ENDF;
+
+ /*---------------------------------------------*/
+ /* Extract the value of a C-format item        */
+ /*---------------------------------------------*/
+ get_complex_specs: proc;
+   dcl  (n,m,i)              fixed bin(7);                     /*0.8c*/
+   n = fw_np;                               /* Number of specs   0.8c*/
+
+   /* A complex format spec is                                       */
+   /*    C( (<real_fmt_item>) [, (<real_fmt_item>) ] )               */
+   /* The 'number of parameters' is one or two, indicating the       */
+   /* number of <real_fmt_item>s which follow.                       */
+
+   /* NOTE: Because of the way it's handled a complex format spec    */
+   /*       should not be a 'non_data' type, but it is.              */
+   /*       Reset the bit here rather than have to recompile all     */
+   /*       existing code containg formats.                          */
+   /*       Can change the format generator later, maybe.            */
+   fp_nond = 0;
+
+   /* fw_np is the number of 'real-format-specs' (1 or 2)            */
+   /* If 'fw_np' = 1 get next format spec for both real              */
+   /* and imaginary, otherwise get next two format-specs.            */
+   do m=1 to n;                                                /*0.8c*/
+     /* Retrieve next format item     */                       /*0.8c*/
+     addr(FmtCode)->zChar = ppFmt->pFmt->zChar;                /*0.8c*/
+     ppFmt->pFmt = ppFmt->pFmt+1;                              /*0.8c*/
+     /* Extract format spec info      */                       /*0.8c*/
+     fw_nond       = fc_nond;          /* Data/Non-data              */
+     fw_np         = fc_np;            /* Number of parameters       */
+     fw_id         = fc_id;            /* Format id                  */
+     /* If m=1 this is a real spec, 2 indicates imaginary spec       */
+     if m=1 then do;                   /* 
+       fp_fmtid_real = fw_id;          /* Move to parameter list     */
+       fp_np_real    = fw_np;
+       if fw_id=8       
+       then call get_pic_spec(1);      /* Extract pic info       0.8c*/
+       else do;
+         do i=1 to fw_np;              /* Extract parameters         */
+           call get_operand(i,1);                              /*0.8c*/
+           end; /* do i */
+         end; /* else */
+       /* Now reject R format id and some sontrol thingies (SNO)     */
+       if fw_id=10 | fw_id=28 | fw_id=29 | fw_id=30 | fw_id=31
+       then signal ERROR;
+       end; /*  real */
+     else do;                          /* Imag spec                  */
+       fp_fmtid_imag = fw_id;          /* Move to parameter list     */
+       fp_np_imag    = fw_np;
+       if fw_id=8       
+       then call get_pic_spec(2);      /* Extract pic info       0.8c*/
+       else do;
+         do i=1 to fw_np;              /* Extract parameters         */
+           call get_operand(i,2);                              /*0.8c*/
+           end; /* do i */
+         end; /* else */
+       /* Now reject R format id and some sontrol thingies (SNO)     */
+       if fw_id=10 | fw_id=28 | fw_id=29 | fw_id=30 | fw_id=31
+       then signal ERROR;
+       end; /* imag */
+     end; /* do m */
+
+     if n=1 then do;                   /* One spec only              */
+       fp_fmtid_imag = fp_fmtid_real;  /* Move to parameter list     */
+       fp_np_imag    = fw_np;
+       fp_opnd_imag = fp_opnd_real;                            /*0.8c*/
+       end; /* n=1 */                                          /*0.8c*/
+
+   end get_complex_specs;
+ 
+ /*---------------------------------------------*/
+ /* Extract the value of one format operand     */
+ /*---------------------------------------------*/
+ get_operand: proc(n,r);                                       /*0.8c*/
+   dcl   n                   fixed bin(7);
+   dcl   r                   fixed bin(7);                     /*0.8c*/
+   dcl 1 FmtOp,                             /* Workarea for operand  */
+         5 fo_hob            bit(1),        /* 0 = 7-bit item follows*/
+         5 fo_op             bit(7);        /* Operand code          */
+   dcl   RetVal              fixed bin(31);
+   dcl   isThunk             bit(1);
+   dcl   thunk_entry         entry     variable
+                             returns( fixed bin(31) )
+                             options( linkage(system) );
+
+   addr(FmtOp)->zChar = ppFmt->pFmt->zChar;
+   ppFmt->pFmt = ppFmt->pFmt+1;
+   isThunk='0'b;
+   if fo_hob='0'b                      /* Unsigned 7-bit value       */
+   then RetVal = fo_op;
+   else do;
+      select( string(FmtOp) );         /* FmtOp says what follows    */
+        when( '81'bx ) do;             /* FIXED BIN(7)               */
+          RetVal = ppFmt->pFmt->fmt_fb7;
+          ppFmt->pFmt = ppFmt->pFmt+stg(NULL->fmt_fb7);
+          end;
+        when( '82'bx ) do;             /* FIXED BIN(15)              */
+          RetVal = ppFmt->pFmt->fmt_fb15;
+          ppFmt->pFmt = ppFmt->pFmt+stg(NULL->fmt_fb15);
+          end;
+        when( '84'bx ) do;             /* FIXED BIN(31)              */
+          RetVal = ppFmt->pFmt->fmt_fb31;                     /*0.9.1*/
+          ppFmt->pFmt = ppFmt->pFmt+stg(NULL->fmt_fb31);
+          end;
+        when( '88'bx ) do;             /* Address of thunk           */
+          RetVal = ppFmt->pFmt->fmt_fb31;
+          /* NOTE: In general we shouldn't assume a POINTER is the   */
+          /*       same size as a FIXED BIN(31).                     */
+          ppFmt->pFmt = ppFmt->pFmt+stg(NULL->fmt_fb31);
+          isThunk='1'b;
+          end;
+        when( '89'bx ) do;             /* Address               0.9.1*/
+          RetVal = ppFmt->pFmt->fmt_fb31;                     /*0.9.1*/
+          /* NOTE: In general we shouldn't assume a POINTER is t0.9.1*/
+          /*       same size as a FIXED BIN(31).                0.0.1*/
+          ppFmt->pFmt = ppFmt->pFmt+stg(NULL->fmt_fb31);      /*0.9.1*/
+          end;                                                /*0.9.1*/
+        otherwise do;                                        /*0.9.10*/
+          signal error;                                      /*0.9.10*/
+          end; /* otherwise */                               /*0.9.10*/
+        end; /* select */
+      end; /* else */
+
+   /*---------------------------------*/
+   /* If this operand is a thunk,     */
+   /* call it to retrieve value.      */
+   /*---------------------------------*/
+
+   if isThunk then do;
+     addr(thunk_entry)->ent_entry_point = ptrvalue(RetVal);
+     addr(thunk_entry)->ent_static_DSA  = fp_pDSA;
+     RetVal = thunk_entry();				      /*0.9.2*/
+     end; /* thunk */
+
+   if r=1 then fp_opnd_real(n)=RetVal; /* Real format spec       0.8c*/
+   else        fp_opnd_imag(n)=RetVal; /* Imag format spec           */
+
+   end get_operand;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+
+ %page;
+ %include ENTRY;
+ %include FORMAT;
+ %include DESC;
+ %include DSA;
+
+ end pli_Fmt;

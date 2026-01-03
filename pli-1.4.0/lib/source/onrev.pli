@@ -1,0 +1,294 @@
+ /* _pli_OnRev                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OnRev (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OnRev                                   */
+ /*                                                                  */
+ /*      Function:      Locates an ONCB for ON and REVERT statements.*/
+ /*                     The ONCB chain is scanned for ONCBs in the   */
+ /*                     caller's DSA only.                           */
+ /*                     The requested function is performed:         */
+ /*        (0/10) ON:   If a matching condition is found, its        */
+ /*                     address is returned to the caller.           */
+ /*                     procedure returns the ONCB address, if no    */
+ /*                     matching ONCB is found, SYSNULL is returned. */
+ /*        (1/11) REVERT:  If a matching ONCB is found it is deleted,*/
+ /*                     if not found, no action is taken.            */
+ /*                     SYSNULL is returned.                         */
+ /*       (-1/12) BLOCK EXIT: pOpt contains the address of the DSA   */
+ /*                     which is to become active.  All ONCBs        */
+ /*                     between the current DSA and the pOpt DSA     */
+ /*                     are deleted.                                 */
+ /*                                                                  */
+ /*      Note: This module has two different sets of parameters      */
+ /*            for the "old" (pre-0.9.8) calling sequence and the    */
+ /*            "new" (0.9.8 and beyond).  0.1/-1 are the old         */
+ /*            functions and 10/11/12 are the new.  The new calling  */
+ /*            sequence passes the address of the DSA for the        */
+ /*            current procedure as the second argument.             */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I Control blocks - ONCB, DSA, FILE.       */
+ /*                     Stack format (assumed to grow down)          */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = _pli_OnRev(fun,Cond,pOpt);              */
+ /*                     RC:   return code, see below [PTR]           */
+ /*                     fun:  Function code.  0=ON, 1=REVERT,        */
+ /*                           -1 = block exit [FIXED BIN(31)].       */
+ /*                     Cond: PL/I OnCode value [FIXED BIN(31)].     */
+ /*                     pOpt: -> Optional data - FILE for            */
+ /*                           file conditions, condition name for    */
+ /*                           COND() [PTR].                          */
+ /*                                                                  */
+ /*      Restrictions:                                               */
+ /*                     Code is dependent on the format of the PL/I  */
+ /*                     stack frame.  It should never be called      */
+ /*                     from an assembler program unless the stack   */
+ /*                     frame format is retained.                    */
+ /*                                                                  */
+ /*      Output:        Return code:                                 */
+ /*                     ON Statement: Address of a ONCB.             */
+ /*                     REVERT Statement: ignored.                   */
+ /*                                                                  */
+ /*      Called from:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2012-10-13: Fixes for 'fromalien'                  0.9.4*/
+ /*          2011-05-27: Major chgs for XCPT_ASYNC_PROCESS_TERMINATE */
+ /*          2008-06-04: Fix 'cleanup' for fromalien procedures.     */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ %replace FUN_ON      by 10;
+ %replace FUN_REVERT  by 11;
+ %replace FUN_CLEANUP by 12;
+
+ pli_OnRev: proc(fun,xpDSA,xCond,xpOpt)
+                             external( '_pli_OnRev' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     fun                 fixed bin(31);           /* Function    */
+ dcl     xpDSA               ptr;                     /*->Proc  0.9.8*/
+ dcl     xCond               fixed bin(31);           /* OnCode      */
+ dcl     xpOpt               ptr;                     /* ->Option    */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pDSA                ptr;                     /*->Proc  0.9.8*/
+ dcl     Cond                fixed bin(31);           /* OnCode      */
+ dcl     pOpt                ptr;                     /* ->Option    */
+ 
+ dcl     pONCB               ptr;
+ dcl     pChn                ptr;
+ dcl     i                   fixed bin(7);
+ dcl     curr_action         bit(8);
+ dcl     chn                 ptr       based;
+
+ /*-----------------------------------*/
+ /*      Static Data                  */
+ /*      ONCODES and actions          */
+ /*      (same as SIG)                */
+ /*-----------------------------------*/
+ dcl     oncode_value    (25)fixed bin(15)       static   init(
+           4,   9,  10,  20,  40,  50,  70,  80,  90, 100,
+         150, 300, 310, 320, 330, 340, 350, 360, 400, 450, /*20030716*/
+         500, 510, 520, 600,   0  );
+ /*
+  . Condition names retained as comments, not used here.
+  .dcl     oncode_nm       (25)char(16)  varying   static    init(
+  .                  'FINISH',           'ERROR',
+  .                  'NAME',             'RECORD',
+  .                  'TRANSMIT',         'KEY',
+  .                  'ENDFILE',          'UNDEFINEDFILE',
+  .                  'ENDPAGE',          'PENDING',
+  .                  'STRINGSIZE',       'OVERFLOW',
+  .                  'FIXEDOVERFLOW',    'ZERODIVIDE',
+  .                  'UNDERFLOW',        'SIZE',
+  .                  'STRINGRANGE',      'AREA',
+  .                  'ATTENTION',        'STORAGE',
+  .                  'CONDITION',        'CHECK',
+  .                  'SUBSCRIPTRANGE',   'CONVERSION',
+  .                  'UNKNOWN' );
+  */
+ dcl     oncode_action   (25)bit(8)    aligned   static    init(
+                   '40'bx,             '08'bx,
+                   '83'bx,             '83'bx,
+                   '83'bx,             '83'bx,
+                   '83'bx,             '83'bx,
+                   '12'bx,             '42'bx,
+                   'C0'bx,             '81'bx,
+                   '81'bx,             '81'bx,
+                   'C0'bx,             '81'bx,
+                   '81'bx,             '81'bx,
+                   '40'bx,             '81'bx,             /*20030716*/
+                   'C0'bx,             '40'bx,
+                   '81'bx,             '81'bx,
+                   '81'bx );
+ /* Action bit settings:                                             */
+ /* '80'bx - Error Message                                           */
+ /* '40'bx - Continue Execution                                      */
+ /* '20'bx - (unused)                                                */
+ /* '10'bx - Endpage action                                          */
+ /* '08'bx - SIGNAL FINISH/Terminate execution                       */
+ /* '04'bx - (unused)                                                */
+ /* '02'bx - (This is IO Condition)                                  */
+ /* '01'bx - Raise ERROR condition                                   */
+
+ dcl     GetDSA              entry
+                             external( '_pli_GetDSA' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,null,stg,sysnull)
+                             builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*      Entry Point support 'old' and 'new' calling sequence        */
+ /*------------------------------------------------------------------*/
+ if fun<10 then do;                    /* OLD calling sequence  0.9.8*/
+   pDSA  = GetDSA();                   /* pDSA->My DSA               */
+   pDSA  = pDSA - stg( sysnull()->dsa_below_ebp );
+   pDSA  = pDSA->DSA_ebp;              /* pDSA->Caller's DSA         */
+   select(fun);                        /* Translate function code    */
+     when( 0) fun=FUN_ON;
+     when( 1) fun=FUN_REVERT;
+     when(-1) fun=FUN_CLEANUP;
+     end; /* select */
+   Cond = binvalue(xpDSA);
+   pOpt = ptrvalue(xCond); 
+   end; /* old */
+ else do;                              /* NEW calling sequence       */
+   pDSA = xpDSA;
+   Cond = xCond;
+   pOpt = xpOpt;
+   end; /* new */
+ pDSA  = pDSA - stg( sysnull()->dsa_below_ebp );
+ 
+/*
+ *if fun^=12 then
+ *display( 'onrev ' || fun || ' ' ||
+ *         heximage(addr(pDSA),4) ||  
+ *	   Cond     || ' ' || heximage(addr(pOpt),4) );
+ */
+   	   
+ 	  
+ if fun=FUN_CLEANUP then do;           /* If block-cleanup           */
+   call cleanup(pDSA);                 /* Then do it                 */
+   return( SYSNULL );                  /* That's all folks           */
+   end; /* cleanup */
+
+ /*------------------------------------------------------------------*/
+ /*      Identify condition and default action                       */
+ /*------------------------------------------------------------------*/
+ do i=1 to 25; /* to HBOUND(...) */
+   if oncode_value(i) = 0           then leave;    /* Error - SNO    */
+   if oncode_value(i) = Cond        then leave;    /* Matched        */
+   end; /* do i */
+ curr_action = oncode_action(i)&'02'bx;/* Leave only I/O cond flag   */
+ if curr_actionª='00'bx then do;       /* I/O Condition              */
+   pOpt = pOpt->FC_pName;              /* pOpt->Filename             */
+   /* NOTE: At this point. pOpt=SYSNULL() indicates an ON xxx(fff)   */
+   /*       statement for condition xxx on file fff where fff is the */
+   /*       address of an unitialized FILE variable.  Don't know     */
+   /*       what to do with it now, we could either kludge up a      */
+   /*       dummy filename and continue, SIGNAL ERROR, or what?      */
+   if pOpt = SYSNULL() then signal ERROR; 
+   end; /* I/O */
+ 
+ /*-----------------------------------*/
+ /*  Find matching ONCB               */
+ /*-----------------------------------*/
+
+ pONCB = pDSA->dsa_chc;                /* pONCB->First ONCB          */
+ pChn = addr(pDSA->dsa_chc);           /* Chain anchor          0.9.8*/
+ scan: do while( pONCBª=SYSNULL );     /* Scan ONCB Chain            */
+   if pONCB->onc_cond = Cond           /* ONCODE matches             */
+   then do;
+     /* Not I/O or CONDITION() condition        */
+     if curr_action='00'bx & Condª=oncode_cond 
+     then leave scan;
+     /* Else check File or Condition name       */
+     if pONCB->onc_pname->onc_cname = pOpt->onc_cname
+     then leave scan;
+     end; /* else */
+   pChn  = pONCB;                       /* Save chain address    0.9.8*/
+   pONCB = pONCB->onc_next;             /* -> Next ONCB in chain      */
+   end; /* scan */
+
+ /*-----------------------------------*/
+ /*  Found match (REVERT)             */
+ /*-----------------------------------*/
+ if fun=FUN_REVERT then do;            /* If REVERT                  */
+   if pONCB=sysnull then return;       /* Nothing to do              */ 
+   pChn->chn = pONCB->onc_next;        /* Update chain               */
+   /* If this ONCB is the head of the chain it may have been    0.9.8*/
+   /* established in a prior DSA, which also needs cleanup.     0.9.8*/
+   if pChn = addr(pDSA->dsa_chc)       /* Head of chain?        0.9.8*/
+   then do while( '1'b );                                     /*0.9.8*/
+     if pDSA->dsa_chc=sysnull() then leave;                   /*0.9.8*/ 
+     pDSA  = pDSA->DSA_ebp;                                   /*0.9.8*/
+     pDSA  = pDSA - stg( sysnull()->dsa_below_ebp );          /*0.9.8*/
+     if pDSA->dsa_chc ^= pONCB then leave;                    /*0.9.8*/
+     pDSA->dsa_chc = pONCB->onc_next;                         /*0.9.8*/
+     end;                                                     /*0.9.8*/
+   free pONCB->pli_oncb;               /* Delete the ONCB            */
+   return( SYSNULL );                  /*      and exit              */
+   end;
+   
+ /*-----------------------------------*/
+ /*  No match (ON)                    */
+ /*-----------------------------------*/
+ allocate pli_oncb set(pONCB);         /* Get new ONCB               */
+ call plifill(pONCB,'00'x,stg(null()->pli_oncb));             /*0.9.8*/
+ pONCB->onc_next    = pDSA->dsa_chc;   /* Update chains              */
+ pDSA->dsa_chc      = pONCB;
+ if curr_actionª='00'bx | Cond=oncode_cond /* I/O or COND       0.9.8*/
+ then pONCB->onc_pname   = pOpt;       /* Set ->name            0.9.8*/
+ pONCB->onc_version = 2;
+ pONCB->onc_flags   = '00'bx;
+ pONCB->onc_cond    = Cond;
+ pONCB->onc_dsa     = pDSA;             /* Owner DSA            0.9.8*/
+ /* It would be nice to set onc_unit to somewhere meaningful         */
+ return( pONCB );                      /* Return address to caller   */
+
+ /*-----------------------------------*/
+ /*  Block Cleanup Function           */
+ /*-----------------------------------*/
+ cleanup: proc(pDSA);
+   dcl   pDSA                ptr;
+   dcl   p                   ptr;
+   dcl   pONCB               ptr;       /* ->'return-to' block   0.6a*/
+   dcl   pChc                ptr;       /* ->'return-to' chain   0.6a*/
+   pONCB = pDSA->dsa_chc;
+   do while( pONCBª=sysnull() );       /* Free intervening ONCBs 0.6a*/
+     if pONCB->onc_dsa^=pDSA then leave;/* All done              0.6a*/
+     p = pONCB->onc_next;              /* Save backchain             */
+     free pONCB->pli_oncb;             /* Free this ONCB             */
+     pONCB = p;                        /* Back up to prior           */
+     end; /* do while */
+   return;
+   end cleanup;
+
+ %page;
+
+ %include ONCB;
+ %include DSA;
+ %include FILE;
+ %include ONCODE;
+
+ end pli_OnRev;

@@ -1,0 +1,99 @@
+ /* OSGetDateTime                                                   */
+ /*******************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8          */
+ /*              Distributed under the Gnu LGPL License             */
+ /*                                                                 */
+ /* Module:     OSGetDateTime    (PL/I Runtime) [OS/2]              */   
+ /* Version:    1.0                                                 */
+ /* Date:       Jun, 2010                                           */
+ /* Author:     Peter Flass                                         */
+ /*                                                                 */
+ /* Function:   Get the current date and time as a 'tm' structure.  */
+ /*             For OS/2, call DosGetDateTime, for Linux,           */
+ /*             use the sys_gettimeofday syscall and the            */
+ /*             offtime procedure.                                  */
+ /*                                                                 */
+ /* Description: This procedure contains OS-dependent code to get   */
+ /*             the current date and time-of-day.  The result is    */
+ /*             returned in a 'tm' structure.                       */
+ /*                                                                 */
+ /* Calling sequence:                                               */
+ /*             dcl 1 tm_struct like tm;                            */
+ /*             dcl   usec      fixed bin(31); /* Microseconds      */   
+ /*             call OSGetDateTime( addr(tm_struct), addr(usec) );  */
+ /*                                                                 */
+ /* Modifications:                                                  */
+ /*                                                                 */
+ /*******************************************************************/
+
+ OSGetDateTime: proc( ptm, pusec )
+                returns( fixed bin(31) )           
+		options( linkage(system) )
+		ext( '_pli_OSGetDateTime' );
+		    
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      ptm                ptr;             /* addr(tm)           */
+ dcl      pusec              ptr;             /* addr(microseconds) */
+
+ /*-------------------------*/
+ /* Automatic Storage       */
+ /*-------------------------*/
+ dcl     rc                  fixed bin(31);
+ dcl     yr                  fixed bin(31);
+ dcl     ld                  fixed bin(7);
+  
+ dcl   1 os2_datetime        unaligned,
+         5 hours             fixed bin(7)  /* unsigned */ ,
+         5 minutes           fixed bin(7)  /* unsigned */ ,
+         5 seconds           fixed bin(7)  /* unsigned */ ,
+         5 hundredths        fixed bin(7)  /* unsigned */ ,
+         5 day               fixed bin(7)  /* unsigned */ ,
+         5 month             fixed bin(7)  /* unsigned */ ,
+         5 year              fixed bin(15) /* unsigned */ ,
+         5 timezone          fixed bin(15),
+         5 weekday           fixed bin(7)  /* unsigned */ ;
+  
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl   1 callers_tm          like tm        based(ptm);
+ dcl     callers_usec        fixed bin(31)  based(pusec);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosGetDateTime      entry(ptr)
+                             external( 'DosGetDateTime' )
+                             returns( fixed bin(31) ) /* unsigned */
+                             options( asm linkage(system) );
+
+ /*-----------------------------------*/
+ /* Beginning of Procedure            */
+ /*-----------------------------------*/
+ rc = DosGetDateTime( addr(os2_datetime) );
+ callers_tm.tm_sec   = os2_datetime.seconds;
+ callers_tm.tm_min   = os2_datetime.minutes;
+ callers_tm.tm_hour  = os2_datetime.hours;
+ callers_tm.tm_mday  = os2_datetime.day;
+ callers_tm.tm_mon   = os2_datetime.month-1;
+ callers_tm.tm_year  = os2_datetime.year-1900;
+ callers_tm.tm_wday  = os2_datetime.weekday;
+ callers_tm.tm_isDst = -1; /* "unknown" */
+ callers_usec = os2_datetime.hundredths*10000; /* 10**2 ==> 10**6 */
+ /* Leap year determination          */
+ yr = os2_datetime.year;
+ if mod(yr,4)=0   then ld=1; else ld=0;
+ if mod(yr,100)=0 then ld=0;
+ if mod(yr,400)=0 then ld=1;
+ /* Convert date to Julian           */
+ callers_tm.tm_yday = floor( (os2_datetime.month+2)*3055/100 ) +
+                   os2_datetime.day-91;
+ if callers_tm.tm_yday>(ld+59) then callers_tm.tm_yday=callers_tm.tm_yday-2+ld;
+
+ return(0);
+
+  %include tm;
+
+  end OSGetDateTime;

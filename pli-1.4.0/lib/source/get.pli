@@ -1,0 +1,265 @@
+ /* _pli_Get                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Get (PL/I runtime)                      */
+ /*      Version:       1.1                                          */
+ /*      Date:          Feb, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Get                                     */
+ /*                                                                  */
+ /*      Function:      GET is the stream input driver.              */
+ /*                                                                  */
+ /*      Get is called from IOR once per data element to be          */
+ /*      read. It is passed the addresses of the caller's I/O        */
+ /*      Request Block (IORB) and the File Control Block (FCB)       */
+ /*      for the requested file.  The file has already been          */
+ /*      opened by IOR and locked.                                   */
+ /*                                                                  */
+ /*      On the first call for a GET operation, This procedure       */
+ /*      executes any requested control options (SKIP only)          */
+ /*      and resets the bits for these options;                      */
+ /*      it then sets COUNT to zero.                                 */
+ /*      If no data address is stored in the IORB, this is a         */
+ /*      control-only GET and the procedure exits.                   */
+ /*                                                                  */
+ /*      COUNT is incremented by one for each data element processed.*/
+ /*                                                                  */
+ /*      If a data address is passed, Get processes it according     */
+ /*      to the DATA/EDIT/LIST specification.                        */
+ /*                                                                  */
+ /*      Get is not called via the PGT in order to make it           */
+ /*      optional.  A program not using stream I/O will not          */
+ /*      be linked with GetX and all the format and conversion code. */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I descriptor formats.                     */
+ /*                     ENTRY VARIABLE format.                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2015-07-24: More problems with ENDFILE.            0.9.9*/
+ /*          2009-09-22: Fix problems with ENDFILE.              0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Get: proc( xpIORB, xpFCB )
+               ext( '_pli_Get' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xpIORB              ptr;      /* -> IORB                    */
+ dcl     xpFCB               ptr;      /* -> FCB                     */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /* GET statement option bits in IOR_bOPT (from GIO)                 */
+ dcl     bSkip1              bit(32)   static    init('40000000'bx);
+ dcl     bSkip               bit(32)   static    init('00020000'bx);
+ dcl     bCopy               bit(32)   static    init('00010000'bx);
+ /* FCB 'PRINT' attribute setting                                    */
+ dcl     bPrint              bit(32)   static    init('00010000'bx);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pIORB               ptr;      /* ->IORB                     */
+ dcl     pFCB                ptr;      /* ->FCB                      */
+ dcl     pOpt                ptr;      /* ->IORB extension           */
+ dcl     pData               ptr;      /* ->Data element             */
+ dcl     pDesc               ptr;      /* ->Data descriptor          */
+ dcl     pFile               ptr;      /* ->File             20070403*/
+ dcl     Count               fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     this_file           file          based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetX                entry( ptr )
+                             external( '_pli_GetX' );
+ dcl     BufI                entry( ptr, ptr, fixed bin(31) )
+                             external( '_pli_BufI' );
+
+ dcl    (
+         addr,length,
+         plimove,ptrvalue,
+         stg,string,substr,
+         sysnull
+        )                    builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry, save a few items for efficiency.                */
+ /* (IOR has validated that this is a STREAM INPUT file)             */
+ /*------------------------------------------------------------------*/
+ pIORB = xpIORB;
+ pFCB  = xpFCB;
+ /* COMMENT: ENDFILE -- for stream I/O, raise the ENDFILE condirtion */
+ /*          in the *next* read after it is recognized, in order,    */
+ /*          for example, to allow a List-directed string to         */
+ /*          terminate properly.                                     */
+ if substr(pFCB->FCB_status,2,1)='1'b  /* ENDFILE?           20090922*/
+ then do;                                                  /*20090922*/
+   signal ENDFILE( pFCB->FCB_pFile->this_file );           /*20090922*/
+   return;                                                 /*20090922*/
+   end;                                                    /*20090922*/
+ pData = pIORB->IOR_pData;   /* -> Data Element or SYSNULL           */
+ pDesc = pIORB->IOR_pDesc;   /* -> Data Descriptor or SYSNULL        */
+ pIORB = xpIORB;
+ pFile = pFCB->FCB_pFile;                                  /*20070403*/
+ if (pIORB->IOR_bOPt&'80000000'bx)ª='00000000'bx /* First time?      */
+ then do;
+   substr(pIORB->IOR_bOpt,1,1)='0'b;        /* Reset flag            */
+   pFCB->FCB_Count=0;                       /* Zero 'COUNT'          */
+   end; /* first time */
+
+ /*---------------------------------------------*/
+ /* Process any Control Options                 */
+ /*---------------------------------------------*/
+ if (pIORB->IOR_bOpt&bSkip1)ª='00000000'bx  /* SKIP(1)               */
+ then do;
+   pIORB->IOR_bOpt = pIORB->IOR_bOpt&ªbSkip1;
+   call skip(1);                            /* Do the skip           */
+   end; /* Skip1 */
+ if (pIORB->IOR_bOpt&bSkip)ª='00000000'bx   /* SKIP(n)               */
+ then do;
+   pIORB->IOR_bOpt = pIORB->IOR_bOpt&ªbSkip;
+   Count = pOpt->IOR_optF;                  /* Get skip value        */
+   pOpt = pOpt + stg( SYSNULL()->IOR_optF );/* Advance option addr   */
+   call skip(Count);                        /* Do the skip           */
+   end; /* Skip */
+ /* NOTE: COPY not implemented */
+ /* Check again to see if SKIP() control options caused ENDFILE      */
+ if substr(pFCB->FCB_status,2,1)='1'b  /* ENDFILE?           20090922*/
+ then do;                                                  /*20090922*/
+   signal ENDFILE( pFCB->FCB_pFile->this_file );           /*20090922*/
+   return;                                                 /*20090922*/
+   end;                                                    /*20090922*/
+
+ /*---------------------------------------------*/
+ /* Check for Control-Only GET (GET SKIP;)      */
+ /*---------------------------------------------*/
+ if pData = SYSNULL() then return;
+
+ /*---------------------------------------------*/
+ /* Build parameter list and call GetX          */
+ /*---------------------------------------------*/
+ SPL_pSRB    = addr(pIORB->IOR_SRB);   /* addr(SRB)                  */
+ SPL_pSBB    = addr(pFCB->FCB_SBB);    /* addr(SBB)                  */
+ SPL_bFlg    = '00000000'bx;                                   /*0.5e*/
+ if (pFCB->FCB_attrib&bPrint)ª='00000000'bx                    /*0.5e*/
+ then SPL_bFlg = SPL_bFlg|'00000001'bx;                        /*0.5e*/
+ SPL_LineEnd = LineEnd;                /* addr(callback_proc)        */
+ call GetX( addr(SPL) );               /* GET this data element      */
+ if substr(pFCB->FCB_status,2,1)='1'b  /* ENDFILE?              0.9.9*/
+ then do;                                                     /*0.9.9*/
+   signal ENDFILE( pFCB->FCB_pFile->this_file );              /*0.9.9*/
+   return;                                                    /*0.9.9*/
+   end;                                                       /*0.9.9*/
+
+ /*---------------------------------------------*/
+ /* Update COUNT and exit                       */
+ /*---------------------------------------------*/
+ pFCB->FCB_Count = pFCB->FCB_Count+SPL_Count;
+
+ return;
+
+ /*------------------------------------------------------------------*/
+ /* Callback proc: Called when line is exhausted                     */
+ /*                or a SKIP format spec is encountered.             */
+ /*                Ignore options not valid with GET:                */
+ /*                  COLUMN, LINE, PAGE                              */
+ /*------------------------------------------------------------------*/
+ LineEnd: proc( code, count );
+   dcl  (code,count)         fixed bin(15);
+   select( code );
+     when( 0 ) call new_line;          /* Current line exhausted     */
+     when( 1 ) call col(count);        /* COLUMN(count)         0.9.5*/
+       /* LINE and PAGE options are valid only for PRINT files,      */
+       /* and hence not for STREAM INPUT.  We could issue an error   */
+       /* here, but maybe we'll just ignore them.                    */
+     when( 2 ) /* ignore */ ;          /* LINE(count)                */
+     when( 3 ) /* ignore */ ;          /* PAGE                       */
+     when( 4 ) call skip(count);       /* SKIP(count)                */
+     end; /* select */
+   end LineEnd;
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /* Control specifications: SKIP.                                    */
+ /*------------------------------------------------------------------*/
+ skip: proc(n);              /* SKIP(n)                              */
+   dcl   n                   fixed bin(31);
+   dcl   m                   fixed bin(31);
+   m=n;
+   if m=0 then do;                      /* SKIP(0)              0.9.5*/
+     pFCB->FCB_pLine = pFCB->FCB_aLine;                       /*0.9.5*/
+     pFCB->FCB_col   = 0;                                     /*0.9.5*/
+     end;                                                     /*0.9.5*/
+   do while( m>0 );
+     /* COMMENT: If we're trying to skip past the end of the file,   */
+     /*          raise the ERROR condition.                          */
+     if substr(pFCB->FCB_status,2,1)='1'b/* ENDFILE?         20090922*/
+     then signal ERROR;                  /* Yes, it's an error 090922*/
+     call new_line;
+     m=m-1;
+     end; /* do while */
+   end skip;
+   
+ /*-------------------------------------------------------------0.9.5*/
+ /* Control specifications: COLUMN                              0.9.5*/
+ /*-------------------------------------------------------------0.9.5*/
+ col: proc(n);               /* col(n)                          0.9.5*/
+   dcl   n                   fixed bin(31);
+   dcl  (m,c)                fixed bin(31);                   /*0.9.5*/
+   c = n-1;                                                   /*0.9.5*/
+   m=pFCB->FCB_col;                                           /*0.9.5*/
+   select;
+     when(m=c) /* continue */ ;
+     when(m<c) pFCB->FCB_col = c;
+     when(m>c) do;
+       call skip(1);
+       pFCB->FCB_col = c;
+       end;
+     end; /* select */  
+   end col;                                                   /*0.9.5*/
+
+ /*---------------------------------------------*/
+ /* Read the next line                          */
+ /*---------------------------------------------*/
+ new_line: proc;
+   /* COMMENT: (Changed 2009-09-22)  If BufI detects ENDFILE,        */
+   /*          it sets a flag in the FCB                             */
+   pFCB->FCB_pLine = sysnull();        /* Indicate no data   20090922*/
+   if substr(pFCB->FCB_status,2,1)='1'b/* ENDFILE?           20090922*/
+   then return;                        /* Yes, exit          20090922*/
+   pFCB->FCB_LineNo = pFCB->FCB_LineNo+1;   /* Bump LINENO           */
+   /* For STREAM INPUT blank-fill the buffer before reading     0.9.5*/
+   call plifill( pFCB->FCB_aLine, ' ', pFCB->FCB_recsize );   /*0.9.5*/
+   call BufI(pFCB,pFCB->FCB_aLine,pFCB->FCB_recsize );        /*0.9.5*/  
+   /* COMMENT: If ENDFILE occurs, the read returns here with         */
+   /*          FCB_pLine set to SYSNULL.                             */
+   /*          The 'status' function, called by SIGNAL, breaks       */
+   /*          the link between FCB and file.                        */
+   end new_line;
+
+ %page;
+
+ %include FCB;
+ %include IORB;
+ %include SRB;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_Get;

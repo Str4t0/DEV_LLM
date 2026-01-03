@@ -1,0 +1,94 @@
+ /* _pli_OSSeek                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSSeek (PL/I runtime) [OS/2]            */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSSeek                                  */
+ /*                                                                  */
+ /*      Function:      Operating system dependent seek logic.       */
+ /*                                                                  */
+ /*      OSSeek is called to set the current position in a file      */
+ /*      according to the specified signed distance and method.      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Linux: syscall                               */
+ /*                     OS/2:  DosSetFilePtr                         */
+ /*                                                                  */
+ /*      Limitations:   This procedure will only handle 32-bit       */
+ /*                     file pointers.                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = OSSeek(hFile,ib,method);                */
+ /*                                                                  */
+ /*                     hFile is the file handle                     */
+ /*                     ib is the offset.                            */
+ /*                     method is the method of moving:              */
+ /*                     0 (FILE_BEGIN)   (SEEK_SET) Move from BOF.   */
+ /*                     1 (FILE_CURRENT) (SEEK_CUR) Move from cur pos*/
+ /*                     2 (FILE_END)     (SEEK_END) Move from EOF.   */
+ /*                                                                  */
+ /*      If successful, the new file position is returned.           */
+ /*      If unsuccessful, the (negative) error code is returned.     */
+ /*      This is a fifference from C's fseek() function.             */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ %replace FILE_BEGIN   by 0;
+ %replace FILE_CURRENT by 1;
+ %replace FILE_END     by 2;
+
+ pli_OSSeek: proc(hFile,ib,method)
+             returns( fixed bin(31) )
+             options( linkage(system) )
+             ext( '_pli_OSSeek' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     hFile               fixed bin(31);      /* -> FCB           */
+ dcl     ib                  fixed bin(31);      /* New file pos     */
+ dcl     method              fixed bin(31);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     ibActual            fixed bin(31);      /* New file pointer */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosSetFilePtr       entry( fixed bin(31),    /* hFile       */
+                                    fixed bin(31),    /* ib          */
+                                    fixed bin(31),    /* method      */
+                                    ptr )             /* addr(ibAct) */
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DosSetFilePtr' );
+
+ dcl     addr                builtin;
+
+ /*-------------------------------------------------------*/
+ /* Read a block of data                                  */
+ /*-------------------------------------------------------*/
+ RC = DosSetFilePtr( hFile,
+                     ib, method,
+                     addr(ibActual) );
+ if RCª=0 then return(-RC);           /* Seek error                 */
+ return(ibActual);                    /* Otherwise return file pos. */
+   
+ end pli_OSSeek;

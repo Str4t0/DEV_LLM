@@ -1,0 +1,35 @@
+# SA_make:
+# Sample makefile for Iron Spring PL/I [Linux]
+# This makefile will compile a PL/I program
+# and link it 'stand-alone' (without libc).
+# It assumes the compiler has been installed in
+# a directory in your $PATH, and that
+# the library is in /usr/local/lib.
+# Modified 2017-10-09: 32-bit ld options     0.9.10
+
+# The ld flag '-z muldefs' is required to prevent
+# link errors caused by possible multiple definitions
+# of initialized PL/I EXTERNAL data.
+
+# When linked without libc, the entry point should be
+# 'main' or '_pli_Main', defined by the ld option '-e main'.
+
+# 'INC' provides a list of directories to search for include files.
+# Each entry should be preceded by '-i'
+
+
+PLI	= plic
+PLIFLGS	= -lixg -ew
+INC     = -i.
+
+%.o:	%.pli 
+	${PLI} -C ${PLIFLGS}  $^ -o $*.o
+	
+%:	%.o
+	ld  -z muldefs -Bstatic -M  -e main -t -o $@ 	\
+	$@.o 						\
+        --oformat=elf32-i386				\
+        -melf_i386					\
+	-lprf    					\
+	>$@.map
+

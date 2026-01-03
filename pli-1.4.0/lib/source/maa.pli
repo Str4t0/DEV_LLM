@@ -1,0 +1,139 @@
+ /* _pli_MAA   (incomplete)                                          */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.3         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_MAA (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar, 2012                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_MAA  Move adjustable array.             */
+ /*                                                                  */
+ /*      Function:                                                   */
+ /*                                                                  */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence: (not user-callable)                       */
+ /*                     DCL MAA entry( pSrc, pDSrc, pDst,pDDst)      */
+ /*                                ext( '_pli_MAA' )                 */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     call MAA( addr(source_array),                */
+ /*                               addr(source_descriptor),           */
+ /*                               addr(dest_array),                  */
+ /*                               addr(dest_descriptor) );           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*                                                                  */
+ /*                                                                  */
+ /*                                                                  */
+ /*                                                                  */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ MAA: proc( pSrc, pDSrc, pDst,pDDst)      
+         returns( fixed bin(31) )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_maa' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pSrc                ptr;                /* ->Source array   */
+ dcl     pDSrc               ptr;                /* ->Source descript*/
+ dcl     pDst                ptr;                /* ->Dest array     */
+ dcl     pDDst               ptr;                /* ->Dest descript  */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     (ps,pd)              ptr;
+ dcl     (pss,pdd)            ptr;
+ dcl     (pxs,pxd)            ptr;
+ dcl     (prs,prd)            ptr;
+ dcl     (n,i,j)              fixed bin(31);
+
+ %include condmask;
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,index,length,min,mod,stg,string,substr,sysnull)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Check Arguments                   */
+ /*-----------------------------------*/
+ string(cond_mask) = GetFlags();        /* Get enabled conditions    */
+ if pDSrc->AR_dim^=pDDst->AR_dim        /* Must be same num of dim   */
+ then goto error;
+ n = pDSrc->AR_dim;                  
+ ps = addr(pDSrc->AR_dims);             /* Check dimension info      */
+ pd = addr(pDDst->AR_dims); 
+ do i=1 to n;
+   if ps->DM_lbnd(i)^=pd->DM_lbnd(i) |
+      ps->DM_hbnd(i)^=pd->DM_hbnd(i)  
+   then goto error;
+   end;
+ pss = addr(ps->DM_next(n));            /* ->Descriptors             */
+ pdd = addr(pd->DM_next(n)); 
+ if pss->XB_id = '80'x |                /* No arrays of structures   */
+    pdd->XB_id = '80'x  
+ then goto error; 
+  
+ /*-----------------------------------*/
+ /* Move the data                     */
+ /*-----------------------------------*/
+ pxs = pSrc;                            /* ->Data                    */
+ pxd = pDst;               
+ do i=1 to n;
+   prs = pxs;
+   prd = pxd;
+   do j=ps->DM_lbnd(i) to ps->DM_hbnd(i);
+     call move(pxs,pss,pxd,pdd);
+     pxs = pxs + ps->DM_mult(i);
+     pxd = pxd + pd->DM_mult(i);
+     end;
+   pxs = prs - ps->DM_mult(i-1);  
+   pxd = prd - pd->DM_mult(i-1);
+   end;
+ return;   
+   
+ /*-----------------------------------*/
+ /* Do the move                       */
+ /*-----------------------------------*/
+ move: proc(pS,pDS,pD,pDD);
+   dcl   (pS,pDS,pD,pDD)      ptr;
+/*
+   display( 'move from ' || heximage(addr(pS),4) || 
+            ' to '       || heximage(addr(pD),4) );
+ */
+   end move;
+ 
+ /*-----------------------------------*/
+ /* Raise Error condition             */
+ /*-----------------------------------*/
+ error:
+   signal ERROR;
+
+ %page;
+ %include DESC;
+
+ end MAA;

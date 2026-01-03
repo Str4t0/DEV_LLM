@@ -1,0 +1,342 @@
+ /* _pli_Put                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Put (PL/I runtime)                      */
+ /*      Version:       1.1                                          */
+ /*      Date:          Dec, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Put                                     */
+ /*                                                                  */
+ /*      Function:      Put is the stream output driver.             */
+ /*                                                                  */
+ /*      Put is called from IOR once per data element to be          */
+ /*      written.  It is passed the addresses of the caller's I/O    */
+ /*      Request Block (IORB) and the File Control Block (FCB)       */
+ /*      for the requested file.  The file has already been          */
+ /*      opened by IOR and locked.                                   */
+ /*                                                                  */
+ /*      On the first call for a PUT operation, This procedure       */
+ /*      executes any requested control options (PAGE SKIP and/or    */
+ /*      LINE) and resets the bits for these options;                */
+ /*      it then sets COUNT to zero.                                 */
+ /*      If no data address is stored in the IORB, this is a         */
+ /*      control-only PUT and the procedure exits.                   */
+ /*                                                                  */
+ /*      COUNT is incremented by one for each data element processed.*/
+ /*                                                                  */
+ /*      If a data address is passed, Put processes it according     */
+ /*      to the DATA/EDIT/LIST specification.                        */
+ /*                                                                  */
+ /*      Put is not called via the PGT in order to make it           */
+ /*      optional.  A program not using stream I/O will not          */
+ /*      be linked with PutX and all the format and conversion code. */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2014-12-20 - LINE option                             0.9.7*/
+ /*        2009-11-18 - ENDPAGE fixes.                           0.8d*/
+ /*        2008-10-01 - ENDPAGE processing.                          */
+ /*        2004-09-08 - Version 1.1, break out PutX procedures.      */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Put: proc( xpIORB, xpFCB )
+               ext( '_pli_Put' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xpIORB              ptr;      /* -> IORB                    */
+ dcl     xpFCB               ptr;      /* -> FCB                     */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      Blanks              char(32)  static    init('');
+ dcl      UNIMPLEMENTED       condition;                      /*1.2.1*/
+
+ /* PUT statement option bits in IOR_bOPT (from GIO)                 */
+ dcl     bSkip1              bit(32)   static    init('40000000'bx);
+ dcl     bLine               bit(32)   static    init('00080000'bx);
+ dcl     bPage               bit(32)   static    init('00040000'bx);
+ dcl     bSkip               bit(32)   static    init('00020000'bx);
+ /* FCB 'PRINT' attribute setting                                    */
+ dcl     bPrint              bit(32)   static    init('00010000'bx);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pIORB               ptr;      /* ->IORB                     */
+ dcl     pFCB                ptr;      /* ->FCB                      */
+ dcl     pOpt                ptr;      /* ->IORB extension           */
+ dcl     pData               ptr;      /* ->Data element             */
+ dcl     pDesc               ptr;      /* ->Data descriptor          */
+ dcl     Count               fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     this_file           file          based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     PutX                entry( ptr )
+                             external( '_pli_PutX' );
+ dcl     BufO                entry( ptr, ptr, fixed bin(31) )
+                             options( linkage(system) )       /*0.9.4*/
+                             external( '_pli_BufO' );
+
+ dcl    (
+         addr,length,
+         plimove,ptrvalue,
+         stg,string,substr,
+         sysnull
+        )                    builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry, save a few items for efficiency.                */
+ /* (IOR has validated that this is a STREAM OUTPUT file)            */
+ /*------------------------------------------------------------------*/
+ pIORB = xpIORB;
+ pFCB  = xpFCB;
+ pData = pIORB->IOR_pData;   /* -> Data Element or SYSNULL           */
+ pDesc = pIORB->IOR_pDesc;   /* -> Data Descriptor or SYSNULL        */
+ pIORB = xpIORB;
+ pOpt  = pIORB->IOR_pOpt;    /* -> First Variable Option     20050526*/
+ if (pIORB->IOR_bOPt&'80000000'bx)ª='00000000'bx /* First time?      */
+ then do;
+   substr(pIORB->IOR_bOpt,1,1)='0'b;        /* Reset flag            */
+   pFCB->FCB_Count=0;                       /* Zero 'COUNT'          */
+   end; /* first time */
+
+ /*------------------------------------------------------------------*/
+ /* Process any Control Options: PAGE, SKIP, LINE.                   */
+ /* IBM: "For output non-PRINT files and input files, if the         */
+ /*       expression in the SKIP option is less than or equal to     */
+ /*       zero, a value of 1 is used.  For output PRINT files,       */
+ /*       if n is less than or equal to zero, the positioning is     */
+ /*       to the start of the current line."  -SC26-3114-01, p.256   */
+ /*------------------------------------------------------------------*/
+ if (pIORB->IOR_bOpt&bSkip1)ª='00000000'bx  /* SKIP (one assumed)    */
+ then do;
+   pIORB->IOR_bOpt = pIORB->IOR_bOpt&ªbSkip1;
+   call skip(1);                            /* Do the skip           */
+   end; /* Skip1 */
+ if (pIORB->IOR_bOpt&bPage)ª='00000000'bx   /* PAGE                  */
+ then do;
+   pIORB->IOR_bOpt = pIORB->IOR_bOpt&ªbPage;
+   call page;                               /* Do the page eject     */
+   end; /* Page */
+ if (pIORB->IOR_bOpt&bLine)ª='00000000'bx   /* LINE(n)               */
+ then do;
+   pIORB->IOR_bOpt = pIORB->IOR_bOpt&ªbLine;
+   Count = pOpt->IOR_optF;                  /* Get line number value */
+   pOpt = pOpt + stg( SYSNULL()->IOR_optF );/* Advance option addr   */
+   call line(Count);                        /* Do the line operation */
+   end; /* Line */
+ if (pIORB->IOR_bOpt&bSkip)ª='00000000'bx   /* SKIP(n)               */
+ then do;
+   pIORB->IOR_bOpt = pIORB->IOR_bOpt&ªbSkip;
+   Count = pOpt->IOR_optF;                  /* Get skip value        */
+   pOpt = pOpt + stg( SYSNULL()->IOR_optF );/* Advance option addr   */
+   call skip(Count);                        /* Do the skip           */
+   end; /* Skip */
+
+ /*---------------------------------------------*/
+ /* Check for Control-Only PUT                  */
+ /*---------------------------------------------*/
+ if pData = SYSNULL() then return;
+
+ /*---------------------------------------------*/
+ /* Build parameter list and call PutX          */
+ /*---------------------------------------------*/
+ SPL_pSRB    = addr(pIORB->IOR_SRB);   /* addr(SRB)                  */
+ SPL_pSBB    = addr(pFCB->FCB_SBB);    /* addr(SBB)                  */
+ SPL_bFlg    = '00000000'bx;                                   /*0.5e*/
+ if (pFCB->FCB_attrib&bPrint)ª='00000000'bx                    /*0.5e*/
+ then SPL_bFlg = SPL_bFlg|'00000001'bx;                        /*0.5e*/
+ /* SPL_bFlg '00000001'bx - PRINT                                    */
+ SPL_LineEnd = LineEnd;                /* addr(callback_proc)        */
+ call PutX( addr(SPL) );               /* PUT this data element      */
+
+ /*---------------------------------------------*/
+ /* ENV(INTERACTIVE) force eol for last element */
+ /*---------------------------------------------*/
+ /* IOR_bOpt     '20000000'bx - Last data-list item for PUT          */
+ /* FCB_envflags '04000000'bx - ENV(INTERACTIVE)                     */
+ if (pIORB->IOR_bOpt&'20000000'bx)^='00000000'bx then do;     /*0.9.3*/
+   if (pFCB->FCB_envflags&'04000000'bx)^='00000000'bx         /*0.9.3*/
+   then do;                                                   /*0.9.3*/
+     call line_done;                                          /*0.9.3*/
+     end; /* INTERACTIVE*/                                    /*0.9.3*/                
+   end; /* Last data list item */                             /*0.9.3*/
+
+ /*---------------------------------------------*/
+ /* Update COUNT and exit                       */
+ /*---------------------------------------------*/
+ pFCB->FCB_Count = pFCB->FCB_Count+SPL_Count;
+
+ return;
+
+ /*------------------------------------------------------------------*/
+ /* Callback proc: Called when line is full                          */
+ /*                or a control format spec is encountered.          */
+ /*------------------------------------------------------------------*/
+ LineEnd: proc( code, count );
+   dcl  (code,count)         fixed bin(15);
+   select( code );
+     when( 0 ) call line_done;         /* Line full                  */
+     when( 1 ) call column(count);     /* COLUMN(count)              */
+     when( 2 ) call line(count);       /* LINE(count)                */
+     when( 3 ) call page;              /* PAGE                       */
+     when( 4 ) call skip(count);       /* SKIP(count)                */
+     end; /* select */
+   end LineEnd;
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /* Control specifications: COLUMN, LINE, PAGE, and SKIP.            */
+ /*                                                                  */
+ /* COMMENT: The IBM compiler raises the ERROR condition             */
+ /*          (ONCODE=1004)  if PAGE, LINE, or SKIP<=0 is used        */
+ /*          with a non-PRINT file.  Let's just ignore it for now.   */
+ /*------------------------------------------------------------------*/
+
+ column: proc(n);            /* COLUMN(n)                            */
+   dcl   n                   fixed bin(31);
+   dcl   cp                  fixed bin(31);
+   dcl  (l,j)                fixed bin(31);
+   /* We could use TAB characters in conjunction with the PLITABS    */
+   /* external data for column positioning.  For the time being this */
+   /* is not done, although some support for it is coded.            */
+   cp = n-1;                 /* Compute desired column position      */
+   if cp<0 then return;      /* Ignore invalid column spec           */
+   /* NOTE: What is supposed to happen with col(0)? */
+   if cp>=pFCB->FCB_lnsize   /* Col past end-of-line?                */
+   then do;                  /* Yes                                  */
+     call skip(1);           /* Line advance                         */
+     return;
+     end; /* NOTE: Is this what we want to do? */
+   if pFCB->FCB_col>cp       /* Have we passed the requested column? */
+   then call line_done;      /* Yes, new line                        */
+   l = cp-pFCB->FCB_col;     /* Now insert 'l' spaces (or tabs)      */
+   /* The following code looks like 'X' in PUTX.                     */
+   do while( l>0 );          /* move spaces in chunks of up to 32b   */
+     j = min( l, stg(Blanks) );                            /*20060901*/
+     /* We will never overflow a line here */
+     call plimove(pFCB->FCB_pline,addr(blanks),j);
+     pFCB->FCB_pline  = pFCB->FCB_pline+j;/* Bump line ptr           */
+     pFCB->FCB_col    = pFCB->FCB_col+j;  /* Bump col position       */
+     l = l-j;
+     end; /* do while */
+   end column;
+
+ line: proc(n);              /* LINE(n)                              */
+   /*----------------------------------------------------------------*/
+   /* "If at least n lines have already been written on the current  */
+   /*  page or if n exceeds the limits set by the PAGESIZE option of */
+   /*  the OPEN statement, the ENDPAGE condition is raised.  If n is */
+   /*  less than or equal to zero, a value of 1 is used.  If n       */
+   /*  specifies the current line, ENDPAGE is raised except when     */
+   /*  the file is positioned on column 1.  In this case, the effect */
+   /*  is as for a SKIP(0) option."                                  */
+   /*                                       -SC26-3114-01, p.257     */
+   /*----------------------------------------------------------------*/
+   dcl   n                   fixed bin(31);
+   dcl   curr_line           fixed bin(31);
+   if substr(pFCB->FCB_attrib,16,1)ª='1'b   /* Ignore if non-PRINT   */
+   then return;
+   if pFCB->FCB_pagesize<=0 then return;    /* Ignore of PAGESIZE(0)7*/  
+   if n<=0 then n=1;                                          /*0.9.7*/
+   /* FCB_LineNo is zero if no data has yet been written.       0.9.7*/
+   curr_line = pFCB->FCB_LineNo;                              /*0.9.7*/
+   if curr_line=0 then curr_line=1;                           /*0.9.7*/
+   if n=curr_line & pFCB->FCB_pbuf=pFCB->FCB_abuf             /*0.9.7*/
+   then return;                             /* SKIP(0)          0.9.7*/       
+   if n<curr_line | n>pFCB->FCB_pagesize                      /*0.9.7*/
+   then signal ENDPAGE( pFCB->FCB_pFile->this_file );         /*0.9.7*/
+   curr_line = pFCB->FCB_LineNo;            /* Reset current line.9.7*/
+   n = n-curr_line;                                           /*0.9.7*/
+   if n>0 then call skip(n);                                  /*0.9.7*/
+   end line;
+
+ page: proc;                 /* PAGE                                 */
+   dcl   n                   fixed bin(31);
+   if substr(pFCB->FCB_attrib,16,1)ª='1'b   /* Ignore if non-PRINT   */
+   then return;
+   /* Set LINENO to zero to prevent page overflow during PAGE.       */
+   pFCB->FCB_LineNo = 0;                    /* Clear LINENO      0.8d*/
+   n = pFCB->FCB_pLine - pFCB->FCB_aLine;   /* Line length           */
+   if n>0 then call line_done;              /* Dump partial line     */
+   call BufO(pFCB,sysnull,-1);              /* -1 writes page eject  */
+   end page;
+
+ skip: proc(n);              /* SKIP(n)                              */
+   dcl   n                   fixed bin(31);
+   dcl   m                   fixed bin(31);
+   m=n;
+   if m=0 then signal condition(UNIMPLEMENTED);
+   /* NOTE: SKIP(0) not currently supported */
+   do while( m>0 );
+     call line_done;
+     m=m-1;
+     end; /* do while */
+   end skip;
+
+ /*---------------------------------------------*/
+ /* Dump a completed line                       */
+ /*---------------------------------------------*/
+ line_done: proc; 
+   dcl  (m,n)                fixed bin(31);
+
+   n = pFCB->FCB_pLine - pFCB->FCB_aLine;   /* Line length           */
+   pFCB->FCB_LineNo = pFCB->FCB_LineNo+1;   /* Bump LINENO           */
+   /* NOTE: pagesize(0) indicates no pagination.                     */
+   if pFCB->FCB_pagesize>0 &
+      pFCB->FCB_LineNo > pFCB->FCB_pagesize then begin;        /*0.8d*/
+     dcl saved_line          char( n );                    /*20081001*/
+     /* An ENDPAGE ON-Unit may write data to the file which  20081001*/
+     /* should precede the current line.  This means that the20081001*/
+     /* current line has to be stashed before raising the    20081001*/
+     /* ENDPAGE condition and restored after.  Of course if  20081001*/
+     /* the On-Unit does not return normally then the saved  20081001*/
+     /* data has to be - what? canned?                       20081001*/
+     call plimove( addr(saved_line), pFCB->FCB_aLine, n ); /*20081001*/
+     pFCB->FCB_pLine = pFCB->FCB_aLine;       /* Reset length20081001*/
+     signal ENDPAGE( pFCB->FCB_pFile->this_file );         /*20081001*/
+     /* Write any data left in the buffer by ENDPAGE                 */
+     pFCB->FCB_LineNo = 1;                                     /*0.8d*/
+     m = pFCB->FCB_pLine - pFCB->FCB_aLine;                /*20081001*/
+     if m>0 then do;                                           /*0.8d*/
+       call BufO(pFCB,pFCB->FCB_aLine,m);                      /*0.8d*/
+       pFCB->FCB_LineNo = 2;                                   /*0.8d*/
+       end;                                                    /*0.8d*/
+     call plimove( pFCB->FCB_aLine, addr(saved_line), n ); /*20081001*/
+     if n>0                                                    /*0.8d*/
+     then pFCB->FCB_LineNo =  pFCB->FCB_LineNo+1;              /*0.8d*/
+     pFCB->FCB_pLine = pFCB->FCB_aLine+n;     /* Restore len 20081001*/
+     /* Normal return from ENDPAGE continues printing current line.  */
+     end; /* ENDPAGE */                                    /*20081001*/
+   call BufO(pFCB,pFCB->FCB_aLine,n);
+   pFCB->FCB_col = 0;                  /* Reset column       20090917*/
+   end line_done;
+
+ %page;
+
+ %include FCB;
+ %include IORB;
+ %include SRB;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_Put;

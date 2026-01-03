@@ -1,0 +1,109 @@
+ /* _pli_CVfy                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CVfy (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CVfy  [Verify() BIF]                    */
+ /*                                                                  */
+ /*      Function:      Implement VERIFY for character string        */
+ /*                     arguments.                                   */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL CVerify entry(pX,pY)                     */
+ /*                                   returns( fixed bin(15) )       */
+ /*                                   options( LINKAGE(SYSTEM) )     */
+ /*                                   ext( '_pli_CVfy' );
+ /*                     Res = CVerify( addr(src_loc_desc),           */
+ /*                                    addr(in_loc_desc) );          */
+ /*                                                                  */
+ /*                     All data must be character strings.          */
+ /*                                                                  */
+ /*                     Each address points to a character-string    */
+ /*                     Locator/Descriptor.                          */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2020-04-04: Bug accessing VARYING source string    0.9.10c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ CVerify: proc( pX, pY )
+            returns( fixed bin(15) )
+            options( LINKAGE(SYSTEM) )
+            ext( '_pli_CVfy' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    (pX,pY)                   ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pI,pJ)              ptr;
+ dcl    (i,j,len)            fixed bin(31);
+ dcl    (lX,lY)              fixed bin(31);
+ dcl     Vtab         (0:255)char(1);
+
+ %include locdesc;
+
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     OneC                char(1)             based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ dcl    (addr,length,plifill,rank,stg,string,sysnull)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Build Translate Table             */
+ /*-----------------------------------*/
+ /* Following statement moved up 2020-04-04 for 0.9.10c              */
+ pI = pX->pData;                       /* Address of Source string   */
+ pJ = pY->pData;                       /* Address of 'In' string     */
+ if pY->pDesc->ST_id='10'x             /* Is 'in' fixed-length?      */
+ then lY=pY->pDesc->ST_len;            /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lY = length(pJ->Varying_String);                         /*0.9.10c*/
+   pJ = pJ + stg( sysnull()->Varying_String );
+   end;
+ if pX->pDesc->ST_id='10'x             /* Is source fixed-length?    */
+ then lX=pX->pDesc->ST_len;            /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lX = length(pI->Varying_String);
+   pI = pI + stg( sysnull()->Varying_String );
+   end;
+ if lX=0 then return(0);               /* X is the null string       */
+ if lY=0 then return(1);               /* X not null, but Y is null  */
+
+ /*-----------------------------------*/
+ /* Build Verify Table                */
+ /*-----------------------------------*/
+ call plifill( addr(Vtab), '00'x, 256 );/* Initialize table          */
+ do i=1 to lY;                         /* Indicate characters in set */
+   j = rank( pJ->onec );
+   Vtab(j) = '01'x;
+   pJ = pJ+1;
+   end; /* do i */
+ do i=1 to lX;                         /* Check the characters       */
+   j = rank( pI->onec );
+   if Vtab(j) = '00'x then return(i);  /* Character(i) not in table  */
+   pI = pI+1;
+   end; /* do i */
+
+ return(0);                            /* all characters in table    */
+
+ %page;
+ %include desc;
+
+ end CVerify;

@@ -1,0 +1,68 @@
+ /* _pli_Tabs                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.2         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        pli_Tabs (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2011                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Tabs                                    */
+ /*                                                                  */
+ /*      Function:      This procedure provides the 'plitabs'        */
+ /*                     data structure.  Its purpose is to get       */
+ /*                     around the problem JWASM has generating      */
+ /*                     initialized common (PL/I EXTERNAL) data.     */
+ /*                     It is referenced by PLISTART to be loaded    */
+ /*                     as part of the user's executable rather      */
+ /*                     than the shared library to get around        */
+ /*                     (presumed) problems of sharing data between  */
+ /*                     executable and dll in OS/2.                  */
+ /*                                                                  */
+ /*                     Library procedure call the procedure to      */
+ /*                     obtain the address of the data.              */
+ /*                                                                  */
+ /*      Dependencices: None                                         */
+ /*                                                                  */
+ /*      Calling sequence:  p = plitabs();                           */
+ /*                                                                  */
+ /*      Called from:   open/putx.                                   */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Tabs: proc              external( '_pli_Tabs' )
+ 			     returns(ptr)
+                             options( linkage(system) );
+			     
+ return( addr(plitabs) );			     
+			     
+ /*------------------------------------------------------------------*/
+ /*      PLITABS Declaration                                         */
+ /*      - SC26-3113-01, p.142                                       */
+ /*------------------------------------------------------------------*/
+ dcl   1 plitabs             external( 'PLITABS' ),
+         5 offset            fixed bin(15)  /* Offset of tab count 00*/
+                    init( 14),
+         5 pagesize          fixed bin(15)  /* Default page size   02*/
+                    init( 60),
+         5 linesize          fixed bin(15)  /* Default line size   04*/
+                    init(120),
+         5 pagelength        fixed bin(15)  /* Default page length 06*/
+                    init(  0),
+         5 fill1             fixed bin(15)  /* (reserved)          08*/
+                    init(  0),
+         5 fill2             fixed bin(15)  /*    "                0A*/
+                    init(  0),
+         5 fill3             fixed bin(15)  /*    "                0C*/
+                    init(  0),
+         5 no_of_tabs        fixed bin(15)  /* Num of occ's of tab 0E*/
+                    init(  5),                                /*0.9.8*/
+         5 tab          (255)fixed bin(15)  /* First five tabs     10*/
+                    init( 25, 49, 73, 97, 121 );              /*0.9.8*/
+
+ end pli_Tabs;

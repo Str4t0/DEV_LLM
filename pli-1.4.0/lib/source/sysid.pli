@@ -1,0 +1,66 @@
+
+ /* _pli_Sysid                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8c          */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        Sysid (PL/I runtime)                         */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Get "system id" for current OS, etc.         */
+ /*                                                                  */
+ /*      Description:                                                */
+ /*                     The Iron Spring PL/I runtime maintains a     */
+ /*                     read-only "system id" string that desdcribes */
+ /*                     the current environment.  Currently it       */
+ /*                     contains only the base operating system      */
+ /*                     identification: "OS/2" or "LINUX", although  */
+ /*                     it may be extended later with additional     */
+ /*                     information.  Callers should compare only    */
+ /*                     as much as required.                         */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL Sysid entry returns(ptr)                 */
+ /*                         options( linkage(system) )               */
+ /*                         ext( '_pli_Sysid' );                     */
+ /*                     DCL pStr         ptr;                        */
+ /*                     DCL sysid_string char(64) varying            */
+ /*                                      based(pStr);                */
+ /*                     pStr = Sysid();                              */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ Sysid: proc() returns( ptr )
+               options( linkage(system) )
+               external( '_pli_Sysid' );
+
+ /*-------------------------*/
+ /* Automatic storage       */
+ /*-------------------------*/
+ dcl     pGbl                ptr;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetGbl              entry
+                             returns( ptr )
+                             options( linkage(system) )
+                             ext( '_pli_GetGbl' );
+
+ /*------------------------------------------------------------------*/
+ /* Sysid: Get address of system id string                           */
+ /*------------------------------------------------------------------*/
+ pGbl = GetGbl();                      /* Get addr(global_data)      */
+ return( pGbl->GBL_sysid_addr );       /* Return addr(sysid)         */
+
+ %include gbl;
+
+ end Sysid;

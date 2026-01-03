@@ -1,0 +1,225 @@
+ /* _pli_CAB                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 1.0.1         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CAB (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2001                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CAB                                     */
+ /*                                                                  */
+ /*      Function:      Convert coded arithmetic to bit string.      */
+ /*                                                                  */
+ /* IBM: "If necessary the arithmetic value converts to binary and   */
+ /*      both the sign and any fractional part are ignored.          */
+ /*      (If the arithmetic value is complex, the imaginary part     */
+ /*      is also ignored.)  The resulting binary value is treated    */
+ /*      as a bit string."      -SC26-3114-01, p.91.                 */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I Descriptor format                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Output area (10 bytes inc. length)|  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Input descriptor                  |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Input data                        |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        The output is a big-endian, right-justified  */
+ /*                     varying string whose length is <precision>.  */
+ /*                                                                  */
+ /*                     Conversion is described in SC26-3114-01,     */
+ /*                     pp.xx-yy.                                    */
+ /*                                                                  */
+ /*      Called from:   Various                                      */ 
+ /*                                                                  */ 
+ /*      Errors:        ?                                            */ 
+ /*                     May raise OVERFLOW, FIXEDOVERFLOW            */
+ /*                     UNIMPLEMENTED if called with PICTURE Arg.    */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CAB: proc(pData,pDesc,pRet)
+                             external( '_pli_CAB' )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pData               ptr;                     /* -> Input    */
+ dcl     pDesc               ptr;                     /* -> Descript.*/
+ dcl     pRet                ptr;                     /* -> Output   */
+
+ dcl     result              bit(64)   varying   based( pRet );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl      p                   ptr;
+ dcl      n                   fixed bin(31);
+
+ dcl      tmp_dsc             char(4);
+ dcl      tmp_bin             fixed bin(31);
+
+ dcl    (prec,scale)         fixed bin(31);
+
+ %include CONDMASK;
+     
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      UNIMPLEMENTED       condition;     
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      pVoid               ptr           based;
+
+ /* Data types for arithmetic data */
+ dcl      FB7                 fixed bin(7)        based;
+ dcl      FB15                fixed bin(15)       based;
+ dcl      FB31                fixed bin(31)       based;
+ dcl      UFB8                fixed bin(7)        based unsigned;
+ dcl      UFB16               fixed bin(15)       based unsigned;
+ dcl      UFB32               fixed bin(31)       based unsigned;
+ dcl      FD18                fixed dec(18)       based;
+ dcl      LB23                float bin(23)       based;
+ dcl      LB49                float bin(49)       based;
+ dcl      LB64                float bin(64)       based;
+ dcl      LD7                 float dec(7)        based;
+ dcl      LD15                float dec(15)       based;
+ dcl      LD20                float dec(20)       based;
+ dcl      B8                  bit(8)              based;
+ dcl      B16                 bit(16)             based;
+ dcl      B32                 bit(32)             based;
+ dcl      B64                 bit(64)             based;
+    
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,string,substr) builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+
+ /* Convert decimal to binary */
+ if pDesc->XD_id='42'x | pDesc->XD_id='48'x
+ then do;                             /* FIXED DECIMAL               */
+   /* Convert to FIXED BINARY and go from there                      */
+   /* CDB allows complex, which we ignore here                       */
+   tmp_bin = convert_to_bin( addr(tmp_bin), addr(tmp_dsc), 
+                             pData, pDesc ); 
+   pData = addr(tmp_bin);
+   pDesc = addr(tmp_dsc);
+   end; /* FIXED DEC */
+
+ prec  = pDesc->XB_prec;
+ scale = pDesc->XB_scale;
+
+ if pDesc->NP_id = '45'x |              /* PICTURED data unsupported */
+    pDesc->NP_id = '46'x |
+    pDesc->NP_id = '47'x
+ then do;      
+   signal condition(UNIMPLEMENTED);
+   return;
+   end; /* PICTURE */
+
+ if pDesc->XD_id='41'x                  /* Fixed Binary              */
+ then call convert_fixed_bin; 
+ else call convert_float;                
+
+convert_fixed_bin: proc; 
+  dcl   1 workarea            union,
+          2 tempS             fixed bin(31),
+          2 tempU             fixed bin(32) unsigned,
+          2 tempB             bit(32);
+  if (pDesc->XB_flgs&'40'bx)='00'bx     /* Signed                    */
+  then do;
+    if prec<=7       then tempS = pData->FB7;
+    else if prec<=15 then tempS = pData->FB15;
+    else                  tempS = pData->FB31;
+    tempS = abs(tempS);                /* Force positive             */
+    end; /* signed */
+  else do;                             /* Unsigned                   */
+    if prec<=8       then tempU = pData->UFB8;
+    else if prec<=16 then tempU = pData->UFB16;
+    else                  tempU = pData->UFB32;
+    end; /* unsigned */
+  if scale>0 then tempS = ISRL(tempS,scale); /* drop fraction        */
+  tempU = IBSW(tempU);                  /* Byteswap to big-endian    */
+  result = substr(tempB,33-prec,prec);  /* Extract converted string  */
+  end convert_fixed_bin;
+
+convert_float: proc;              
+ dcl      tmp                 bit(64);
+ dcl      pBits               ptr;
+ pBits = addr(tmp);
+ call plifill(addr(tmp),'00'x,stg(tmp));/* Clear result              */
+ select(pDesc->LB_id);
+   when('43'x) do;   
+     if prec<=23      then tmp  = pData->LB23;
+     else if prec<=49 then tmp  = pData->LB49;
+     else                  tmp  = pData->LB64; 
+     substr(pBits->b64,1,prec)=tmp;         
+     end; /* FLOAT BINARY */ 
+   /* Note that the declared precision of FLOAT DECIMAL is not the */
+   /* same as the number of bits in the integer result.            */
+   /* The result length is the old ceil(3.32*prec)                 */
+   when('44'x) do;                    /* FLOAT DECIMAL             */
+     if prec<=7       then tmp  = pData->LD7;  
+     else if prec<=15 then tmp  = pData->LD15;
+     else                  tmp  = pData->LD20; 
+     substr(pBits->b64,1,prec)=tmp;         
+     end; /* FLOAT DECIMAL */       
+   end; /* select */
+ end convert_float;
+
+ /* Convert fixed decimal to positive binary integer */
+ convert_to_bin: proc( baddr, bdesc, saddr, sdesc )
+                 returns( fixed bin(31) ); 
+   dcl   (baddr,bdesc,saddr,sdesc)
+                              ptr;
+   dcl    bin                 fixed bin(31);
+   dcl    bin_desc            like pli_ded_XB     based(bdesc);
+   dcl   (sprec,sscale)       fixed bin(7);
+
+   sprec =  sDesc->XD_prec;
+   sscale = sDesc->XD_scale;
+   /* Build descriptor for converted binary result */
+   call plifill(addr(bin_desc),'00'x,stg(bin_desc));
+   bin_desc.XB_id   = '41'x;
+   bin_desc.XB_prec  = ceil(sprec*3.32);
+   bin_desc.XB_scale = 0;
+   /* Convert to binary integer */
+   /* IF the result is greater tha 10**17 we can convert it as       */
+   /* a floating-point number.(sscale<-17 or sscale>17)              */
+   if scale<0 then bin = saddr->FD18/-tenpower(sscale);  
+   else            bin = saddr->FD18*tenpower(sscale); 
+   bin = abs(bin);                      /* Make positive             */
+   return(bin);
+   end convert_to_bin;
+ %page;
+
+ %include DESC;
+ %include tenpower;
+
+ end pli_CAB;

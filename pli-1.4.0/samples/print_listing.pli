@@ -1,0 +1,91 @@
+ /* print_listing                                         */
+ /*********************************************************/
+ /*                                                       */
+ /* Module:     print_listing                             */
+ /*             Peter Flass -- Nov 2009                   */
+ /*                                                       */
+ /* Function:   Read and print PL/I compiler listing.     */
+ /*                                                       */
+ /* Usage:      print_listing                             */
+ /*                                                       */
+ /* Procedure: This program will read a compiler listing  */
+ /*            file and print it on a PCL printer with    */
+ /*            appropriate attributes:                    */
+ /*              Landscape (Letter paper)                 */
+ /*              Codepage = ISO Latin 1.                  */
+ /*              Font = 'Line Printer', 8LPI              */
+ /*              60 lines per page.                       */
+ /*            This should work with any PCL5 printer.    */
+ /*                                                       */
+ /*            Input is from SYSIN and output is          */
+ /*            is to SYSPRINT.                            */
+ /*                                                       */
+ /* Dependencies:                                         */
+ /*                                                       */
+ /* To Do:                                                */
+ /*                                                       */
+ /*********************************************************/
+ print_listing: proc(parm) options(main);
+   dcl   parm                char(*) varying;
+   dcl   input               record input env(U);
+   dcl   sysprint            record output env(U);
+   dcl   buffer              char(80) varying;
+   dcl   i                   fixed bin;
+   dcl   c                   char(1);
+   dcl   ESC                 char(1)   static    init( '1B'x );
+   dcl   CR                  char(1)   static    init( '0D'x );  
+   dcl   LF                  char(1)   static    init( '0A'x );
+   dcl   FF                  char(1)   static    init( '0C'x );
+   dcl   Page_Eject          char(5)   static    init(
+          ('1B'x || '&l0H' ) );
+
+   on endpage(sysprint) /*null*/ ;
+   on endfile(input) goto eof;
+   open file(input) title(parm);
+   open file(sysprint) output;
+   buffer = ESC || 'E';                /* Printer reset              */
+   call write_pcl;
+   buffer = ESC || '&l1O';             /* Landscape                  */
+   call write_pcl;
+   buffer = ESC || '&l2A';             /* Select Letter              */
+   call write_pcl;
+   /* Font selection: Line Printer ISO Latin-1 16.67 cpi */
+   buffer = ESC || '(0N' || ESC || '(s0p16.67h8.5v0s0b0T';
+   call write_pcl;
+   buffer = ESC || '&l6C';             /* 8LPI                       */
+   call write_pcl;
+   buffer = ESC || '&l3e60F';          /* 60 Lines per page          */
+   call write_pcl;
+   buffer = ESC || '&a8L';             /* Left margin = col 8 (.5i)  */
+   call write_pcl;
+
+   /* Read the file in maximum 80-byte chunks   */
+   /* until ENDFILE is raised.  Each chunk      */
+   /* except the last should be exactly 80 bytes*/
+   /* Print one character at a time.            */
+   do while( '1'b );
+     read file(input) into(buffer);
+     do i=1 to length(buffer);
+       c = substr(buffer,i,1);
+       /* This echoes printable characters only */
+       /* except for linefeeds and formfeeds.   */
+       if c=LF |  c>=' ' 
+       then write file(sysprint) from(c);
+       /* Since we've stripped any Carriage Returns out of           */
+       /* the datastream, we need to insert 'em back here.           */
+       if c=LF then write file(sysprint) from(CR);
+       /* Replace Formfeed with PCL page eject command.              */
+       if c=FF then write file(sysprint) from(Page_Eject);
+       end; /* do i */
+     end; /* do while */
+
+ /* Write a PCL string, possibly with ESC characters                 */
+ write_pcl: proc;
+   do i=1 to length(buffer);
+     c = substr(buffer,i,1);
+     write file(sysprint) from(c);
+     end; /* do i */
+   end write_pcl;
+
+ eof:
+   end print_listing; 

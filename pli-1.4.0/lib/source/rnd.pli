@@ -1,0 +1,145 @@
+ /* _pli_RND                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_RND (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_RND                                     */
+ /*                                                                  */
+ /*      Function:      Round a FIXED DECIMAL number in the n'th     */
+ /*                     digit position.                              */
+ /*                                                                  */
+ /*                     This is NOT the PL/I ROUND() builtin.        */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Intel BCD format.                            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | Digit position (0-17)                |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | ->FIXED DEC output (10 bytes)        |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | ->FIXED DEC input (10 bytes)         |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Rounded value of input in output             */
+ /*                     (addresses may point to the same area).      */
+ /*                     Returns 0 in EAX if no overflow occurred,    */
+ /*                     returns non-zero if overflow.                */
+ /*      Called from:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      Errors:        If n is invalid the original input value     */
+ /*                     is returned with the overflow flag set.      */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_RND: proc(pInp,pOut,n)
+                             returns( fixed bin(31) )
+                             external( '_pli_RND' )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pInp                ptr;                /* ->Input          */
+ dcl     pOut                ptr;                /* ->Output         */
+ dcl     n                   fixed bin(7);       /* Digit to round   */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     HOD                 fixed bin(7);
+ dcl     HOD1                fixed bin(7);
+ dcl     Rounder             fixed dec(18);
+ dcl     i                   fixed bin(7);
+ dcl   1 HODChk_byte         aligned,
+         2 HODChk         (2)bit(4)    unaligned;
+ dcl     ppp                 pic'(18)9-';   /* Keef for debugging    */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ /* Digit positions for digits 0:17 within BCD number                */
+ dcl     d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+
+ /* Overflow test: The low-order nybble is the sum of the old        */
+ /* and new high-order digits of the result mod 10.  The high-order  */
+ /* nybble is '1'bx if overflow occurred.                            */
+ /* NOTE: Initialization doesn't work for:                           */
+ /* dcl     HODTab     (0:9,0:9)bit(8) aligned static    init(       */
+ dcl     HODTab              char(100)      static    init(
+                   /* 0 1 2 3 4 5 6 7 8 9 */
+         /* 0 */ (  '00010203040506070809'x ||
+         /* 1 */    '01020304050607080910'x ||
+         /* 2 */    '02030405060708091011'x ||
+         /* 3 */    '03040506070809101112'x ||
+         /* 4 */    '04050607080910111213'x ||
+         /* 5 */    '05060708091011121214'x ||
+         /* 6 */    '06070809101112131415'x ||
+         /* 7 */    '07080910111213141516'x ||
+         /* 8 */    '08091011121314151617'x ||
+         /* 9 */    '09101112131415161718'x )
+                 );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18)       based;
+ dcl     B8                  bit(8)              based;
+
+ dcl    (addr,hbound,lbound,ptradd,string)
+                             builtin;
+ %page;
+
+ /*---------------------------------------------*/
+ /* Copy input to output, set up round value    */
+ /*---------------------------------------------*/
+ pOut->FD18 = pInp->FD18;
+ if n<lbound(d,1) | n>hbound(d,1)      /* Invalid digit position     */
+ then return(1);                       /* Error return               */
+ Rounder = 0;                          /* Set up round amount        */
+ addr(Rounder)->BCD_dig(d(n)) = '5'bx;
+ addr(Rounder)->BCD_sign = pOut->BCD_sign;
+
+ /*---------------------------------------------*/
+ /* Save high-order digit for overflow check    */
+ /*---------------------------------------------*/
+ HOD = pOut->BCD_dig(16);    /* Get old high-order digit         */
+ pOut->BCD_dig(16) = '0'bx;
+
+ /*---------------------------------------------*/
+ /* Round                                       */
+ /*---------------------------------------------*/
+ pOut->FD18 = pOut->FD18 + Rounder;
+
+ /*---------------------------------------------*/
+ /* Clear low-order digits                      */
+ /*---------------------------------------------*/
+ do i=0 to n;
+   pOut->BCD_dig(d(i)) = '0'bx;
+   end;
+
+ /*---------------------------------------------*/
+ /* Check for overflow                          */
+ /*---------------------------------------------*/
+ HOD1 = pOut->BCD_dig(16);   /* Get new high-order digit             */
+ HOD = HOD*10+HOD1;          /* Expected value+overflow              */
+ string(HODChk_byte) = ptradd(addr(HODTab),HOD)->B8;
+ pOut->BCD_dig(16) = HODChk(2);        /* Set result digit      0.9.1*/
+ Return( HODChk(1) );                  /* Return overflow flag       */
+
+ %include BCDINC;
+
+ end pli_RND;

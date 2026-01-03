@@ -1,0 +1,106 @@
+ /* _pli_CloseDir                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CloseDir (PL/I Runtime)                 */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CloseDir                                */
+ /*                                                                  */
+ /*      Function:      This is the PL/I analog of the C 'CloseDir'  */
+ /*                     function.                                    */
+ /*                                                                  */
+ /*                     This procedure closes a directory identified */
+ /*                     by the handle 'pDir'.                        */
+ /*                                                                  */
+ /*                     The handle is opaque to the caller, but      */
+ /*                     internally is a pointer to the following:    */
+ /*                                                                  */
+ /*                        +--------------------------------------+  */
+ /*                    +00 | Linux file descriptor for directory  |  */
+ /*                        +--------------------------------------+  */
+ /*                    +04 | maximum size of buffer               |  */
+ /*                        +--------------------------------------+  */
+ /*                    +08 | -> last byte+1                       |  */
+ /*                        +--------------------------------------+  */
+ /*                    +0C | -> next byte                         |  */
+ /*                        +--------------------------------------+  */
+ /*                    +10 | Directory data (4K-'10'x bytes)      |  */
+ /*                        +--------------------------------------+  */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Linux System Call interface.                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | 'directory handle'                   |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Return code from SYS_CLOSE in eax.           */
+ /*                                                                  */
+ /*      Called from:   anywhere                                     */
+ /*                                                                  */
+ /*      Errors:        none                                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ CloseDir: proc(pDir)
+           returns( fixed bin(31) )               
+           external( '_pli_CloseDir' )
+           options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pDir                ptr;      /* ->directory handle         */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+	  
+ /* PL/I 'dir' structure                         */
+ dcl    1 dir                 based(pDir),
+          5 dir_hdr,
+            10 dir_fd         fixed bin(31),
+	    10 dir_bufsz      fixed bin(31),
+	    10 dir_pLast      ptr,
+	    10 dir_pNext      ptr,
+	  5 dir_buffer        char(0);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_CLOSE    by   6; 
+ 
+ dcl      syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+
+ dcl    (addr,mod,string,substr) builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ RC = syscall( SYS_CLOSE, dir_fd );
+ call plifree(pDir);
+ return(RC);
+
+ end CloseDir;    

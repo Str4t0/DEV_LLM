@@ -1,0 +1,673 @@
+ /* _pli_NumVal                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_NumVal (PL/I runtime)                   */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_NumVal                                  */
+ /*                                                                  */
+ /*      Function:      Convert a character string to numeric.       */
+ /*                                                                  */
+ /*      NumVal converts a character string to a real or complex     */
+ /*      numeric value, and returns the base, scale, mode,           */
+ /*      and precision of the result.  The atributes of the          */
+ /*      result are solely determined by the format of the input.    */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Argument list:                                              */
+ /*              +--------------------------------+                  */
+ /*        +10   | addr(FILE) or SYSNULL          |                  */
+ /*              +--------------------------------+                  */
+ /*        +0C   | addr(result_descriptor)        |                  */
+ /*              +--------------------------------+                  */
+ /*        +08   | addr(result_data)              |                  */
+ /*              +--------------------------------+                  */
+ /*        +04   | addr(char_string_descriptor)   |                  */
+ /*              +--------------------------------+                  */
+ /*        +00   | addr(char_string_data)         |                  */
+ /*              +--------------------------------+                  */
+ /*                                                                  */
+ /*      "result_data" is an area large enough to hold the largest   */
+ /*      converted value (20 bytes).  The result will be one or      */
+ /*      two of the following depending on "result_descriptor".      */
+ /*        FIXED BIN(31,n)                                           */
+ /*        FIXED DEC(18,n)                                           */
+ /*        FLOAT DEC(20)                                             */
+ /*        FLOAT BIN(64)                                             */
+ /*      "result_descriptor" is an area large enough to hold a       */
+ /*      descriptor for a numeric value, currently 4 bytes.          */
+ /*      It will be set to indicate the attributes of the converted  */
+ /*      result, or the first byte set to '00'x to indicate an error.*/
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*          * See note on float precision in 'encode' (currently    */
+ /*            limited to 18 decimal digits)                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2024-08-29: Prevent FIXED DEC -0.                  1.3.2*/
+ /*          2024-07-15: Incorrect conversion to FLOAT          (587)*/
+ /*          2024-03-12: FOFL was misspelled FOVL               1.2.1*/
+ /*          2023-01-30: (511)Float conv for abs(exponent)>=16  1.0.1*/
+ /*          2015-03-19: Fix Floating point conversions.        0.9.8*/
+ /*          2010-10-23: Always return imag component           0.9.6*/
+ /*          2009-09-10: Improve accuracy of Fixed to Float conv.0.8c*/
+ /*          2009-08-20: 'move' - allow for  0**n=0.             0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ NumVal: proc( pSrc, pDSrc, pRes, pDRes, pFile )
+         options( linkage(system) )
+         ext( '_pli_NumVal' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pSrc                ptr;      /* ->Char string Data         */
+ dcl     pDSrc               ptr;      /* ->Char string Descriptor   */
+ dcl     pRes                ptr;      /* ->Result data area         */
+ dcl     pDRes               ptr;      /* ->Result descriptor area   */
+ dcl     pFile               ptr;      /* ->FILE or SYSNULL          */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     digits              char(10)  static    
+                   init( '0123456789' );
+ dcl     char_val            char(20)  static
+                   init( '0123456789 +-.EeBbIi' );
+ dcl     char_class          char(20)  static
+                   init( 'DDDDDDDDDD SS.EEBBII' );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pD,pData)           ptr;
+ dcl    (lD,lData)           fixed bin(31);
+ dcl     pW                  ptr;
+ dcl     desc_work           char(4);  /* like pli_ded_XB            */
+ dcl     bSwt             (2)bit(16) aligned;
+         /* bSwt(1):  '1'b = sign present                            */
+         /* bSwt(2):  '1'b = '-' sign present                        */
+         /* bSwt(3):  '1'b = Binary, else Decimal                    */
+         /* bSwt(4):  '1'b = Float, else Fixed                       */
+         /* bSwt(5):  '1'b = Imaginary, else Real                    */
+         /* bSwt(6):  '1'b = Decimal point, else no decimal          */
+         /* bSwt(7)-bSwt(8): unused                                  */
+         /* bSwt(9):  '1'b = exponent sign present                   */
+         /* bSwt(10): '1'b = negative exponent                       */
+         /* bSwt(11)-bSwt(16): unused                                */
+ dcl    (prec,scale)      (2)fixed bin(31);
+ dcl    (cv,cc)              char(1);
+ dcl     locator              (2)ptr;   /* Loc/Desc             1.3.1*/
+
+ dcl   1 num_workarea     (2)like IntFlt;
+
+ /*-------------------------*/
+ /* Parms for CONVERSION    */
+ /*-------------------------*/
+ dcl   1 conv_parms,
+         5 conv_onsource     ptr,      /* -> ONSOURCE Locator/Descr  */
+         5 conv_onchar       ptr,      /* -> Single character        */
+         5 conv_onfile       ptr;      /* -> ONFILE or SYSNULL       */
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18) based;
+ dcl     FB31                fixed bin(31) based;
+ dcl     FB15                fixed bin(15) based;
+ dcl     FB7                 fixed bin(7)  based;
+ dcl     LB64                float bin(64) based;
+ dcl     VarStr              char(0)       based varying;
+ dcl     C1                  char(1)       based;              /*0.7c*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     SetFlags            entry( bit(16) )                 /*0.9.8*/
+                             ext( '_pli_SetFlags' )           /*0.9.8*/
+                             options( linkage(system) );      /*0.9.8*/
+ dcl     CONV                entry( fixed bin(31), ptr )
+                             returns( ptr )
+                             ext( '_pli_Conv' )
+                             options( linkage(system) );
+
+ dcl    (
+         addr, 
+         hbound,
+         index,
+         length,
+         max,
+         null,
+         plifill,
+         plimove,
+         stg,
+         string,
+         substr,
+         sysnull
+        )                    builtin;
+
+ /*------------------------------------------------------------------*/
+ /* COMMENT: OFL and FOFL are enabled by default.  The ON-units      */
+ /*          ignore them here if disabled by the caller.             */
+ /*------------------------------------------------------------------*/
+ on OFL  goto signal_OFL;
+ on FOFL goto signal_FOFL;                                    /*1.2.1*/
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry.                                                 */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ M_LibMod = '1'b;                      /* Indicate 'Library'    0.9.8*/
+ call SetFlags( string(cond_mask) );   /* Set for called rtn    0.9.8*/
+
+ /*-----------------------------------*/
+ /* Set up entry variable and data    */
+ /* for SIGNAL CONVERSION             */
+ /*-----------------------------------*/
+ locator(1) = pSrc;                     /* Data addr and desc ad1.3.1*/
+ locator(2) = pDSrc;                    /*   may not be contiguo1.3.1*/
+ conv_onsource = addr(locator);         /* -> Source Loc/Desc   1.3.1*/
+ /* NOTE: The ONSOURCE builtin returns a nonvarying string.  We need */
+ /*       to build a new locator/descriptor if the source is VARYING.*/
+ conv_onchar   = sysnull;              /* Clear ONCHAR source        */
+ conv_onfile   = pFile;                /* -> FILE for ONFILE         */
+
+ /*-----------------------------------*/
+ /* Restart here after CONVERSION     */
+ /*-----------------------------------*/
+ retry:
+
+ prec,scale=0; 
+ bSwt='0000'bx;
+ pData = pSrc;                         /* ->Input data               */
+ lData = pDSrc->ST_len;
+ if pDSrc->ST_id='11'x then do;        /* VARYING?                   */
+   lData = length(pData->VarStr);      /* Yes, get current length    */
+   pData = pData + stg( null()->VarStr ); /*      and data address   */
+   end; /* VARYING */
+ pW = addr(desc_work);
+ call plifill( pDRes, '00'x, stg(null()->pli_ded_XB) );
+ call plifill( pW,    '00'x, stg(desc_work) );
+ /* NOTE: The STORAGE builtin currently returns the size of one      */
+ /*       array element only rather than the size of the whole array.*/
+ /*       This bug needs to be fixed soon.                           */
+ call plifill( addr(num_workarea(1)), '00'x, stg(num_workarea(1)) );
+ call plifill( addr(num_workarea(2)), '00'x, stg(num_workarea(2)) );
+
+ /*------------------------------------------------------------------*/
+ /* Scan the input string to determine the data atributes            */
+ /*------------------------------------------------------------------*/
+ pD = pData;
+ lD = lData;
+ call get_attr( 1 );                   /* Get first set of attributes*/
+ if lD>0 then do;                      /* Any more data in string?   */
+   if pD->C1ª='+' & pD->C1ª='-'        /* Invalid complex number     */
+   then return;   /* NOTE: Should be error" */
+   call get_attr( 2 );                 /* Get 2nd set of attributes  */
+   end; /* Complex */
+
+ /*------------------------------------------------------------------*/
+ /* Build the descriptor for the converted value.                    */
+ /* For complex numbers the attributes, if different,                */
+ /* are promoted to the common type (BINARY and FLOAT)               */
+ /*------------------------------------------------------------------*/
+ /* Is either component BINARY?       */
+ if substr(bSwt(1),3,1)='1'b | substr(bSwt(2),3,1)='1'b
+ then do;                              /* Binary                     */
+   /* Is either component FLOAT?      */
+   if substr(bSwt(1),4,1)='1'b | substr(bSwt(2),4,1)='1'b
+   then pW->LB_id = '43'x;
+   else pW->XB_id = '41'x;
+   end; /* BIN */
+ else do;                              /* Decimal                    */
+   /* Is either component FLOAT?     */
+   if substr(bSwt(1),4,1)='1'b | substr(bSwt(2),4,1)='1'b
+   then pW->LD_id = '44'x;
+   else pW->XD_id = '42'x;
+   end; /* DEC */ 
+ if substr(bSwt(1),5,1)='1'b | substr(bSwt(2),5,1)='1'b
+ then pW->XB_flgs = '80'bx;            /* Complex                    */
+ pW->XB_prec = max( prec(1), prec(2) );
+ /* The scale factor, if present, must be greater than zero.         */
+ /* If the common type is FLOAT, scale=0.                            */
+ if substr(bSwt(1),4,1)='0'b & substr(bSwt(2),4,1)='0'b
+ then pW->XB_scale = max( scale(1), scale(2) );
+ 
+ /*------------------------------------------------------------------*/
+ /* Re-scan the input and encode the value.                          */
+ /* Further errors may occur during encoding.                        */
+ /*------------------------------------------------------------------*/
+ pD = pData;                           /* Reset address and count    */
+ lD = lData;
+ call encode( 1 );                     /* Real component             */
+ if substr(bSwt(2),5,1) then do; 
+   call encode( 2 );                         /* First value          */
+   end;
+ /* The data is now encoded as positive values in 'num_workarea'.    */
+ /* Set the various signs.                                           */
+ if substr(bSwt(1),2,1)='1'b & num_workarea.IF_frac(1)^=0     /*1.3.1*/  
+ then num_workarea.IF_frac(1) = -num_workarea.IF_frac(1);
+ if substr(bSwt(2),2,1)='1'b & num_workarea.IF_frac(2)^=0     /*1.3.1*/ 
+ then num_workarea.IF_frac(2) = -num_workarea.IF_frac(2);
+ if substr(bSwt(1),10,1)='1'b 
+ then num_workarea.IF_exp(1)  = -num_workarea.IF_exp(1);
+ if substr(bSwt(1),10,1)='1'b 
+ then num_workarea.IF_exp(2)  = -num_workarea.IF_exp(2);
+ /* Adjust if this is a complex number with only an imaginary part.  */
+ if substr(bSwt(1),5,1)='1'b then do;  /* Only imaginary component?  */
+   call plimove( addr(num_workarea(2)),/* Yes, fix complex number    */
+                 addr(num_workarea(1)),
+                 stg(num_workarea(1)) );
+   call plifill( addr(num_workarea(1)),
+                 '00'x,
+                 stg(num_workarea(1)) );
+   bSwt(2)  = bSwt(1);
+   bSwt(1)  = '0000'bx;
+   prec(2)  = prec(1);
+   scale(2) = scale(1);
+   prec(1),scale(1)=0;
+   end;
+ 
+ /*------------------------------------------------------------------*/
+ /* Convert the result from "internal float" format and return       */
+ /* the result and the descriptor.                                   */
+ /*------------------------------------------------------------------*/ 
+ call plimove( pDRes, pW, stg(desc_work) );
+ call move_result( pRes );
+ return;
+
+ /*-----------------------------------*/
+ /* Raise error conditions            */
+ /*   if enabled by caller            */
+ /*-----------------------------------*/
+ signal_CONV: ;
+   if M_Conversion then do;
+     /*--------------------------------------------------------------*/
+     /* "Signal CONVERSION;"                                         */
+     /* This can't be done via SIGNAL statement due to the need to   */
+     /* pass a parameter for the ONSOURCE and ONCHAR information.    */
+     /*--------------------------------------------------------------*/
+ (conversion):    
+     call CONV( oncode_conv, addr(conv_parms) );
+     GOTO retry;                     /* Retry conversion             */
+     /* COMMENT: "If the ONSOURCE or ONCHAR pseudovariable is used,  */
+     /*          the program retries the conversion on return from   */
+     /*          the ON-unit.  If the error is not corrected, the    */
+     /*          program loops.  If these pseudovariables are not    */
+     /*          used, the ERROR condition is raised."               */
+     /*             -SC26-3114-2, p.313,                             */
+     /*          SIG checks to see whether these pseudovariables     */
+     /*          have been used, and raises ERROR if not.  If the    */
+     /*          code returns here, they have been used.             */
+     end; /* M_CONVERSION */
+   else do;                            /* CONVERSION disabled        */
+     /* COMMENT: "If the CONVERSION condition is raised and it is    */
+     /*          disabled, the program is in error."                 */
+     /*          (I.E. The behavior is undefined.)                   */
+     /*               -SC26-3114-2, p.313.                           */
+     /*          Our default action is to return zero.               */
+     end;
+   return;
+ 
+ signal_OFL: ;
+   revert OVERFLOW;                                           /*0.9.8*/
+   (overflow):      if M_Overflow then signal OVERFLOW;
+   return;
+
+ signal_FOFL: ;
+   revert FIXEDOVERFLOW;                                      /*0.9.8*/
+   (fixedoverflow): if M_Fixedoverflow then signal FIXEDOVERFLOW;
+   return;
+
+%page;
+ /*------------------------------------------------------------------*/
+ /* Scan the input string to determine base, scale, mode, and        */
+ /* precision.  The length of the data cannot be zero.               */
+ /* The problem is we can't encode it until we know if it's          */
+ /* decimal or binary.                                               */
+ /*------------------------------------------------------------------*/
+ get_attr: proc(n);
+   dcl   n                   fixed bin(7);
+   dcl   state               fixed bin(7)        init(0);
+   dcl   i                   fixed bin(7);
+
+ l1: do while(lD>0);
+     cv = pD->C1;                      /* Get next character         */
+     conv_onchar = pD;                 /* Set up ONCHAR for CONV     */
+     i = index( char_val, cv );        /* Get char class             */
+     if i=0 then goto signal_CONV;
+     cc = substr(char_class,i,1);
+
+     i = i-1;                          /* Character value if digit   */
+     pD = pD+1;
+     lD = lD-1;                        /* Count characters remaining */
+
+     select(state);
+
+       when(0) do;                     /* Initial state              */
+         if cv='-' then substr(bSwt(n),1,2) = '11'b;
+         else if cv='+' then substr(bSwt(n),1,1) = '1'b;
+         else if cc='D' then prec(n) = 1;
+         else if cc=' ' then /*ignore*/ ;
+         else if cv='.' then substr(bSwt(n),6,1) = '1'b;
+         else goto signal_CONV;        /* Error                      */
+         if cc^=' ' then state = 1;                           /*0.9.3*/
+         end; /* 0 */
+
+       when(1) do;                     /* First character scanned    */
+         select(cc);
+           when('D') do;               /* Digit                      */
+	     if prec(n)<=18 then do;                         /*0.9.8*/
+               prec(n) = prec(n)+1;      /* Bump precision           */
+               if substr(bSwt(n),6,1)='1'b /* If decimal point       */
+               then scale(n) = scale(n)+1; /*   then bump scale      */
+	       /* NOTE: This drops digits after 18...                */
+	       end; /* prec */                                /*0.9.8*/
+             end; /* 'D' */
+           when('.') do;               /* Decimal point              */
+             if substr(bSwt(n),6,1)='1'b /* Duplicate decimal point  */
+             then goto signal_CONV;      /*   then error             */
+             else substr(bSwt(n),6,1) = '1'b;
+             end; /* '.' */
+           when('E') do;               /* Start of exponent          */
+             substr(bSwt(n),4,1) = '1'b; /* Indicate Float           */
+             state = 3;                  /* Begin exponent scan      */
+             end; /* 'E' */
+           when('I') do;               /* End of imaginary component */
+             substr(bSwt(n),5,1) = '1'b;    /* Indicate imaginary    */
+             if lD>0 then goto signal_CONV; /* Must be last character*/
+             end; /* 'I' */
+           when('B') do;               /* End of binary data         */
+             substr(bSwt(n),3,1) = '1'b; /* Indicate Binary          */
+             state = 2;                  /* Only 'I' allowed next    */
+             end; /* 'B' */
+           when(' ') do;               /* End of field               */
+             state = 5;
+             end; /* ' ' */
+           when('S') do;               /* Sign ends real component   */
+             if lD=0 | n=2 then goto signal_CONV;/* Can't be last cha*/
+             pD = pD-1;                /* 'Push' sign back           */
+             lD = lD+1;
+             leave l1;
+             end; /* 'S' */
+           otherwise goto signal_CONV; /* Invalid character          */
+           end; /* select */
+         end; /* 1 */
+
+       when(2) do;                     /* 'I', sign,  or nothing     */
+         /* Sign valid here in e.g. '111b+111bi'                     */
+         if cc='S' then do;            /* Real part of imag bin data */
+           if lD=0 | n=2 then goto signal_CONV;/* Can't be last char */
+           pD = pD-1;                  /* 'Push' sign back           */
+           lD = lD+1;
+           leave l1;
+           end; /* 'S' */
+         if cc='I' then do;
+           substr(bSwt(n),5,1) = '1'b; /* Indicate imaginary         */
+           if lD>0 then goto signal_CONV;   /* Must be last character*/
+           end;
+         else goto signal_CONV;
+         end; /* 2 */
+
+       when(3) do;                     /* Begin exponent             */
+         if cv='-' then substr(bSwt(n),9,2) = '11'b;
+         else if cv='+' then substr(bSwt(n),9,1) = '1'b;
+         else if cc='D' then /*continue*/ ;
+         else goto signal_CONV;        /* Invalid character          */
+         state = 4;                    /* To continue exponent       */
+         end; /* 3 */
+
+       when(4) do;                     /* Continue exponent          */
+         select(cc);
+           when('I') do;               /* End of imag component      */
+             substr(bSwt(n),5,1) = '1'b; /* Indicate imaginary       */
+             if lD>0 then goto signal_CONV; /* Must be last character*/
+             end; /* 'I' */
+           when('B') do;               /* End of binary value        */
+             substr(bSwt(n),3,1) = '1'b; /* Indicate Binary          */
+             state = 2;                  /* Only 'I' allowed next    */
+             end; /* 'B' */
+           when('S') do;               /* End of real component      */
+             if lD=0 then goto signal_CONV; /* Can't be last characte*/
+             pD = pD-1;                /* 'Push' sign back           */
+             lD = lD+1;
+             leave l1;
+             end; /* 'S' */
+           when(' ') do;               /* End of field               */
+             state = 5;                /* Only blanks can follow     */
+             end; /* ' ' */
+           when('D') /*continue*/ ;
+           otherwise goto signal_CONV; /* Error                      */
+           end;/* select */
+         end; /* 4 */
+
+       when(5) do;                     /* Trailing blanks            */
+         if ccª=' ' then goto signal_CONV;
+         end; /* 5 */
+
+       end; /* select*/
+
+     end l1; /* do while */
+
+   end get_attr;
+
+ /*------------------------------------------------------------------*/
+ /* The data is now more-or-less validated and its attributes are    */
+ /* determined  Make a second pass to encode the value.              */
+ /*------------------------------------------------------------------*/
+ encode: proc(n);
+   dcl   n                   fixed bin(7);
+   dcl   state               fixed bin(7)        init(0);
+   dcl   i                   fixed bin(7);
+   dcl   digit               fixed bin(7)        init(0);     /*0.9.8*/
+
+ l2: do while(lD>0);
+     cv = pD->C1;                      /* Get next character         */
+     conv_onchar = pD;                 /* Set up ONCHAR for CONV     */
+     pD = pD+1;
+     lD = lD-1;                        /* Count characters remaining */
+     i = index( char_val, cv );        /* Get char class             */
+     if i=0 then goto signal_CONV;
+     cc = substr(char_class,i,1);
+     i = i-1;                          /* Character value if digit   */
+
+     select(state);
+
+       when(0) do;                     /* Initial state              */
+         if cc='S' then /*ignore sign*/ ;
+         else if cc='D' then do;
+           if substr(bSwt(n),3,1) = '1'b  /* Binary                  */
+           then do;
+             if i>1 then goto signal_CONV;
+             end; /* binary */
+           num_workarea.IF_frac(n) = i;
+           state = 1;
+           end;
+         else if cc='.' | cc=' ' then /*ignore*/ ;
+         else goto signal_CONV;        /* Error - SNO                */
+         end; /* 0 */
+
+       when(1) do;                     /* First character scanned    */
+         select(cc);
+           when('D') do;               /* Digit                      */
+             digit = digit+1;                                 /*0.9.8*/
+             if substr(bSwt(n),3,1) = '1'b  /* Binary                */
+             then do;
+               if i>1 then goto signal_CONV;
+	       /* NOTE: This can drop three digits of precision      */
+	       /*       from a floating point value                  */
+             /*if digit<18 then                               /*0.9.8*/
+	       num_workarea.IF_frac(n) = num_workarea.IF_frac(n)*2+
+                                         dec(i);
+               end; /* binary */
+             else do;                  /* Decimal                    */
+               if digit<18 then                               /*0.9.8*/
+               num_workarea.IF_frac(n) = num_workarea.IF_frac(n)*10+
+                                         dec(i);
+               else do;                                       /*0.9.8*/
+	         if ^substr(bSwt(n),4,1)                      /*0.9.8*/
+		 then goto signal_FOFL;                       /*0.9.8*/
+	         /* NOTE: If this is a FIXED value we raise          */
+	         /*       FIXEDOVERFLOW.  If FLOAT the result is     */
+		 /*       silently truncated (not the best option)   */
+		 end;                                         /*0.9.8*/
+               end; /* decimal */
+             end; /* 'D' */
+           when('.','I','B',' ') /*ignore*/ ;
+           when('E') state=2;          /* Start of exponent          */
+           when('S') return;           /* End of real component      */
+           otherwise goto signal_CONV; /* Invalid character          */
+           end;
+         end; /* 1 */
+
+       when(2) do;                     /* Begin exponent             */
+         if cc='S' then /*ignore exponent sign*/ ;
+         else if cc='D' then do;       /* Digit                      */
+           /* Exponent always decimal, even if value is binary       */
+           num_workarea.IF_exp(n) = i;
+           end; /* digit */
+         state = 3;
+         end; /* 2 */
+
+       when(3) do;                     /* Parse exponent             */
+         if cc='S' then leave l2;      /* End of real component      */
+         else if cc='D' then do;       /* Exponent digit             */
+           /* Exponent always decimal, even if value is binary       */
+           num_workarea.IF_exp(n) = num_workarea.IF_exp(n)*10+i;
+           end; /* digit */
+         else if cc='B' | cc='I' | cc=' ' then /*ignore*/ ;
+         else goto signal_CONV;        /* SNO Invalid character      */
+         end; /* 3 */
+
+       end; /* select*/
+
+     end l2; /* do while */
+   end encode;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* Move Intermediate data to the result field.                      */
+ /* COMMENT: As of 0.9.6, NPO always returns a COMPLEX result.       */ 
+ /*------------------------------------------------------------------*/
+ move_result: proc( pTgt );
+   dcl   pTgt                ptr;      /* ->Target Data              */
+   call move(1);
+   call move(2);                                              /*0.9.6*/
+   return;                                                    /*0.9.6*/
+   /* pTgt is updated                 */
+   if (pW->xb_flgs&'80'bx)='80'bx      /* Complex result?            */
+   then call move(2);                  /* Yes, move imaginary result */
+   return;
+
+ move: proc(n);
+
+   dcl   n                   fixed bin(7);
+   dcl  1 res                union,                           /*0.9.8*/
+          5 FltVal           float bin(64),
+          5 BinVal           fixed bin(31),
+          5 DecVal           fixed dec(18);
+   dcl  (p,q)                fixed bin(31);
+
+   p = prec(n);
+   DecVal = 0;                                                /*0.9.8*/
+ 
+   select( pW->XB_id );                /* Result data type           */
+
+     when( '41'x ) do;                 /* FIXED BINARY result        */
+       q = D2B(scale(n)) - pW->XB_scale;
+       BinVal = num_workarea.IF_frac(n);
+       if qª=0 then BinVal = BinVal/2**q;                  /*20090820*/
+       pTgt->FB31 = BinVal;
+       pTgt = pTgt+stg(null()->FB31);
+       end; /* FIXED BINARY */
+
+     when( '42'x ) do;                 /* FIXED DECIMAL result       */
+       q = scale(n) - pW->XD_scale;
+       DecVal = num_workarea.IF_frac(n);
+       if qª=0 then DecVal = DecVal/10**q;                 /*20090820*/
+       DecVal = DecVal+0;               /* Force positive       1.3.2*/   
+       pTgt->FD18 = DecVal;
+       pTgt = pTgt+stg(null()->FD18);
+       end; /* FIXED DECIMAL */
+
+     when( '43'x, '44'x ) do;          /* FLOAT result               */
+       /* 'SCALE'  is the number of fractional digits.               */
+       /* 'IF_EXP' is the specified exponent.                        */
+       q = num_workarea.IF_exp(n)-scale(n); /* Convert 'intern float'*/
+/* Following two lines restored 2024-07-15 for 1.3.1            (587)*/
+       if abs(q)>hbound(tenpower(1))                          /*0.9.8*/
+       then q = q - 1*sign(q);                                /*0.9.8*/
+       FltVal = num_workarea.IF_frac(n);/* Convert characteristic    */
+       /* Try to get the most exact answer we can                    */
+       /* under the circumstances                                    */
+       do while(q^=0);                                        /*0.9.8*/
+         if abs(q)<=16 then do;                               /*1.0.1*/
+           if q<0 then FltVal = FltVal / tenpower(-q);     /*20090910*/
+           else        FltVal = FltVal * tenpower(q);      /*20090910*/
+	   q=0;                                               /*0.9.8*/
+           end; /* abs(q) */                               /*20090910*/
+	 else do;                                             /*0.9.8*/  
+           if q<0 then do;                                    /*1.0.1*/
+             FltVal = FltVal / tenpower(16);                  /*1.0.1*/
+             q = q+16;                                        /*1.0.1*/
+             end;                                             /*1.0.1*/
+           else do;                                           /*1.0.1*/
+             FltVal = FltVal * tenpower(16);                  /*1.0.1*/
+             q = q-16;                                        /*1.0.1*/
+             end;                                             /*1.0.1*/
+	   end; /* q>16 */                                    /*0.9.8*/
+         end; /* qª=0 */                                   /*20090910*/
+	       
+       pTgt->LB64 = FltVal;
+       pTgt = pTgt+stg(null()->LB64);
+       end; /* FLOAT */
+
+     end; /* select */
+
+    end move;
+
+   end move_result;
+
+ /*------------------------------------------------------------------*/
+ /* Table lookup - CEIL(n*3.32) table Decimal to Binary digits       */
+ /*------------------------------------------------------------------*/
+ D2B: proc(n) returns( fixed bin(15) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   if w<1 | w>hbound(n_3dot32,1) then return(0);
+   i = n_3dot32(w);
+   if neg then i=-i;
+   return(i);
+   end D2B;
+
+ %page;
+
+ %include LOCDESC;
+ %include DESC;
+ %include N3DOT32;
+ %include INTFLT;
+ %include ONCODE;
+ %include tenpower;                                        /*20090910*/
+
+ end NumVal;

@@ -1,0 +1,254 @@
+ /* Any                                                              */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 1.0.1         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Any   (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Feb, 2023                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Any                                     */
+ /*                                                                  */
+ /*      Function:      PL/I Array-Handling builtins:                */
+ /*                       ANY                                        */
+ /*                       ALL                                        */
+ /*                                                                  */
+ /*      Function: ANY and ALL take a one-dimensional array (vector) */
+ /*                argument. Array elements are converted to bit     */
+ /*                strings using normal PL/I rules. Result is a bit  */
+ /*                string with length equal to the length of a       */
+ /*                converted array element.                          */
+ /*                                                                  */
+ /*                ANY: Bits will be '1'b if the corresponding bit   */
+ /*                     in any array element is '1'b, else '0'b.     */
+ /*                     ANY is an OR operation.                      */
+ /*                ALL: Bits will be '1'b if the corresponding bit   */
+ /*                     in all array elements is '1'b, else '0'b.    */
+ /*                     ALL is an AND operation.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                bs = ANY(f,pDesc,pData,iLen);                     */
+ /*                                                                  */
+ /*                bs: returned bit string (always full bytes res)   */
+ /*                f:  function - 0=ANY, 1=ALL                       */
+ /*                pDesc: addr(array descriptor)                     */
+ /*                pData: addr(array data)                           */
+ /*                iLen: bit length of result vector                 */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*         PL/I descriptor formats.                                 */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ Any: proc( fun, pDesc, pData, iLen, pRes )                             
+      options( linkage(system) )
+      ext( '_pli_Any' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      fun                 fixed bin(31);/* Function code         */
+                                            /* 0=ANY                 */
+                                            /* 1=ALL                 */
+ dcl      pDesc               ptr;     /* -> Source array descriptor */
+ dcl      pData               ptr;     /* -> Array address           */
+ dcl      iLen                fixed bin(31); /* Result length        */
+ dcl      pRes                ptr;     /* -> Result data             */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl      n                   fixed bin(31);
+ dcl      bytes               fixed bin(31);
+ dcl      p                   ptr;
+ dcl      pElem               ptr; 
+
+%include CONDMASK;
+     
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      UNIMPLEMENTED       condition;                      /*1.2.1*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      VarStr              char(0)       varying     based;
+ dcl      FB15                fixed bin(15)       based;
+ dcl      B64                 bit(64)             based;
+    
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      GetFlags            entry
+                              external( '_pli_GetFlags' )
+                              returns( bit(16) )
+                              options( LINKAGE(SYSTEM) );
+ dcl      SetFlags            entry( bit(16) )
+                              ext( '_pli_SetFlags' )
+                              options( linkage(system) );
+ dcl      Aggio               entry( ptr, ptr, ptr, entry )
+                              ext( '_pli_AggIO' );
+ /* Conversion routines */
+ dcl      cab                 entry( ptr, ptr, ptr )
+                              ext('_pli_CAB')
+                              options(  linkage(system));
+ dcl      ccb                 entry( ptr, ptr, ptr )
+                              ext('_pli_CCB')
+                              options(  linkage(system));
+ dcl      convert             entry(ptr,ptr,ptr,ptr)
+                              options( linkage(system) )
+                              ext( '_pli_Cnvt' );           
+ 
+%page; 
+ /*-------------------------*/
+ /* Program Entry           */
+ /*-------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ M_LibMod = '1'b;                      /* Indicate 'Library'    0.9.8*/
+ call SetFlags( string(cond_mask) );   /* Set for called rtn    0.9.8*/
+
+ bytes = (iLen+7)/8;                   /* Result length in bytes (x4)*/
+ if mod(bytes,4)^=0
+ then bytes = bytes + 4-mod(bytes,4);
+ if fun=0 then call plifill(pRes,'00'x,bytes);    /* Init result area*/
+ else          call plifill(pRes,'FF'x,bytes);
+
+ pElem = auto(bytes);                   /* Scratch area              */
+
+ /*------------------------------------------------------------------*/
+ /* Aggio will call the processing routine once for each array elem  */
+ /*------------------------------------------------------------------*/
+ /* sysnull() here is the array name */
+ call Aggio(pDesc,pData,sysnull,process);    /* Do the thing         */
+ return;
+
+ process: proc(pData,pDesc,pName);  
+   dcl    pData               ptr;      /* ->Element data            */
+   dcl    pDesc               ptr;      /* ->Element descriptor      */
+   dcl    pName               ptr;      /* ->Element name            */
+   call get_elem(pData,pDesc,pName);    /* Process all array elements*/
+   call bool;                           /* Call bool to perform op   */ 
+   end process;
+
+ /* Get one array element as bit string. This would be an excellent  */
+ /* place for a 'CONVERT' builtin.                                   */
+ get_elem: proc(pData,pDesc,pName) returns(ptr);
+   dcl    pData               ptr;      /* ->Element data            */
+   dcl    pDesc               ptr;      /* ->Element descriptor      */
+   dcl    pName               ptr;      /* ->Element name            */
+   dcl   (pDat,pDsc)          ptr;
+   dcl    p                   ptr;
+   dcl    n                   fixed bin(31);
+   dcl    tmp_bits            bit(64)   varying;
+
+   call plifill(pElem,'00'x,bytes);     /* Clear result              */
+   pDat = pData;                        /* Make copies of arguments  */
+   pDsc = pDesc;
+   select(pDsc->XB_id);
+     when( '10'x, '11'x ) do;           /* Character conversion      */
+       call convert_char(pDsc,pDat,pElem,iLen);
+       end; /* character */
+     when('20'x) do;                    /* Nonvarying Bit string     */
+       substr(pElem->B64,1,iLen) = 
+         substr(pDat->B64,pDsc->ST_bo+1,iLen);
+       end; /* nonvarying bit string */ 
+     when('21'x) do;                    /* Varying Bit string        */
+       n = pDat->FB15;                  /* String length (bits)      */
+       n = (n+7)/8;                     /* String length(bytes)      */
+       if n=0 then return;
+       p = pDat + stg(FB15);
+       call plimove(pElem,p,n);
+       end; /* varying bit string */ 
+     when('45'x, '46'x, '47'x) do;      /* PICTURED data             */
+       signal condition(UNIMPLEMENTED);
+       stop;
+       end; /* PICTURE */
+     when('41'x, '42'x, '48x',          /* FIXED BINARY/FIXED DECIMAL*/
+          '43'x, '44'x )                /* FLOAT BINARY/DECIMAL      */
+       do;
+         call CAB(pData,pDesc,addr(tmp_bits));
+         call plimove(pElem,addr(tmp_bits)+stg(VarStr),bytes);
+       end; 
+     /* "otherwise" should be excluded by compiled code */
+     otherwise signal error;  
+     end; /* select */
+   end get_elem;
+
+ /* Efficiently AND or OR bit strings using IAND, IOR                */
+ /*   Fun 0=ANY                                                      */
+ /*   Fun 1=ALL                                                      */
+ /* Both strings aligned; any trailing unused bits are zero          */
+ bool: proc;
+   dcl    i                   fixed bin(31);
+   dcl   (pIn,pOut)           ptr;
+   dcl    uFB32               fixed bin(32)  unsigned  based;
+   dcl    uFB8                fixed bin(8)   unsigned  based;
+   i    = bytes;
+   pIn  = pElem;
+   pOut = pRes;
+   do while(i>0);
+     /* Source and target always aligned multiple of four bytes      */
+     if i>0 then do;
+       if fun=0 then pOut->uFB32 = IOR(pOut->uFB32,pIn->uFB32);
+       else          pOut->uFB32 = IAND(pOut->uFB32,pIn->uFB32);
+       i=i-4;
+       pIn  = pIn+4;
+       pOut = pOut+4;
+       end; /* >0 */
+     end; /* do while */
+   end bool;
+
+ /* Convert character to bit using library routine */
+ convert_char: proc(pDesc,pData,pRes,lRes);
+   dcl   (pDesc,pData,pRes)   ptr;
+   dcl    lRes                fixed bin(31);
+   dcl  1 source_loc_desc,
+          5 source_addr       ptr,
+          5 source_desc       ptr;
+   dcl  1 dest_loc_desc,
+          5 dest_addr         ptr,
+          5 dest_desc         ptr;
+   dcl  1 dest_descriptor     like pli_ded_STR;
+   
+   string(dest_descriptor) = '00'x;     /* Init destination desc     */
+   dest_descriptor.ST_id  = '20'x;      /* Nonvarying bit            */
+   dest_descriptor.ST_len = lRes;
+   source_addr = pData;
+   source_desc = pDesc;
+   dest_addr   = pElem;
+   dest_desc   = addr(dest_descriptor);
+   call ccb( addr(source_loc_desc),
+             addr(dest_loc_desc),
+             sysnull
+           );
+   end convert_char;
+
+ /* Convert numeric data to bin using library routine */
+ convert_to_bin: proc( baddr, bdesc, saddr, sdesc )
+                 returns( fixed bin(31) ); 
+   dcl   (baddr,bdesc,saddr,sdesc)
+                              ptr;
+   /* convert allows complex arguments, which are ignored here */
+   dcl  1 bin_res,
+          5 bin_real          fixed bin(31),
+          5 bin_imag          fixed bin(31);
+   dcl    bin_desc            like pli_ded_XB     based(bdesc);
+
+   call plifill(addr(bin_desc),'00'x,stg(bin_desc));
+   bin_desc.XB_id   = '41'x;
+   bin_desc.XB_prec = 31;   
+   call convert(saddr,sdesc,addr(bin_res),addr(bin_desc));
+   bin_real = ISLL(bin_real,31-iLen);
+   return(bin_real);
+   end convert_to_bin;
+
+  %include desc;
+
+  end Any;  
+

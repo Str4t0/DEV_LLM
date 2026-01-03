@@ -1,0 +1,62 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>About the Iron Spring PL/I Library [Linux]</title>
+</head>
+<body>
+<h1>About the Iron Spring PL/I Library [Linux]</h1>
+The Iron Spring PL/I Library is copyright Iron Spring Software, 2023.<p>
+The complete library is released under the terms of the 
+<a href="lib/lgpl.html">Gnu Lesser General Public License (LGPL)</a>.
+Library heap manager (heap.pli) based on code Copyright (c) 2001-2006 Wolfram Gloger:
+His copyright notice reads:
+<blockquote><i>
+Permission to use, copy, modify, distribute, and sell this software
+and its documentation for any purpose is hereby granted without fee,
+provided that (i) the above copyright notices and this permission
+notice appear in all copies of the software and related documentation,
+and (ii) the name of Wolfram Gloger may not be used in any advertising
+or publicity relating to the software.
+</i></blockquote>
+
+<p>
+In the following, &lt;release&gt; represents the current release.  For this
+version that is pli-1.4.0.
+<p>
+This document describes the details of the Linux version of the library.  
+For the OS/2 version see <a href="./library_os2.html">library_os2</a>.
+<p>
+The supplied makefile will build a static object library in &lt;release&gt;/lib/libprf.a.
+
+The complete library sources are found in &lt;release&gt;/lib/source (PL/I source code),
+&lt;release&gt;/lib/source/asm (OS-independent assembler source code and includes), and &lt;release&gt;/lib/include
+(PL/I include files).
+Operating system dependent sources are in &lt;release&gt;/lib/source/OS2 and &lt;release&gt;/lib/source/linux  To modify the library, make your changes to the
+source, <b>cd</b> to &lt;release&gt;/lib, and type <b>make linux</b>.
+<p>
+The startup procedure "_pli_Start" (&lt;release&gt;/lib/asm/plistart.asm) needs to be linked 
+with the main procedure, and references the external symbol "_pli_Main", which is defined for each
+OPTIONS(MAIN) procedure.  The symbol 'main' is defined as an alias for "_pli_Start".
+<p>
+The directory &lt;release&gt;/lib/include contains definitions of the data areas used by the library, with descriptive 
+comments.  The following might be of particular interest:
+<dl>
+<dt>desc.inc<dd>Definitions of PL/I "data descriptor" formats.
+<dt>dsa.inc<dd>The PL/I standard stack frame header for a procedure or BEGIN-block.
+<dt>errno.inc<dd>Preprocessor labels for kernel error return codes (like errno.h).
+<dt>fcb.inc<dd>The PL/I "file control block".
+<dt>gbl.inc<dd>Global data used by PL/I program and library.  Note the this control block
+contains eight bytes reserved for user data.
+<dt>plitabs.inc<dd>The definition of the stream output "tabs" control block.  This is intended for
+the use of user programs.<br>
+See the IBM PL/I for MVS and VM Programmers' Guide for a description of PLITABS.
+<dt>sig_txt.inc<dd>Text labels for system signals.
+<dt>stat.inc<dd>Preprocessor labels for file permissions (from sys/stat.h).
+</dl>
+<hr width="25%">
+<p>
+Iron Spring PL/I version 1.4.0, 26 May, 2025
+
+</body>
+</html>
+

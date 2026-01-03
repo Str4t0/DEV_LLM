@@ -1,0 +1,762 @@
+ /* _pli_DynDesc                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_DynDesc (PL/I runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2005                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_DynDesc                                 */
+ /*                                                                  */
+ /*      Function:      Process adjustable descriptors.              */
+ /*                                                                  */
+ /*      Adjustable data is data not declared with integer constants */
+ /*      as bounds or lengths.                                       */
+ /*                                                                  */
+ /*      IBM PL/I generates garbage when adjustable string lengths   */
+ /*      are negative or when upper bounds are less than lower       */
+ /*      bounds.  We will at least try to generate something good.   */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Descriptor formats.                          */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     size = _pli_DynDesc( aStat, aDyn )           */
+ /*                     aStat = Original address of Loc/Desc pairs   */
+ /*                     aDyn  = Current address of Loc/Desc pairs    */
+ /*                     size is cumulative size requireement.        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*        Add support for UNIONs.                                   */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2022-10-23: Initialization of allocated areas.       1.2.0*/
+ /*        2022-10-04: ANALYZE now called by reference.         1.0.0*/
+ /*                    Allow null 2nd arg. Length ret in EAX    1.0.0*/
+ /*        2021-04-23: Convert to package, consolidate descr  0.9.10e*/
+ /*                    analysis here with code from ctl       0.9.10e*/
+ /*        2019-07-22: Fix structure alignment problems       0.9.10c*/
+ /*        2014-10-27: FIXED DECIMAL OPTIONS(IBM)               0.9.6*/
+ /*        2009-05-19: Fix 'adj_str_offset' logic.               0.7c*/
+ /*                                                                  */
+ /********************************************************************/
+ DynDesc: package exports( pli_DynDesc, pli_Analyze,        /*0.9.10e*/
+                           pli_DynDesc1 );                  /*0.9.10e*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     VarStr              char(0)   varying   based;
+ dcl     FB31                fixed bin(31)       based;
+ dcl     PTR                 ptr                 based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*------------------------------------------------------------------*/
+ /*  _pli_DynDesc: Compute storage requirement for                   */
+ /*                adjustable data.                                  */
+ /*      DynDesc is called at the end of block initialization when   */
+ /*      any adjustable descriptors need to be processed.  It is     */
+ /*      passed the address of a list of Locator/Descriptor pairs    */
+ /*      for adjustable data followed by -1 ('FFFFFFFF'x).           */
+ /*      1. Walk the list of L/D pairs which have been completed     */
+ /*         by initialization and correct offsets and multipliers.   */
+ /*      2. Compute the size of each element and store in the        */
+ /*         address portion of the L/D.                              */
+ /*      3. Return cumulative total size requirement to caller.      */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*            +-------------------------+                           */
+ /*      pLoc->| addr(data_1) [reserved] |                           */
+ /*            +-------------------------+                           */
+ /*            | addr(descriptor_1)      | ---+                      */
+ /*            +-------------------------+    |                      */
+ /*                    [repeats]              |                      */
+ /*            +-------------------------+    |                      */
+ /*            |      (4)'FF'x           |    |                      */
+ /*            +-------------------------+    |                      */
+ /*                                           |                      */
+ /*            +-------------------------+    |                      */
+ /*            | Descriptor_1            | <--+                      */
+ /*            +-------------------------+                           */
+ /*
+ /*-------------------------------------------------------*/
+
+ pli_DynDesc: proc(pLoc)
+              returns( fixed bin(31) )
+              options( linkage(system) )
+              ext( '_pli_DynDesc' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pLoc                ptr;      /* addr(first loc/desc)       */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pL                  ptr;
+ dcl     tot_size            fixed bin(31)       init(0);
+ dcl     cur_size            fixed bin(31);
+ dcl   1 ElemLength,
+         5 ElemByteLength    fixed bin(31),
+         5 ElemBitLength     fixed bin(7);
+ 
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl    (addr,max,mod,null,stg,sysnull)
+                              builtin;
+
+ pL = pLoc;
+ do while( pL->FB31ª=-1 );             /* Walk chain                 */
+   call pli_Analyze( pL->pDesc, addr(ElemLength) );         /*0.9.10e*/
+   /* COMMENT: Since 'pData' in the locator/descriptor contains no   */
+   /*          valid data at this point, this field is used to       */
+   /*          contain the computed data length through the          */
+   /*          allocation process.                                   */
+   /*                                                                */
+   cur_size = ElemByteLength;          /* Get actual size            */
+   if ElemBitLength>0
+   then cur_size = cur_size+1;
+   cur_size = (cur_size+7)/8;          /* Round up each element      */
+   cur_size = cur_size*8;
+   addr(pL->pData)->FB31 = cur_size;   /* Save size req in 'address' */
+   tot_size = tot_size + cur_size;     /* Bump total                 */
+   pL = pL + stg(pL->LocDesc);         /* ->Next_Entry               */
+   end; /* do while */
+
+ return(tot_size);                     /* Return total storage req.  */
+
+ end pli_DynDesc;
+
+ /*-------------------------------------------------------*/
+ /*   pli_DynDesc1: Update storage addresses for          */
+ /*                 adjustable data.                      */
+ /*                                                       */
+ /*   pli_DynDesc1 is passed the base address of          */
+ /*   allocated storage and the address of a list of      */
+ /*   pointers to locator/descriptors. The locator        */
+ /*   portion contains the size of this element. We       */
+ /*   compute the address and replace the size.           */
+ /*                                                       */
+ /*      Input:                                           */
+ /*            +-------------------------+                */
+ /*      pLoc->| storage base address    |                */
+ /*            +-------------------------+                */
+ /*            | pList                   |                */
+ /*            +-+-----------------------+                */
+ /*              |   +-------------------------+          */
+ /*              +-> | length/addr *see note   |          */
+ /*                  +-------------------------+          */
+ /*                  | addr(descriptor_1)      |          */
+ /*                  +-------------------------+          */
+ /*                          [repeats]                    */
+ /*                  +-------------------------+          */
+ /*                  |      (4)'FF'x           |          */
+ /*                  +-------------------------+          */
+ /*                                                       */
+ /*  *note: On input, this field contains the length of   */
+ /*         this element assigned by DYNDESC.             */
+ /*         On output it will contain the assigned        */
+ /*         address of the field.                         */
+ /*                                                       */
+ /*-------------------------------------------------------*/
+
+ pli_DynDesc1:proc(base,pList)
+              returns( fixed bin(31) )
+              options( linkage(system) )
+              ext( '_pli_DynDesc1' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      base                fixed bin(31);  /* addr(adjustable stg) */
+ dcl      pList               ptr;            /* ->Relocate list      */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl      curr_len            fixed bin(31); 
+ dcl      pL                  ptr;
+ dcl      pX                  ptr;
+ dcl      n                   fixed bin(31);                  /*1.2.0*/
+
+ pL = pList;
+
+ do while(pL->FB31^=-1);                /* List is terminated by -1  */
+   curr_len = pL->FB31;                 /* Length of this element    */
+   pL->FB31 = base;                     /* Addr passed by value      */
+   /* Initialize AUTO area header */
+   pX = pL->pDesc;                      /* ->Descriptor         1.2.0*/
+   if pX->PC_id   = '50'x &             /*   Program control    1.2.0*/
+      pX->PC_type = '0004'x             /*   AREA               1.2.0*/
+   then do;                                                   /*1.2.0*/
+     n = pX->PC_size;                   /* Get size of area     1.2.0*/
+     pX = pL->pData;                    /* ->Allocated area     1.2.0*/
+     call plifill(pX,'00'x,stg(area));  /* Clear area header    1.2.0*/
+     pX->area_size = n;                 /* Set STG(area)        1.2.0*/
+     pX->area_end_extent = stg(area);   /* Set CSTG(area)       1.2.0*/
+     end;                                                     /*1.2.0*/     
+(noofl):
+   base = base+curr_len;                /* ->Next available          */
+   pL = pL + stg(locdesc);              /* ->Next list entry         */
+   end; /* do while */
+
+ end pli_DynDesc1;
+ 
+ /*------------------------------------------------------------------*/
+ /*  Analyze a single descriptor                                     */
+ /*  (this is the runtime version of TARGET(TSIZE)/TGTDEF)           */
+ /* Runtime mapping must agree with compiletime mapping              */
+ /* If ANALYZE is called with a null pointer to a returned           */
+ /* length field, an internal field is used and onlt the             */
+ /* length returned in EAX will be supplied.                         */
+ /* COMMENT: ANALYZE uses call-by-value (linkage system), so it      */
+ /*          doesn't matter that it's argument is modified.          */
+ /* NOTE: IBM PL/I for Windows accepts lengths and sizes as coded,   */
+ /*       including negative lengths(!) with no warning.             */
+ /*       PL/I 1.1 may do a better job.                              */
+ /*       "If the length specification is an expression, it is       */
+ /*        evaluated and converted to FIXED BINARY, which must       */
+ /*        be positive"                       -SC26-3114-01, p.25    */
+ /*       (we'll fix up area size)                                   */
+ /*------------------------------------------------------------------*/
+ pli_Analyze: proc(pDesc,pLen)                              /*0.9.10e*/
+              options( linkage(system) )                      /*1.0.0*/
+              returns( fixed bin(31) )                        /*1.0.0*/
+              ext( '_pli_Analyze' );                        /*0.9.10e*/              
+   dcl   pDesc               ptr;       /* ->Descriptor              */
+   dcl   pLen                ptr;       /* ->Returned length         */
+   dcl 1 length              based(pLen),
+         5 ByteLength        fixed bin(31),
+         5 BitLength         fixed bin(7);
+   dcl   pD                  ptr;
+   dcl   i                   fixed bin(31);
+   dcl   length_dummy     (2)fixed bin(31);                   /*1.0.0*/
+
+   if pLen=sysnull then pLen=addr(length_dummy);              /*1.0.0*/
+   pD = pDesc;                         /* ->Descriptor               */
+   ByteLength,BitLength = 0;           /* Clear length               */
+   select( pD->XB_id );
+     /*-------------------------------*/
+     /* String Data                   */
+     /*-------------------------------*/
+     when( '10'x ) do;                 /* Nonvarying CHAR String     */
+       ByteLength = pD->ST_len;        /* Size = Max_Length          */
+       end; /* '10'x */
+     when( '11'x ) do;                 /* VARYING CHAR String        */
+       ByteLength = pD->ST_len +       /* Size = Max_Length          */
+                  stg( null()->VarStr ); /* Plus prefix length       */
+       i = ByteLength / 2;             /* Add alignment              */
+       i = ByteLength - i*2;           /* NOTE: rem(i,2)             */
+       ByteLength = ByteLength + i;
+       end; /* '10'x */
+     when( '20'x ) do;                 /* Nonvarying BIT String      */
+       ByteLength = pD->ST_len/8;      /* Size = Max_Length (bytes)  */
+       BitLength  = mod(pD->ST_len,8); /* (bits)                     */
+       end; /* '20'x */
+     when( '21'x ) do;                 /* VARYING BIT String         */
+       ByteLength = (pD->ST_len+7)/8 + /* Size = Max_Length (bytes)  */
+                  stg( null()->VarStr ); /* Plus prefix length       */
+       end; /* '21'x */
+     /*-------------------------------*/
+     /* Array Data                    */
+     /*-------------------------------*/
+     when( '30'x,'31'x ) do;           /* Array                      */
+       call analyze_array(pD,pLen);
+       end; /* array */
+     /*-------------------------------*/
+     /* Arithmetic Data               */
+     /*-------------------------------*/
+     when( '41'x ) do;                 /* FIXED BINARY               */
+       if      pD->XB_prec<=7  then ByteLength=1;
+       else if pD->XB_prec<=15 then ByteLength=2;
+       else                         ByteLength=4;
+       if (pD->XB_flgs&'80'bx)^='00'bx /* COMPLEX              0.9.10*/
+       then ByteLength = ByteLength*2;
+       end; /* '41'x */
+     when( '42'x ) do;                 /* FIXED DECIMAL              */
+       ByteLength=10;
+       if pD->XD_cplx then ByteLength = ByteLength*2;
+       end; /* '42'x */
+     when( '43'x ) do;                 /* FLOAT BINARY               */
+       if      pD->LB_prec<=23 then ByteLength=4;             /*0.9.3*/
+       else if pD->LB_prec<=49 then ByteLength=8;
+       else                         ByteLength=10;
+       if pD->LB_cplx then ByteLength = ByteLength*2;
+       end; /* '43'x */
+     when( '44'x ) do;                 /* FLOAT DECIMAL              */
+       if      pD->LD_prec<=7  then ByteLength=4;             /*0.9.3*/
+       else if pD->LD_prec<=15 then ByteLength=8;             /*0.9.3*/
+       else                         ByteLength=10;
+       if pD->LD_cplx then ByteLength = ByteLength*2;
+       end; /* '44'x */
+     when( '48'x ) do;                 /* FIXED DEC OPTIONS(IBM)0.9.6*/
+       ByteLength  = (pD->LD_prec+1)/2;                       /*0.9.6*/
+       if mod(pD->LD_prec,2)=0                                /*0.9.6*/
+       then  ByteLength =  ByteLength+1;                      /*0.9.6*/
+       if pD->LD_cplx then ByteLength = ByteLength*2;         /*0.9.6*/
+       end; /* '48'x */                                       /*0.9.6*/
+     /*-------------------------------*/
+     /* Pictured Data                 */
+     /*-------------------------------*/
+     when( '45'x, '46'x ) do;          /* Numeric PICTURE            */
+       ByteLength=pD->NP_size;
+       if pD->NP_cplx then ByteLength = ByteLength*2;
+       end; /* '45'x */
+     when( '47'x ) do;                 /* Character PICTURE          */
+       ByteLength=pD->CP_size;
+       end; /* '47'x */
+     /*-------------------------------*/
+     /* Program Control Data          */
+     /*-------------------------------*/
+     when( '50'x ) do;                 /* Program Control Data       */
+       /* These values should probably be tableized somewhere        */
+       select( pD->PC_type );          /* (all variable)             */
+         when( '0080'x, '0020'x )      /* LABEL, ENTRY               */
+           ByteLength = 8;
+         when( '0040'x )               /* FILE                       */
+           ByteLength = 12;
+         /* NOTE: Area descriptors have a second dword with area size*/
+         when( '0004'x )               /* AREA                  1.1.1*/
+           /* COMMENT: Descriptors passed to ANALYZE should all be   */
+           /*          in AUTO storage.                              */ 
+           if pD->PC_size<20           /* Invalid area size     1.2.0*/
+           then pD->pC_size = 1000;    /*   use the default size1.2.0*/
+           ByteLength = pD->PC_size;                          /*1.1.1*/
+         otherwise
+           ByteLength = 4;
+         end; /* PC_type */
+       end; /* '50'x */
+     /*-------------------------------*/
+     /* Structure Data                */
+     /*-------------------------------*/
+     when( '80'x ) do;                 /* Structure (SDD)            */
+       ByteLength = analyze_struct(pD);
+       end; /* structure */
+     when( '85'x ) /*continue*/ ;      /* Array of structures   0.9.4*/
+     /*-------------------------------*/
+     /* Should Not Occur              */
+     /*-------------------------------*/
+     otherwise do;                     /* Should not occur           */
+       /*display('==>'||heximage(addr(pD->XB_id),1));*/
+       signal ERROR;
+       end;
+     end; /* select */
+
+   /* Return actual length in supplied area, and rounded      /*1.0.0*/
+   /* length in EAX                                           /*1.0.0*/
+   if ByteLength<0 then ByteLength=0;
+   if BitLength<0  then BitLength=0;
+   i = ByteLength;                                            /*1.0.0*/
+   if BitLength>0 then i=i+1;                                 /*1.0.0*/
+   return( i );                                               /*1.0.0*/
+
+ /*-------------------------------------------------------*/
+ /*  Process adjustable Array Descriptor                  */
+ /*-------------------------------------------------------*/
+ analyze_array: proc(pDesc,pLen);
+   dcl   pDesc               ptr;
+   dcl   pLen                ptr;
+   dcl 1 Length              based(pLen),
+         5 ByteLength        fixed bin(31),
+         5 BitLength         fixed bin(7);
+   dcl 1 ElemLength,
+         5 ElemByteLength    fixed bin(31),
+         5 ElemBitLength     fixed bin(7);
+   dcl   pD                  ptr;
+   dcl   pElem               ptr;
+
+   pD = pDesc;                         /* ->Descriptor               */
+   /* Point pElem to whatever follows the array descriptor           */
+   pElem = addr(pD->AR_dims) +
+           pD->AR_dim * stg( null()->pli_ded_Dim );
+   /* Compute size of one array element (element or structure).      */
+   /* If the element is an unaligned bit string, the size is given   */
+   /* in bits, otherwise bytes.                                      */
+   call pli_Analyze( pElem, addr(ElemLength) );             /*0.9.10e*/
+   call fix_adj_array( pD, addr(ElemLength) );
+   Length.ByteLength = ElemByteLength;
+   Length.BitLength  = ElemBitLength;
+
+   end analyze_array;
+
+ /*-------------------------------------------------------*/
+ /*  Process Structure Descriptor.                        */
+ /*  A runtime version of the process described in the    */
+ /*  section "Structure Mapping", SC26-3114-01, pp.49-57. */
+ /*  Compiler procedure 'map_structure' in module 'DCL2'  */
+ /*  is the compile-time analog of this code.             */
+ /*  'map_structure' uses recursion to process minor      */
+ /*  structures.  Here we iterate over the descriptors.   */
+ /*-------------------------------------------------------*/
+ analyze_struct: proc(pSDD) returns( fixed bin(31) );
+   dcl   pSDD                ptr;
+   dcl   pSED                ptr;
+   dcl  (pS,pE,pX)           ptr;
+   dcl   ThisLevel           fixed bin(31);
+   dcl   HighLevel           fixed bin(31)       init(32767);
+   dcl   ThisLevel_Ptr       ptr;
+   dcl   size                fixed bin(31);
+   dcl 1 length,
+          5 ByteLength       fixed bin(31),
+          5 BitLength        fixed bin(7);
+
+   loop1: do forever;                                         /*1.0.0*/
+     /*-------------------------------*/
+     /* Step 1-2: Find first minor    */
+     /* structure with deepest        */
+     /* logical level (n).            */
+     /*-------------------------------*/
+     pSED = pSDD->SDD_pSED;            /* ->First SED                */
+     ThisLevel = 0;
+     do while( '1'b );
+       if pSED->SE_str             &   /* Minor structure            */
+          pSED->SE_lvl > ThisLevel &
+          pSED->SE_lvl < HighLevel
+       then do;
+         ThisLevel_Ptr = pSED;         /* Save addr(first_occurrence)*/
+         ThisLevel     = pSED->SE_lvl; /* Save level                 */
+         end;
+       if pSED->SE_last then leave;    /* Last SED processed         */
+       pSED = addr(pSED->SE_end);      /* ->Next SED                 */
+       end; /* do while */
+
+     /*-------------------------------*/
+     /* Step 3-7: Map all structures  */
+     /* at this level.                */
+     /*-------------------------------*/
+     pS = ThisLevel_Ptr;
+ loop2: do while( '1'b );
+       /*-----------------------------*/
+       /* Map this minor structure    */
+       /*-----------------------------*/
+       pS = map_minor_struct(pS);
+       /*-----------------------------*/
+       /* Step 6:                     */
+       /* Find Next struct at ths lvl.*/
+       /*-----------------------------*/
+       do while( '1'b );
+         if pS->SE_last then leave;    /* Last SED processed         */
+         if pS->SE_lvl = ThisLevel
+         then leave;
+         pS = addr(pS->SE_end);        /* ->Next SED                 */
+         end; /* do while */
+       if pS->SE_last then leave;      /* Last SED cannot be struct. */
+       end loop2;
+
+     /*-------------------------------*/
+     /* Step 8: Repeat until n=1      */
+     /*-------------------------------*/
+     if ThisLevel=1 then leave loop1;  /* Major structure done       */
+     HighLevel = ThisLevel;            /* Go to next-highest level   */
+     end loop1;
+
+   /* The current structure length is contained in a dummy SED       */
+   /* following the 'last' SED.                                      */
+   pS = addr(pSED->SE_end);            /* ->Dummy_SED                */
+   if pS->SE_bitoffset>0 then do;                              /*0.7c*/
+     pS->SE_bitoffset=0;                                       /*0.7c*/
+     pS->SE_offset = pS->SE_offset+1;                          /*0.7c*/
+     end;                                                      /*0.7c*/
+   size = pS->SE_offset;
+   return( size );
+
+   /*-------------------------------------------------------*/
+   /*  Map all elements of a minor structure 'pS'.          */
+   /*  Return the address of the SED for the next minor     */
+   /*  structure at the same logical level, or sysnull.     */
+   /*  This procedure is responsible for storing the        */
+   /*  computed data offset into the adjustable SED.        */
+   /*  (See "Rules for Mapping One Pair", SC26-3114-01, p.50*/
+   /*  This is a corrected version of the code in DCL2,     */
+   /*  the original doesn't correctly justify unaligned     */
+   /*  bit strings of length less that eight.               */
+   /*-------------------------------------------------------*/
+   map_minor_struct: proc(pS) returns( ptr );
+     dcl  pS                 ptr;      /* ->Structure                */
+     dcl  pD                 ptr;      /* ->Descriptor               */
+     dcl (p1,p2)             ptr;      /* ->Elements                 */
+     dcl 1 length1,                    /* LENGTH(first_element)      */
+          5 ByteLength       fixed bin(31),
+          5 BitLength        fixed bin(7);
+     dcl 1 length2,                    /* LENGTH(second_element)     */
+          5 ByteLength       fixed bin(31),
+          5 BitLength        fixed bin(7);
+     dcl (align1,align2)     fixed bin(7);
+     dcl 1 pos,                        /* Current position           */
+          5 byte             fixed bin(31),
+          5 bit              fixed bin(7);
+     dcl 1 pad,
+          5 byte             fixed bin(31),
+          5 bit              fixed bin(7);
+
+     pos.byte = pS->SE_offset;         /* Initialize offsets         */
+     pos.bit  = pS->SE_bitoffset;
+     p1,p2 = addr(pS->SE_end);         /* ->First Element            */
+     /*--------------------------------------------------------------*/
+     /* Extract the offset and alignment information from the        */
+     /* first element, or set of previously matched elements.        */
+     /*--------------------------------------------------------------*/
+     pD = p1->SE_desc;                 /* ->Descriptor               */
+     if ªp1->SE_str then do;           /* If not minor structure     */
+       /* Minor structures that are not arrays do not                */
+       /* have descriptors.                                          */
+       call pli_Analyze(pD,addr(length1));                  /*0.9.10e*/
+       end;
+     else call struct_size(p1,addr(length1));
+     align1 = p1->SE_align;            /* Get alignment requirement  */
+     pS->SE_align = max(pS->SE_align,align1);
+     /*--------------------------------------------------------------*/
+     /* Add length of first element.                                 */
+     /*--------------------------------------------------------------*/
+
+     call bump_pos( addr(pos), addr(length1) ); 
+     p2 = p1;
+ map:
+     do while( '1'b );                 /* Map all elements           */
+       /*------------------------------------------------------------*/
+       /* Find next element or minor structure at the same           */
+       /* logical level as 'p1'.  If none, we're done.               */
+       /*------------------------------------------------------------*/
+       p2 = addr(p2->SE_end);          /* ->Next SED                 */
+       do while( '1'b );
+         if p2->SE_lvl <= p1->SE_lvl
+         then leave;
+         p2 = addr(p2->SE_end);        /* ->Next SED                 */
+         end; /* do while */
+       if p2->SE_lvl ª= p1->SE_lvl     /* End of minor structure     */
+       then leave map;
+       pD = p2->SE_desc;               /* ->Descriptor               */
+       /*------------------------------------------------------------*/
+       /* Extract the offset and alignment information from the      */
+       /* next element.                                              */
+       /*------------------------------------------------------------*/
+       align2 = p2->SE_align;          /* Get alignment requirement  */
+       pS->SE_align = max(pS->SE_align,align2);
+       if ªp2->SE_str then do;         /* If not minor structure     */
+         call pli_Analyze(pD,addr(length2));                /*0.9.10e*/
+         end;
+       else call struct_size(p2,addr(length2));
+       /*------------------------------------------------------------*/
+       /* We now know the alignment, and length of the second        */
+       /* element or minor structure.                                */
+       /*   "Begin the second element of the pair at the first       */
+       /*    valid position following the end of the first element.  */
+       /*    The position depends on the alignment requirement       */
+       /*    of the second element." -SC26-3114-01, p.51"            */
+       /* Compute the next position following 'p1' and the           */
+       /* required padding.                                          */
+       /*------------------------------------------------------------*/
+       /*------------------------------------------------------------*/
+       /* Compute padding required for second element alignment.     */
+       /*------------------------------------------------------------*/
+       pad = 0;
+       if align2>0 then do;            /* Align to byte boundary if  */
+         if pos.bit>0 then do;         /* 'p2' is not an UNALIGNED   */
+           pad.bit  = 8-pos.bit;       /* bit string.                */
+           pos.byte = pos.byte+1;
+           pos.bit  = 0;
+           end;
+         if align2>1 then do;          /* Compute required padding   */
+/*         pad.byte = 8 - mod(pos.byte,8); /* for word, dword, etc.  */
+/*         if pad.byte=8 then pad.byte=0;  /* alignnment in bytes.   */
+/*         if align2ª=8 */
+           if mod(pos.byte,align2)^=0                       /*0.9.10c*/
+           then pad.byte = align2 - mod(pos.byte,align2);   /*0.9.10c*/
+           end;
+         pos.byte = pos.byte+pad.byte;
+         pad.byte = 0;                                      /*0.9.10c*/
+         end; /* align2>0 */
+       /*------------------------------------------------------------*/
+       /* Shift the first element towards the second element.        */
+       /*------------------------------------------------------------*/
+       if pad.byteª=0 | pad.bitª=0     /* Shift first element if req */
+       then do;
+         p1->SE_offset    = p1->SE_offset    + pad.byte;
+         p1->SE_bitoffset = p1->SE_bitoffset + pad.bit;
+         if p1->SE_bitoffset>7 then do;
+           p1->SE_bitoffset  = p1->SE_bitoffset-8;
+           p1->SE_offset     = p1->SE_offset+1;
+           end;
+         end; /* pad */
+       if p2->SE_str
+       then call adj_str_off( p2, addr(pos) );                 /*0.7c*/
+       p2->SE_offset    = pos.byte;
+       p2->SE_bitoffset = pos.bit;
+       /*------------------------------------------------------------*/
+       /* Add length of second element.                              */
+       /*------------------------------------------------------------*/
+       call bump_pos( addr(pos), addr(length2) );
+       length1.ByteLength = pos.byte;  /* Length of combined set     */
+       length1.BitLength  = pos.bit;
+       end map;
+
+     p2->SE_offset    = pos.byte;      /* Set structure length       */
+     p2->SE_bitoffset = pos.bit;
+
+     /*--------------------------------------------------------------*/
+     /* Process adjustable array of structures.                      */
+     /*--------------------------------------------------------------*/
+     if pS->SE_array then do;          /* Adjustable array of struct */
+       pD = pS->SE_desc;               /* ->Descriptor               */
+       call struct_size(pS,addr(length1));
+       call fix_adj_array(pD,addr(length1));
+       pos.byte = pS->SE_offset    + length1.ByteLength;
+       pos.bit  = pS->SE_bitoffset + length1.BitLength;
+       if pos.bit>7 then do;
+         pos.byte = pos.byte + 1;
+         pos.bit  = pos.bit-8;
+         end;
+       p2->SE_offset    = pos.byte;    /* Set adjusted length        */
+       p2->SE_bitoffset = pos.bit;
+       end;
+
+     call struct_size(pS,addr(length1));
+     return(p2);                       /* Return addr(next_elem)     */
+
+     end map_minor_struct;
+
+   /*---------------------------------*/
+   /* Adjust structure offsets        */
+   /*---------------------------------*/
+   adj_str_off: proc(pStruct,pPos);                            /*0.7c*/
+     dcl pStruct             ptr;
+     dcl pPos                ptr;                              /*0.7c*/
+     dcl 1 pos               based(pPos),                      /*0.7c*/
+          5 byte             fixed bin(31),                    /*0.7c*/
+          5 bit              fixed bin(7);                     /*0.7c*/
+     dcl p                   ptr;
+     p = addr(pStruct->SE_end);
+     do while( '1'b );
+       if p->SE_lvl<=pStruct->SE_lvl                           /*0.7c*/
+       then leave;
+       p->SE_bitoffset = p->SE_bitoffset - pStruct->SE_bitoffset +
+                                           pos.bit;            /*0.7c*/
+       p->SE_offset    = p->SE_offset    - pStruct->SE_offset    +
+                                           pos.byte;           /*0.7c*/
+       if p->SE_bitoffset<0 then do;                           /*0.7c*/
+         p->SE_bitoffset = 8 + p->SE_bitoffset;                /*0.7c*/
+         p->SE_offset    = p->SE_offset-1;                     /*0.7c*/
+         end;                                                  /*0.7c*/
+       if p->SE_bitoffset>7 then do;
+         p->SE_bitoffset = p->SE_bitoffset-8;
+         p->SE_offset    = p->SE_offset+1;
+         end;
+       p = addr(p->SE_end);
+       end; /* do while */
+     end adj_str_off;
+ 
+
+   /*---------------------------------*/
+   /* Increment a position value      */
+   /*---------------------------------*/
+   bump_pos: proc( pP, pL );
+     dcl (pP,pL)             ptr;
+     dcl 1 offset            based,    /* Position/length            */
+          5 byte             fixed bin(31),
+          5 bit              fixed bin(7);
+     pP->offset.byte = pP->offset.byte + pL->offset.byte;
+     pP->offset.bit  = pP->offset.bit  + pL->offset.bit;
+     if pP->offset.bit>7 then do;
+       pP->offset.bit  = pP->offset.bit-8;
+       pP->offset.byte = pP->offset.byte+1;
+       end;
+     end bump_pos;
+
+   /*---------------------------------*/
+   /* Compute the size of a structure */
+   /*---------------------------------*/
+   struct_size: proc(pStruct,pLen);
+     dcl pStruct             ptr;
+     dcl pLen                ptr;
+     dcl 1 Length            based(pLen),   /* Returned structure    */
+          5 ByteLength       fixed bin(31),
+          5 BitLength        fixed bin(7);
+     dcl  p                  ptr;
+
+     p = addr(pStruct->SE_end);        /* ->First element            */
+     /* Locate the end of the structure.                             */
+     do while( p->SE_lvl>pStruct->se_lvl );
+       p = addr(p->SE_end);            /* ->Next element             */
+       end; /* do while */
+     BitLength  = p->SE_BitOffset - pStruct->SE_BitOffset;
+     ByteLength = p->SE_offset    - pStruct->SE_offset;
+     if BitLength>7 then do;
+       BitLength  = BitLength-7;
+       ByteLength = ByteLength+1;
+       end;
+     if BitLength<0 then do;
+       BitLength  = 8+BitLength;
+       end;
+
+     end struct_size;
+
+   end analyze_struct;
+
+ /*-----------------------------------*/
+ /* Fix descriptor for adj array      */
+ /*-----------------------------------*/
+ fix_adj_array: proc(pD,pL);
+   dcl  (pD,pL)              ptr;
+   dcl 1 Length              based(pL),
+         5 ByteLength        fixed bin(31),
+         5 BitLength         fixed bin(7);
+   dcl   pDim                ptr;
+   dcl   elem_size           fixed bin(31);
+   dcl   RVO                 fixed bin(31);
+   dcl   dim                 fixed bin(31);
+   dcl  (lbnd,hbnd)          fixed bin(31);
+
+   if pD->AR_unalbit then do;          /* Unaligned bit array?       */
+     elem_size = ByteLength*8+BitLength; /* Yes, length in bits      */
+     end; /* UNAL BIT */
+   else do;
+     elem_size = ByteLength;           /* No, length in bytes        */
+     if BitLength>0                    /* .. rounded up              */
+     then elem_size = elem_size + 1;
+     end; /* else */
+   /* Point pDim to the last dimension and work backwards            */
+   pDim = addr(pD->AR_dims) +
+           (pD->AR_dim-1) * stg( null()->pli_ded_Dim );
+   RVO = 0;                            /* Initialize Rel Virt Orig   */
+   dim = pD->AR_dim;
+   do until( dim=0 );
+     pDim->DM_mult(1) = elem_size;
+     hbnd = pDim->DM_hbnd(1);
+     lbnd = pDim->DM_lbnd(1);
+     if hbnd<lbnd then do;             /* Fix up bad declaration0.9.3*/
+       hbnd = lbnd;                                           /*0.9.3*/
+       pDim->DM_hbnd(1) = hbnd;                               /*0.9.3*/  
+       end;                                                   /*0.9.3*/
+     /* We could also check for range -32768:32767 or whatever.      */
+     RVO = RVO + elem_size * lbnd;
+     elem_size = elem_size * ( hbnd - lbnd + 1 );
+     pDim = pDim - stg( null()->pli_ded_Dim );
+     dim = dim-1;
+     end; /* do until */
+
+   pD->AR_rvo = RVO;                   /* Set relative virtual origin*/
+
+   /* Reset length                    */
+   if pD->AR_unalbit then do;          /* Unaligned bit array?       */
+     ByteLength = elem_size/8;
+     BitLength = mod(elem_size,8);
+     end; /* UNAL BIT */
+   else ByteLength = elem_size;
+
+   end fix_adj_array;
+
+ end pli_Analyze;                                           /*0.9.10e*/
+
+ %page;
+ %include locdesc;
+ %include desc;
+ %include area;                                               /*1.2.0*/
+
+ end Dyndesc;                                               /*0.9.10e*/

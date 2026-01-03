@@ -1,0 +1,1454 @@
+ /* _pli_PutE                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_PutE (PL/I runtime)                     */
+ /*      Version:       2.0                                          */
+ /*      Date:          Sep, 2006                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_PutE                                    */
+ /*                                                                  */
+ /*      Function:      PutE is the PUT EDIT executor.               */
+ /*                                                                  */
+ /*      PutE is called from PutX once per data element (twice for   */
+ /*      complex data).  It is passed the address of a               */
+ /*      'stream parameter list' (SPL) and the address of a          */
+ /*      'format parameter list' for the format element to be used.  */
+ /*                                                                  */
+ /*      This code is not required to handle COMPLEX data, since     */
+ /*      COMPLEX is identified and handled separately by the caller. */
+ /*                                                                  */
+ /*      Format field widths, etc. may be coded as expressions       */
+ /*      and evaluated at run-time.  Therefore all constraints       */
+ /*      on the format must be checked here.                         */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I descriptor formats.                     */
+ /*                     ENTRY VARIABLE format.                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*          . Character picture for P-Format                        */
+ /*          . Scaled arithmetic values   (F)                        */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2024-09-01: (592)Fix B3 and B4 formats, and STRZ   1.3.2*/
+ /*          2024-06-25: (584)Incorr scale for fixed bin w/'F'  1.3.1*/
+ /*          2023-11-16: (550)Copy arg pDesc before modification1.2.1*/
+ /*          2023-08-14: (536)PUT(bit) with A-format prints trash.1.1*/
+ /*          2023-06-25: (W116)Arithmetic to bit conversion     1.1.1*/
+ /*          2023-03-30: Fix field widths for 'B3' and 'B4'     1.0.1*/
+ /*          2022-06-13: 'B3', 'B4' format.                     1.0.0*/
+ /*                      Requires use of CCB instead of inline  1.0.0*/
+ /*          2020-04-04: Size check for fixed dec to char.    0.9.10c*/
+ /*          2017-09-13: SIZE raised for E format print '***'  0.9.10*/
+ /*                      if not enabled.                       0.9.10*/
+ /*          2017-07-30: Add 'convert_to_bit'.                 0.9.10*/
+ /*          2017-06-25: Fix truncation problem with F format  0.9.10*/
+ /*          2015-04-19: Fix E format for float values          0.9.8*/
+ /*          2014-10-17: FIXED DEC OPTIONS(IBM)                 0.9.6*/
+ /*          2014-07-30: Fix scaled F-format                    0.9.5*/
+ /*          2013-11-18: Change 'fixed_to_float' to normalize   0.9.4*/
+ /*          2010-05-21: FLOAT pictures.                        0.9.1*/
+ /*          2009-10-27: E-format too small raises SIZE.         0.8d*/
+ /*          2009-04-20: E-format with FLOAT input.                  */
+ /*          2009-02-17: Float to character conversion for A-Form0.7c*/
+ /*          2009-02-06: Rename some conversion routines,        0.7b*/
+ /*                      add FLOAT to FIXED conversion.          0.7b*/
+ /*          2008-02-08: Use 4 digits for E format exponent.     0.5e*/
+ /*          2008-01-25: Fix F-format output when number of      0.5d*/
+ /*                      fractional digits is greater than scale.0.5d*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_PutE: proc( xpParm, xpFmt, $pDesc, pData )               /*1.2.1*/
+               ext( '_pli_PutE' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xpParm              ptr;      /* -> PUTX parameter list     */
+ dcl     xpFmt               ptr;      /* -> Format element  20060901*/
+ dcl     pData               ptr;      /* -> Data element            */
+ dcl     $pDesc              ptr;      /* -> Data descriptor    1.2.1*/
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     Blanks              char(32)  static    init('');
+ dcl     BitMask        (0:7)bit(8)    static    init(     /*20080313*/
+     '80'bx, '40'bx, '20'bx, '10'bx, '08'bx, '04'bx, '02'bx, '01'bx );
+ dcl     HexChar             char(22)  static                  /*0.7c*/
+             init( '0123456789ABCDEFabcdef' );                 /*0.7c*/
+ dcl     OctChar             char(8)   static                 /*1.0.0*/
+             init( '01234567' );                              /*1.0.0*/
+ dcl     czero               char(1)    static    init('0');    /*536*/
+ dcl     cone                char(1)    static    init('1');    /*536*/
+ dcl     UNIMPLEMENTED       condition;                    /*20060901*/
+ 
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pParm               ptr;      /* -> Parameter List          */
+ dcl   1 PL                  like SPL   based(pParm);
+
+ dcl     pDesc               ptr;      /* Copy of $pDesc        1.2.1*/
+ dcl     pSRB                ptr;      /* -> SRB **                  */
+ dcl     pSBB                ptr;      /* -> SBB **                  */
+ dcl     pFmt                ptr;      /* -> Format list     20060901*/
+ dcl     n                   fixed bin(31);                  /*0.9.10*/
+
+ dcl     j                   fixed bin(31);                /*20080303*/
+ dcl     char_workarea       char(64);
+         /* This field needs to be as long as the largest possible   */
+         /* converted data-element.                                  */
+         /* 64 is a made-up placeholder.                             */
+ dcl   1 float_workarea   (2),
+         5 float_frac        fixed dec(18),
+         5 float_exp         fixed bin(15);
+ dcl     dec_workarea     (2)fixed dec(18);
+ dcl     desc_workarea       char(16);
+         /* This field needs to be as long as the largest possible   */
+         /* converted descriptor.                                    */
+         /* 16 is a made-up placeholder.                             */
+ dcl     field_width         fixed bin(31);
+ dcl     frac_digits         fixed bin(31);                /*20071130*/
+ dcl     sig_digits          fixed bin(31);                /*20071214*/
+ dcl     scale_factor        fixed bin(31);                /*20071130*/
+ dcl     ovf                 fixed bin(31); /* Rounding overf20071130*/
+ dcl     data_width          fixed bin(31);
+ dcl     pPic                ptr;      /* For P-format items         */
+ dcl     StringData          bit(1)    init( '0'b );
+ dcl     CharData            bit(1)    init( '0'b );         /*0.9.10*/
+ dcl     cw                  char(1);                         /*1.0.0*/
+
+ /*-------------------------*/
+ /* 'Fmt' Parameter List    */
+ /*-------------------------*/
+ dcl   1 FmtParm             based(pFmt),                  /*20060901*/
+         5 fp_ppFmt          ptr,           /* -> addr( Format_addr )*/
+         5 fp_paFmt          ptr,           /* -> addr( Format_chain)*/
+         /* Note double-indirection.  These are the address of the   */
+         /*      address of the current format item, and the         */
+         /*      address of the address of the R format chain.       */
+         5 fp_pDSA           ptr,           /* -> addr( Current_DSA )*/
+         5 fp_fmtid          fixed bin(7),  /* Base format id        */
+         5 fp_nond           fixed bin(7),  /* 1=non-data item       */
+         5 fp_np_real        fixed bin(7),  /* Real parameter count  */
+         5 fp_np_imag        fixed bin(7),  /* Imag parameter count  */
+         5 fp_fmtid_real     fixed bin(7),  /* Real part of C format */
+         5 fp_fmtid_imag     fixed bin(7),  /* Imag part of C format */
+         /* The significance of the operands varies by format id,    */
+         /* they represent widths, positions, scale factors, etc.    */
+         5 fp_opnd_real   (4)fixed bin(31), /* Variable dep. on fmt  */
+         5 fp_opnd_imag   (4)fixed bin(31), /* Variable dep. on fmt  */
+         5 fp_end            char(0);       /* End of FmtParm block  */
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18) based;
+ dcl     FB31                fixed bin(31) based;
+ dcl     FB15                fixed bin(15) based;
+ dcl     FB7                 fixed bin(7)  based;
+ dcl     pVoid               ptr           based;
+ dcl     VarStr              char(0)       based varying;
+ dcl     Desc                bit(32)       based;
+ dcl     PIC18               pic '(18)9'   based;
+/* dcl     PIC18               pic '999999999999999999'   based; */
+ dcl     PIC4                pic 'S9999'   based;
+ dcl     C1                  char(1)       based;
+ dcl     B8                  bit(8)        based;          /*20080303*/
+ dcl     B32                 bit(32)       based;             /*1.0.0*/
+ dcl     B64                 bit(64)       based;             /*1.1.1*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     SetFlags            entry( bit(16) )
+                             ext( '_pli_SetFlags' )
+                             options( linkage(system) );
+ dcl     CAB                 entry( ptr, ptr, ptr )           /*1.1.1*/
+                             options( linkage(system) )       /*1.1.1*/
+                             external( '_pli_CAB' );          /*1.1.1*/
+ dcl     CAC                 entry( ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_CAC' );
+ dcl     CLC                 entry( ptr, ptr, ptr )            /*0.7c*/
+                             options( linkage(system) )        /*0.7c*/
+                             external( '_pli_CLC' );           /*0.7c*/
+ dcl     CBA                 entry( ptr, fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_CBA' );
+ dcl     CBD                 entry( ptr, ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_CBD' );
+ dcl     CCA                 entry( ptr, ptr, ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_CCA' );
+ dcl     FIBM                entry( ptr, ptr )                /*0.9.6*/
+                             returns( fixed dec(18) )         /*0.9.6*/
+			     options( linkage(system) )       /*0.9.6*/
+			     external( '_pli_FrIBMDec' );     /*0.9.6*/
+ dcl     NPI                 entry( ptr, ptr )                /*0.9.4*/
+                             returns( fixed dec(18) )         /*0.9.4*/
+                             options( linkage(system) )       /*0.9.4*/
+                             external( '_pli_NPI' );          /*0.9.4*/
+ dcl     NPO                 entry( ptr, bit(32), ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_NPO' );
+dcl      FPO                 entry( ptr, ptr, ptr )           /*0.9.1*/
+                             options( linkage(system) )       /*0.9.1*/
+                             ext( '_pli_FPO' );               /*0.9.1*/
+ dcl     RND                 entry( ptr, ptr, fixed bin(31) )/*@00005*/
+                             returns( fixed bin(31) )        /*@00005*/
+                             options( linkage(system) )      /*@00005*/
+                             external( '_pli_RND' );         /*@00005*/
+ dcl     F2I                 entry( ptr, ptr, ptr )        /*20071214*/
+                             options( linkage(system) )    /*20071214*/
+                             external( '_pli_F2I' );       /*20071214*/
+ dcl     CONV                entry( fixed bin(31), ptr )     /*0.9.10*/
+                             returns( ptr )                  /*0.9.10*/
+                             ext( '_pli_Conv' )              /*0.9.10*/
+                             options( linkage(system) );     /*0.9.10*/
+ dcl     CCB                 entry( ptr, ptr, ptr )           /*1.0.0*/
+                             returns( fixed bin(31) )         /*1.0.0*/
+                             options( linkage(system) )       /*1.0.0*/
+                             external( '_pli_CCB' );          /*1.0.0*/
+
+ dcl    (
+         abs,addr,length,max,min,mod,null,                     /*0.7b*/
+         plifill,plimove,ptrvalue,                         /*20060919*/
+         sign,stg,string,substr,                               /*0.7b*/ 
+         sysnull
+        )                    builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry, save a few items for efficiency.                */
+ /*------------------------------------------------------------------*/
+ pParm = xpParm;
+ pFmt  = xpFmt;                                            /*20060901*/
+ pSRB  = pParm->PL.SPL_pSRB; /* -> Stream Request Block              */
+ pSBB  = pParm->PL.SPL_pSBB; /* -> Stream Buffer Block               */
+ pDesc = $pDesc;             /* (this is modified)              1.2.1*/
+ 
+ /*---------------------------------*/                        /*0.9.6*/
+ /* Convert IBM packed decimal      */                        /*0.9.6*/
+ /*---------------------------------*/                        /*0.9.6*/
+ if pDesc->XD_id = '48'x then do;      /* OPTIONS(IBM)          0.9.6*/
+   dec_workarea(1) = FIBM(pData,pDesc);                       /*0.9.6*/
+   call plimove( addr(desc_workarea),                         /*0.9.6*/ 
+                 pDesc,                                       /*0.9.6*/
+		 stg(null()->pli_ded_XD) );                   /*0.9.6*/
+   pData = addr(dec_workarea);                                /*0.9.6*/		 
+   pDesc = addr(desc_workarea);                               /*0.9.6*/	
+   pDesc->XD_ID = '42'x;                                      /*0.9.6*/	 
+   end; /* OPTIONS(IBM)  */                                   /*0.9.6*/
+
+ /*------------------------------------------------------------------*/
+ /* COMMENT: Set the condition flags in the DSA so that any          */
+ /*          called routines will have the correct values.           */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = pSRB->SRB_condmask;    /* Callers enabled cond. */
+ call SetFlags( string(cond_mask) );        /* Set for called rtns   */
+
+ /*------------------------------------------------------------------*/
+ /*     Convert data to match format spec.                           */
+ /*                                                                  */
+ /*     This code is passed one format-item and one data             */
+ /*     element.  The data is converted to character if              */
+ /*     required acording to the format spec and moved to            */
+ /*     the output buffer.                                           */
+ /*                                                                  */
+ /*  A: CHAR or PIC is printed directly, BIT is converted inline.    */
+ /*     otherwise convert to CHARACTER.                              */
+ /*  B,B3,B4: Convert to BIT, CHAR is converted inline.              */
+ /*  C: Convert to coded-arithmetic according to the real and        */
+ /*     imaginary format specs.                                      */
+ /*  E: Convert to DECIMAL FLOAT.                                    */
+ /*  F: Convert to DECIMAL FIXED.                                    */
+ /*  G: Not implemented.                                             */
+ /*  P: Numeric picture-   convert to DECIMAL (FIXED or FLOAT)       */
+ /*     Character picture- convert to CHARACTER.                     */
+ /*     An appropriate descriptor must be created.                   */
+ /*------------------------------------------------------------------*/
+
+   select( fp_fmtid );
+ 
+     /*---------------------*/
+     /* 'A' Format Item     */
+     /*---------------------*/
+     when( 0) do;                      /* A Format item              */
+       /* If the field-width is specified that is used, otherwise    */
+       /* the width is the size of the item.                         */
+       select;
+         when( pDesc->ST_id = '10'x,        /* Nonvarying CHAR       */
+               pDesc->ST_id = '20'x ) do;   /* Nonvarying BIT        */
+           data_width = pDesc->ST_len;
+           StringData='1'b;                 /* Indicate non-numeric  */
+           end; /* nonvarying string */
+         when( pDesc->ST_id = '11'x,        /* VARYING CHAR          */
+               pDesc->ST_id = '21'x ) do;   /* VARYING BIT           */
+           data_width = length( pData->VarStr );
+           StringData='1'b;                 /* Indicate non-numeric  */
+           pData = pData + stg( sysnull->VarStr );
+           /* Bump the data pointer over the VARYING string prefix.  */
+           /* To allow 4-byte lengths, set a bit in the descriptor   */
+           /* and test it here to determine what to add.             */
+           end; /* VARYING string */
+         when( pDesc->NP_id = '45'x )       /* Fixed PIC             */
+           data_width = pDesc->NP_size;
+         when( pDesc->CP_id = '46'x )       /* Float PIC             */
+           data_width = pDesc->CP_size;
+         when( pDesc->NP_id = '47'x )       /* Character PIC data    */
+           data_width = pDesc->NP_size;
+         otherwise call convert_to_char(    /* Coded arithmetic      */
+                          pDesc,
+                          pData,
+                          addr(char_workarea),
+                          data_width );
+         end; /* select */
+
+       if fp_np_real>0                      /* Field-width spec'd?   */
+       then field_width = fp_opnd_real(1);  /* Yes, get it.          */
+       else field_width = data_width;       /* Otherwise default     */
+       /*----------------------------------------------------------- */
+       /* "Truncation, due to inadequate field-width specification   */
+       /* is on the left for arithmetic items, and on the right for  */
+       /* string items.  SIZE or STRINGSIZE is raised if truncation  */
+       /* occurs."   -SC26-3114-01, pp271-272.                       */
+       /*----------------------------------------------------------- */
+       if data_width>field_width            /* Data too long?        */
+       then do;
+         /* NOTE: When raising SIZE or STRINGSIZE,                   */
+         /*       if this is a PUT FILE operation, we have to        */
+         /*       unlock the FCB before raising the condition,       */
+         /*       because the ON-Unit might not return normally,     */
+         /*       in which the file would remain locked.             */
+         /*       On normal return from an ON-Unit the file needs    */
+         /*       to be re-locked.                                   */
+         /*-------------------------------------*/
+         /* Non-numeric data, raise STRINGSIZE  */
+         /*-------------------------------------*/
+         if StringData & M_Stringsize then do;
+           /* call unlock_file; */
+           signal STRINGSIZE;               /* Raise STRINGSIZE      */
+           /* call lock_file; */
+           end; /* M_Stringsize */
+         /*-------------------------------------*/
+         /* Numeric data, raise SIZE            */
+         /*-------------------------------------*/
+         if ªStringData & M_Size then do;
+           /* call unlock_file; */
+           (size): signal SIZE;             /* Raise SIZE    20091027*/
+           /* call lock_file; */
+           end; /* M_Size */
+         data_width = field_width;          /* Truncate data         */
+         end; /* data_width>field_width */
+  
+       if pDesc->ST_id = '20'x |            /* Nonvarying BIT        */
+          pDesc->ST_id = '21'x              /* VARYING BIT           */
+       then do j=1 to data_width;                               /*536*/
+         if substr(pData->b32,j,1)='0'b                         /*536*/
+         then call move_to_buffer( addr(czero), 1 );            /*536*/
+         else call move_to_buffer( addr(cone),  1 );            /*536*/
+         end; /* do j */                                        /*536*/
+       else call move_to_buffer( pData, data_width );           /*536*/
+       if data_width<field_width            /* Need to blank-pad     */
+       then call pad(field_width-data_width);              /*20060901*/
+       /* Handle exceptions                */
+       if data_width>field_width            /* Data too long?        */
+       then do;
+         /* NOTE: When raising SIZE or STRINGSIZE,                   */
+         /*       if this is a PUT FILE operation, we have to        */
+         /*       unlock the FCB before raising the condition,       */
+         /*       because the ON-Unit might not return normally,     */
+         /*       in which the file would remain locked.             */
+         /*       On normal return from an ON-Unit the file needs    */
+         /*       to be re-locked.                                   */
+         /* 'Stringdata' indicates whether or not the original data  */
+         /* was a string or not, we raise either SIZE or STRINGSIZE  */ 
+         /*-------------------------------------*/
+         /* Non-numeric data, raise STRINGSIZE  */
+         /*-------------------------------------*/
+         if StringData & M_Stringsize then do;
+           /* call unlock_file; */
+           signal STRINGSIZE;               /* Raise STRINGSIZE      */
+           /* Control may return here depending on whether or not    */
+           /* caller has an established ON-Unit, and what it does.   */    
+           /* call lock_file; */
+           end; /* M_Stringsize */
+         /*-------------------------------------*/
+         /* Numeric data, raise SIZE            */
+         /*-------------------------------------*/
+         if ªStringData & M_Size then do;                  /*20080303*/
+           /* call unlock_file; */                         /*20080303*/
+           (size): signal SIZE;             /* Raise SIZE    20091027*/
+           /* call lock_file; */                           /*20080303*/
+           end; /* M_Size */                               /*20080303*/
+         end; /* data_width>field_width */                 /*20080303*/
+       end; /* A */
+ %page;
+ 
+     /*---------------------*/                             /*20060620*/
+     /* 'B', 'B3', 'B4'     */                               /*0.9.10*/
+     /*---------------------*/                             /*20060620*/
+     when( 1, 13, 14 ) do;             /* B Format item        0.9.10*/
+       StringData = '1'b;              /* Assume bit string data     */
+       data_width = pDesc->ST_len;     /* Get width from descriptor  */
+       if pDesc->ST_id = '11'x |       /* or VARYING str len   0.9.10*/
+          pDesc->ST_id = '21'x                               /*0.9.10*/
+       then do;                                              /*0.9.10*/
+         data_width = length( pData->VarStr );             /*20080303*/
+         pData = pData + stg( null()->VarStr );            /*20080303*/
+         end; /* VARYING */                                /*20080303*/
+       if pDesc->ST_id ª= '20'x &      /* Nonvarying BIT     20080303*/
+          pDesc->ST_id ª= '21'x        /* VARYING BIT        20080303*/
+       then do; 
+         /* LIMIT: Sloppy code, char_workarea is declared char(64),  */
+         /*        which is big enough to hold 512 bits.             */
+         data_width = pDesc->ST_len;
+         call plifill(addr(desc_workarea),'00'x,stg(PLI_ded_str));
+         addr(desc_workarea)->ST_id  = '20'x;
+         addr(desc_workarea)->st_len = data_width;   
+         j =  convert_to_bit(                                /*0.9.10*/
+                          pDesc,                             /*0.9.10*/
+                          pData,                             /*0.9.10*/
+                          addr(char_workarea),               /*0.9.10*/
+                          data_width );                       /*1.0.0*/
+         pDesc = addr(desc_workarea);                         /*1.0.0*/
+         pData = addr(char_workarea);                         /*1.0.0*/
+         addr(desc_workarea)->st_len = j;                     /*1.0.0*/           
+         end;                                              /*20080303*/
+       if data_width>64 then signal error;                    /*1.1.1*/
+
+       if fp_np_real<1                /* Get field width    20080303*/
+       then field_width = data_width;                      /*20080303*/
+       else field_width = fp_opnd_real(1);                 /*20080303*/
+       if field_width=0 then return;   /* Validate width     20080303*/
+       if field_width<0 then signal ERROR;                 /*20080303*/
+
+       /* 'B4' (hex) format */
+       if fp_fmtid=13 then do;          /* 'B4'               /*1.0.0*/
+         call put_hex( pDesc,pData,data_width,field_width);  /*0.9.10*/
+         end;                                                /*0.9.10*/
+
+       /* 'B3' (octal) format */
+       if fp_fmtid=14 then do;          /* 'B3'                 1.0.0*/
+         call put_oct( pDesc,pData,data_width,field_width);  /*0.9.10*/
+         end;  
+                                             
+       if fp_fmtid=1 then do;            /* 'B' format                 */ 
+         ovf = pDesc->ST_bo;             /* Starting bit offset 0:7    */
+         j = data_width;
+         if data_width > field_width     /* Is data truncated?         */
+         then j = field_width;           /* Yes.                       */
+         do while( j>0 );                /* Do all bits                */
+           if (pData->B8&BitMask(ovf))ª='00'bx /* Is this bit '1'b?    */
+           then cw='1';                  /* Yes, cvt to char '1'       */
+           else cw='0';                  /* No, cvt to char '0'        */
+           ovf = mod( ovf+1, 8 );        /* Bump bit offset            */
+           if ovf=0 then pData = pData+1;/*   and maybe byte offset    */
+           call move_to_buffer(addr(cw),1);
+           j = j-1;                      /* Count one character        */
+           end; /* do while */
+         end; /* 'B' */
+
+       if data_width<field_width            /* Need to blank-pad     */
+       then call pad(field_width-data_width);
+       /* Handle exceptions                */
+       if data_width>field_width            /* Data too long?        */
+       then do;
+         /* NOTE: When raising SIZE or STRINGSIZE,                   */
+         /*       if this is a PUT FILE operation, we have to        */
+         /*       unlock the FCB before raising the condition,       */
+         /*       because the ON-Unit might not return normally,     */
+         /*       in which the file would remain locked.             */
+         /*       On normal return from an ON-Unit the file needs    */
+         /*       to be re-locked.                                   */
+         /* 'Stringdata' indicates whether or not the original data  */
+         /* was a string or not, we raise either SIZE or STRINGSIZE  */ 
+         /*-------------------------------------*/
+         /* Non-numeric data, raise STRINGSIZE  */
+         /*-------------------------------------*/
+         if StringData & M_Stringsize then do;
+           /* call unlock_file; */
+           signal STRINGSIZE;               /* Raise STRINGSIZE      */
+           /* call lock_file; */
+           end; /* M_Stringsize */
+         /*-------------------------------------*/
+         /* Numeric data, raise SIZE            */
+         /*-------------------------------------*/
+         if ªStringData & M_Size then do;                  /*20080303*/
+           /* call unlock_file; */                         /*20080303*/
+           (size): signal SIZE;             /* Raise SIZE    20091027*/
+           /* call lock_file; */                           /*20080303*/
+           end; /* M_Size */                               /*20080303*/
+         end; /* data_width>field_width */                 /*20080303*/
+       end; /* B */
+ %page;
+
+     /*---------------------*/                             /*20060620*/
+     /* 'C' Format Item     */                             /*20060620*/
+     /* not passed to PutE  */                             /*20060901*/
+     /*---------------------*/                             /*20060620*/
+
+     /*---------------------*/                             /*20060620*/
+     /* 'E' Format Item     */                             /*20060620*/
+     /*---------------------*/                             /*20060620*/
+     when( 4) begin;                   /* E Format item E(w,d[,s])   */
+       dcl temp              char(64);
+       dcl (p,q)             ptr;
+       dcl zeropoint         char(2)   static    init( '0.' );
+       dcl bSgn              bit(1);
+
+       /*------------------------------------------------------------*/
+       /* Get 'w', 'd', and 's'.                                     */
+       /* 'w' = field_width                                          */
+       /* 'd' = frac_digits                                          */
+       /* 's' = sig_digits                                           */
+       /* NOTE: This procedure should probably display an error      */
+       /*       message for invalid format information before        */
+       /*       raising the ERROR condition.                         */
+       /*------------------------------------------------------------*/
+       if fp_np_real<2                 /* Check arg count    20071214*/
+       then signal ERROR;                                  /*20071214*/
+       field_width = fp_opnd_real(1);  /* Get 'w'            20071214*/
+       if field_width=0 then return;   /* Validate width     20071214*/
+       if field_width<0 then signal ERROR;                 /*20071214*/
+       frac_digits = fp_opnd_real(2);  /* Get 'd'            20071214*/
+       if frac_digits<0 | frac_digits>field_width          /*20071214*/
+       then signal ERROR;                                  /*20071214*/
+       if fp_np_real>2                 /* Significant digits?20071214*/
+       then sig_digits = fp_opnd_real(3); /* Yes, get 's'    20071214*/
+       else sig_digits = frac_digits+1;   /*   or default    20071214*/
+       /* w >= s >= d, s>0, d >= 0.  -SC26-3114-01, p.278            */
+       /* NOTE: If the format is too small, raise the SIZE condition */
+       /*       rather than error.                                   */
+       /*       If SIZE is raised, IBM PL/I doesn't process the field*/
+       if sig_digits>field_width | sig_digits<frac_digits  /*20071214*/
+       then goto signal_SIZE;                              /*20091027*/
+
+       /*------------------------------------------------------------*/
+       /* Convert all input to int. FLOAT DECIMAL                    */
+       /* in 'float_workarea' and round.                             */
+       /*------------------------------------------------------------*/
+       /*   Convert BIT or CHARACTER data to FIXED DECIMAL           */
+       /*   with the precision and scale determined by the source.   */
+       if pDesc->ST_id = '10'x |       /* Nonvarying CHAR            */
+          pDesc->ST_id = '11'x |       /* VARYING CHAR               */
+          pDesc->ST_id = '20'x |       /* Nonvarying BIT             */
+          pDesc->ST_id = '21'x |       /* VARYING BIT                */
+          pDesc->ST_id = '45'x |       /* FIXED PICTURE              */
+          pDesc->ST_id = '46'x |       /* FLOAT PICTURE              */
+          pDesc->ST_id = '47'x         /* CHARACTER PICTURE          */	  
+       then do;
+         call convert_to_arith(pDesc,pData,
+                               addr(dec_workarea),
+                               field_width);
+         end; /* convert */
+       /*   Convert other Arithmetic data to Internal FLOAT          */
+       /*   The format is x.yyyyyy... * 10**zz, where xª=0.          */
+       /*   Then round number at digit s+1, if 'ovf' is set,         */
+       /*   the rounding caused the fraction to overflow.            */
+       if pDesc->XB_id = '41'x |       /* Source is FIXED       0.9.8*/
+          pDesc->XB_id = '42'x                                /*0.9.8*/
+       then call fixed_to_float( pDesc, pData );              /*0.9.8*/
+       else call F2I( pData, pDesc, addr(float_workarea));    /*0.9.8*/
+       pData = addr(float_workarea(1)); 
+       ovf = RND( pData, pData, 17-sig_digits-pDesc->XD_scale );/*9.8*/
+       if ovf=1 then do;                    /* Adjust for overflow   */
+         bSgn = addr(float_frac(1))->BCD_sign;   /* Save sign    0.8b*/
+         float_frac(1) = float_frac(1) / 10;
+         float_frac(1) = (abs(float_frac(1)) + 100000000000000000);
+         addr(float_frac(1))->BCD_sign = bSgn;   /* Restore sign 0.8b*/
+         float_exp(1)  = float_exp(1) + 1;
+         end; /* ovf */
+       /*   Check 'w' vs. 's' depending on sign.                     */
+       /* COMMENT: IBM Enterprise PL/I says "The exponent is a       */
+       /*          4-digit integer" (SC27-1460-04, p.308),           */
+       /*          PL/I for MVS and VM says "The exponent is a       */
+       /*          2-digit integer" (SC26-3114-01, p.278).           */
+       /*          We have to go with 4-digits because of the        */
+       /*          larger range of exponents for Intel float.        */
+       
+       if (sign(float_frac(1))<0 &      /* SIZE check          0.0.10*/
+           field_width < sig_digits+8) |                     /*0.9.10*/
+          (sign(float_frac(1))>=0 &                          /*0.0.10*/
+           field_width < sig_digits+7)                       /*0.9.10*/
+         then do;                                            /*0.9.10*/
+           if M_size then goto signal_SIZE;                  /*0.9.10*/
+           call PLIFILL( addr(temp), '*', field_width );     /*0.9.10*/
+           call move_to_buffer( addr(temp), field_width );   /*0.9.10*/
+           return;                                           /*0.9.10*/
+           end; /* SIZE */                                   /*0.9.10*/
+       /* COMMENT: Enterprise PL/I allows a field_width of one less  */
+       /*          than the above if d=0, since no '.' will appear.  */
+
+       /*------------------------------------------------------------*/
+       /* Edit the converted data                                    */
+       /*------------------------------------------------------------*/
+       p = addr(temp);
+       q = addr(char_workarea);
+       if sign(float_frac(1))<0 then do;    /* '-' if negative       */
+         p->C1 = '-';
+         p = p+1;
+         end; /* negative */
+       float_frac(1) = abs(float_frac(1));
+       q->PIC18 = float_frac(1);
+       if frac_digits=sig_digits then do;   /* '0.' if no integer    */
+         call plimove( p, addr(zeropoint), 2 );
+         p = p+2;
+         end; /* d=s */
+       else do;                            /* Else s-d digits        */
+         call plimove( p, q, sig_digits-frac_digits );
+         q = q+(sig_digits-frac_digits);
+         p = p+(sig_digits-frac_digits);
+         end; /* dª=s */
+       if frac_digitsª=0 then do;         /* Decimal point           */
+         p->C1 = '.';
+         p = p+1;
+         call plimove( p, q, frac_digits ); /* d digits              */
+         q = q+frac_digits;
+         p = p+frac_digits;
+         end; /* dª=0 */
+       p->C1 = 'E';                    /* E+|-nn                     */
+       p = p+1;
+       p->PIC4 = float_exp(1);                             /*20080208*/
+       p = p+5;                                            /*20080208*/
+       /* Move edited value to output */
+       data_width = p - addr(temp);
+       if data_width<field_width       /* Need to blank-pad  20060901*/
+       then call pad(field_width-data_width);
+       call move_to_buffer( addr(temp), data_width );        /*0.9.10*/
+
+       end; /* E */
+ %page;
+
+     /*---------------------*/                             /*20060512*/
+     /* 'F' Format Item     */                             /*20060512*/
+     /*---------------------*/                             /*20060512*/
+     when( 5) do;                      /* F Format item              */
+       field_width = fp_opnd_real(1);  /* Get format field wi20071130*/
+       if field_width=0 then return;   /* Validate width     20071130*/
+       if field_width<0 then signal ERROR;                 /*20071130*/
+       if fp_np_real>1                 /* Fractional digits? 20071130*/
+       then frac_digits = fp_opnd_real(2);   /* Yes, get them20071130*/
+       else frac_digits = 0;                               /*20071130*/
+/*       if frac_digits<0 then signal ERROR;    (600)        /*20071130*/
+       /*------------------------------------------------------------*/
+       /* Convert all input to FIXED DECIMAL in 'dec_workarea'       */
+       /*------------------------------------------------------------*/
+       /*   Convert BIT or CHARACTER data to FIXED DECIMAL           */
+       /*   with the precision and scale determined by the source.   */
+       if pDesc->ST_id = '10'x |       /* Nonvarying CHAR            */
+          pDesc->ST_id = '20'x |       /* Nonvarying BIT             */
+          pDesc->ST_id = '11'x |       /* VARYING CHAR               */
+          pDesc->ST_id = '21'x |       /* VARYING BIT                */
+          pDesc->ST_id = '45'x |       /* FIXED PICTURE              */
+          pDesc->ST_id = '46'x |       /* FLOAT PICTURE              */
+          pDesc->ST_id = '47'x         /* CHARACTER PICTURE          */	  
+       then do;
+         call convert_to_arith(pDesc,pData,
+                               addr(dec_workarea),
+                               field_width);
+
+         end; /* convert */
+
+       /*   Convert other Arithmetic data to FIXED DECIMAL           */
+       /*   with the precision and scale determined by the source.   */
+       /*   The conversion creates a new descriptor for the data.    */
+       select( pDesc->XD_id );         /* Convert to FIXED DECIMAL   */
+         when( '41'x ) do;             /* Source: FIXED BINARY       */
+           /* COMMENT: When converting a binary number, convert one  */
+           /*          additional fractional digit for rounding.     */
+           scale_factor = frac_digits -/* Scale for print        0.5d*/
+                          B2D(pDesc->XB_scale);                /*0.5d*/
+           call fixed_bin_to_dec(pDesc,pData,                  /*0.5d*/
+/* Bug 584, invalid precision and scale for conversion          (584)*/
+/*                 1 + B2D(pDesc->XB_prec) +                   /*0.5d*/
+/*                     scale_factor,                           /*0.5d*/
+/*                 1 + B2D(pDesc->XB_scale) +                  /*0.5d*/
+/*                     scale_factor );                         /*0.5d*/
+                   1 + B2D(pDesc->XB_prec),                   /*(584)*/
+                   B2D(pDesc->XB_scale) );                    /*(584)*/
+           pData = addr(dec_workarea);
+           pDesc = addr(desc_workarea);
+           end; /* '41'x */
+         when( '42'x ) do;             /* Source: FIXED DECIMAL      */
+           dec_workarea(1) = pData->FD18;
+           call plimove( addr(desc_workarea),
+                         pDesc,
+                         stg(null()->pli_ded_XD) );
+           pData = addr(dec_workarea);
+           pDesc = addr(desc_workarea);
+           end; /* '42'x */
+         otherwise do;                 /* Source: FLOAT          0.7b*/
+           call float_to_fixed( pDesc, pData );                /*0.7b*/
+           end; /* FLOAT */                                    /*0.7b*/
+         end; /* select */
+
+       /*------------------------------------------------------------*/
+       /* Scale and round value to be printed                        */
+       /*------------------------------------------------------------*/      
+       scale_factor = 0;                                       /*0.7b*/
+       if fp_np_real>2                 /* Scale factor spec? 20071130*/
+       then do;                                            /*20071130*/
+         scale_factor = fp_opnd_real(3);/* Yes, get it       20071130*/
+         /* "The integer value (p) of the scaling factor multiplies  */
+         /*  the value of the data list item after any conversion to */
+         /*  FIXED DECIMAL by 10 raised to the power of p, before it */
+         /*  is edited into its character representation.  When      */
+         /*  fractional-digits is zero, only the integer portion of  */
+         /*  the data list item is used in this multiplication."     */
+         /*  ... "The given position of the decimal point is that    */
+         /*  indicated either by an actual point, if it appears,     */
+         /*  or by the expression for fractional-digits, in the      */
+         /*  absence of an actual point."                            */
+         /*               -SC26-3114-01, p.280                       */
+         if scale_factor>0                                    /*0.9.5*/
+         then pData->FD18 = pData->FD18 * 10**scale_factor;   /*0.9.5*/
+         if scale_factor<0                                    /*0.5.2*/
+         then pDesc->XD_scale = pDesc->XD_scale - scale_factor; /*5.2*/
+         end; /* scale_factor */
+       /* Now adjust for the desired number of fractional digits.    */
+       /* "If truncation causes a digit to be lost from the right,   */
+       /*  and this digit is greater than or equal to 5, 1 is        */
+       /*  added to the digit to the left of the truncated digit."   */
+       /*               -SC26-3114-01, p.280                         */
+       if pDesc->XD_scale>frac_digits /*then do;*/ &                 /*0.7b*/
+          frac_digits>=0 
+       then do;
+         ovf = RND( pData, pData, pDesc->XD_scale-frac_digits-1 );
+         /* ovfª=0 indicates FIXEDOVERFLOW during rounding.          */
+         /* If FOFL is enabled, raise it.  Otherwise just ignore.    */
+	 end;
+       call scale(pData,pDesc->XD_scale,frac_digits);         /*0.9.4*/
+       
+       /* F format only prints the real part of a complex number     */
+       n = pDesc->XD_scale - frac_digits;
+       pDesc->XD_scale=frac_digits;    /* Adjust scale           0.7b*/
+       if n<0 then pDesc->XD_prec = pDesc->XD_prec-n;        /*0.9.10*/
+       /* NOTE: What if n>0? */
+       pDesc->XD_cplx ='00'bx;         /* Force REAL                 */
+
+       /*------------------------------------------------------------*/
+       /* Convert FIXED DEC value to CHARACTER  and move to buffer   */
+       /*------------------------------------------------------------*/
+       call convert_to_char(
+                          pDesc,
+                          pData,
+                          addr(char_workarea),
+                          data_width );
+       pData = addr(char_workarea) + stg(sysnull->VarStr);
+       if data_width>field_width       /* Check for SIZE condition   */
+       then do;
+         if M_size
+         then call check_size( pData, 
+                               data_width-field_width );      /*1.0.0*/
+         /*                    data_width-field_width-1 );  /*0.9.10c*/
+         /* -1 added for 0.9.10c, removed for 1.0.0 (why?)           */
+         pData = pData + (data_width-field_width);
+         data_width = field_width;
+         end;
+       if data_width<field_width       /* Need to blank-pad  20060901*/
+       then call pad(field_width-data_width);
+       call move_to_buffer( pData, data_width );
+       end; /* F */                                        /*20060512*/
+ %page;
+
+     /*---------------------*/
+     /* 'G' Format Item     */
+     /*---------------------*/
+     when( 6) /* G */ signal ERROR;    /* G Format not implemented   */
+
+     /*---------------------*/
+     /* 'P' Format Item     */
+     /*---------------------*/
+     when( 8) do;                      /* P Format item              */
+       pPic = ptrvalue( fp_opnd_real(1) );  /* -> Picture_Descriptor */
+       select( pPic->NP_id );
+         /*---------------------------*/
+	 /* FIXED PICTURE             */    
+         /*---------------------------*/
+         when( '45'x ) do;             /* FIXED picture              */
+           if pDesc->ST_id = '10'x |   /* Nonvarying CHAR            */
+              pDesc->ST_id = '20'x |   /* Nonvarying BIT             */
+              pDesc->ST_id = '11'x |   /* VARYING CHAR               */
+              pDesc->ST_id = '21'x |   /* VARYING BIT                */
+              pDesc->ST_id = '45'x |   /* FIXED PICTURE              */
+              pDesc->ST_id = '46'x |   /* FLOAT PICTURE              */
+              pDesc->ST_id = '47'x     /* CHARACTER PICTURE          */
+           then do;                                           /*0.9.4*/     
+             call convert_to_arith(pDesc,pData,
+                                   addr(dec_workarea),
+                                   field_width);
+	     end; /* FIXED PIC */                             /*0.9.4*/
+	   if pDesc->XB_id = '43'x |   /* Source is FLOAT       0.9.4*/
+	      pDesc->XB_id = '44'x                            /*0.9.4*/
+	   then call float_to_fixed( pDesc, pData );          /*0.9.4*/
+           call plimove( addr(desc_workarea),
+                         pDesc,
+                         stg(null()->pli_ded_XD) );
+           pDesc = addr(desc_workarea);
+           if pDesc->XD_id ª= '42'x    /* Source not FIXED DECIMAL   */
+           then do;                                           /*0.9.4*/
+             call fixed_bin_to_dec(pDesc,pData,
+               1 + B2D(pDesc->XB_prec),
+               B2D(pDesc->XB_scale) );
+             end; /* FIXED BIN */                          /*20060214*/
+           dec_workarea(1) = pData->FD18;
+           pData = addr(dec_workarea);
+
+           call NPO( pData, pDesc->Desc, pPic,
+                     addr(char_workarea) );
+           /* NOTE: NPO was one of the first runtime routines        */
+           /*       written.  It is passed the FIXED DEC descriptor  */
+           /*       itself, rather than a pointer to the descriptor. */
+           /*       it would be nice to fix this sometime.           */
+           data_width = pPic->NP_size;                        /*0.9.4*/
+           call move_to_buffer( addr(char_workarea),
+                                data_width );
+           end; /* FIXED PIC */
+         /*---------------------------*/
+	 /* FLOAT PICTURE             */    
+         /*---------------------------*/
+         when( '46'x ) do;             /* FLOAT picture         0.9.1*/
+           if pDesc->ST_id = '10'x |   /* Nonvarying CHAR            */
+              pDesc->ST_id = '20'x |   /* Nonvarying BIT             */
+              pDesc->ST_id = '11'x |   /* VARYING CHAR               */
+              pDesc->ST_id = '21'x |   /* VARYING BIT                */
+              pDesc->ST_id = '45'x |   /* FIXED PICTURE              */
+              pDesc->ST_id = '46'x |   /* FLOAT PICTURE              */
+              pDesc->ST_id = '47'x     /* CHARACTER PICTURE          */
+           then do;                                           /*0.9.4*/     
+             call convert_to_arith(pDesc,pData,
+                                   addr(dec_workarea),
+                                   field_width);
+             end; /* FLOAT PIC */
+           /*--------------------------------------------------------*/
+           /* Convert all input to internal float in 'float_workarea'*/
+           /*--------------------------------------------------------*/
+	   if pDesc->XB_id = '41'x |   /* Source is FIXED       0.9.4*/
+	      pDesc->XB_id = '42'x                            /*0.9.4*/
+           then call fixed_to_float( pDesc, pData );          /*0.9.4*/
+           else call F2I( pData, pDesc, addr(float_workarea));/*0.9.4*/
+           pData = addr(float_workarea(1));
+           call FPO( pData, pPic, addr(char_workarea) );
+           data_width = pPic->NP_size;                        /*0.9.4*/
+           call move_to_buffer( addr(char_workarea),
+                                data_width );
+           end; /* FLOAT PIC */
+         /*---------------------------*/
+	 /* CHARACTER PICTURE         */    
+         /*---------------------------*/
+         when( '47'x ) do;             /* CHARACTER picture          */
+           signal condition( UNIMPLEMENTED );                  /*0.7c*/
+           /* Character picture: Convert data to CHARACTER           */
+           data_width = pPic->CP_size;
+           end; /* CHAR PIC */
+         end; /* select */
+       end; /* P */
+
+     otherwise signal ERROR;                     /* SNO          0.8c*/
+
+     end; /* select */
+
+   /*-----------------------*/                             /*20060901*/
+   /* Exit                  */                             /*20060901*/
+   /*-----------------------*/                             /*20060901*/
+   return; 
+ %page;                                                /*20060901*/
+
+/* Write hexadecimal data using 'B4' format */                /*1.0.0*/
+put_hex: proc(pDesc,pData,data_width,field_width);            /*1.0.0*/
+  dcl     pDesc               ptr;
+  dcl     pData               ptr;
+  dcl     data_width          fixed bin(31); /* Data width in bits   */
+  dcl     field_width         fixed bin(31); /* Filed width in bytes */
+  dcl    (i,n)                fixed bin(31);
+  dcl    (o,d)                fixed bin(7);
+  dcl     rem                 fixed bin(7);                   /*1.3.2*/
+  dcl     p                   ptr;
+  dcl     c                   char(1);
+  /* COMMENT: Need to handle condition where width not mult of 4     */
+  rem = mod(data_width,4);                                    /*1.3.2*/
+  data_width = ceil(data_width/4);                            /*1.3.2*/
+  if fp_np_real<1 then field_width = data_width;              /*1.3.2*/
+  n = min(field_width,data_width);      /* Max num of bits to pu1.0.1*/
+  o = pDesc->ST_bo+1;                   /* Starting bit position     */
+  p = pData;
+  do j=1 to n;                          /* Grab bits by fours        */
+    d = substr(p->b32,o,4);             /* Bit value                 */
+    c = substr(HexChar,d+1,1);          /* Character value           */
+    call move_to_buffer(addr(c),1);
+    o = o+4;                            /* Bump bit pos              */
+    if o>8 then do;                     /* If necessary, to next byte*/
+      p = p+1;
+      o = o-8;
+      end;
+    end; /* do i */
+  /* I hate this code!  */
+  if rem^=0 then do;                    /* Get leftover bits    1.3.2*/
+    d = substr(p->b32,o,rem);           /* Bit value                 */
+    d = isll(d,4-rem);                  /* Shift into position       */
+    c = substr(HexChar,d+1,1);          /* Character value           */
+    call move_to_buffer(addr(c),1);
+    end;                                                      /*1.3.2*/
+  end put_hex;                                                /*1.0.0*/
+
+/* Write octal data using 'B3' format */                      /*1.0.0*/
+put_oct: proc(pDesc,pData,data_width,field_width);            /*1.0.0*/
+  dcl     pDesc               ptr;
+  dcl     pData               ptr;
+  dcl     data_width          fixed bin(31);
+  dcl     field_width         fixed bin(31);
+  dcl    (i,n)                fixed bin(31);
+  dcl    (o,d)                fixed bin(7);
+  dcl     rem                 fixed bin(7);                   /*1.3.2*/
+  dcl     p                   ptr;
+  dcl     c                   char(1);
+  /* COMMENT: Need to handle condition where width not mult of 3     */
+  rem = mod(data_width,3);                                    /*1.3.2*/
+  data_width = ceil(data_width/3);                            /*1.3.2*/
+  if fp_np_real<1 then field_width = data_width;              /*1.3.2*/
+  n = min(field_width,data_width);      /* Max num of bits to put    */
+  o = pDesc->ST_bo+1;                   /* Starting bit position     */
+  p = pData;
+  do i=1 to n;                          /* Grab bits by fours        */
+    d = substr(p->b32,o,3);             /* Bit value                 */
+    c = substr(OctChar,d+1,1);          /* Character value           */
+    call move_to_buffer(addr(c),1);
+    o = o+3;                            /* Bump bit pos              */
+    if o>8 then do;                     /* If necessary, to next byte*/
+      p = p+1;
+      o = o-8;
+      end;
+    end; /* do i */
+  if rem^=0 then do;                    /* Get leftover bits    1.3.2*/
+    d = substr(p->b32,o,rem);           /* Bit value                 */
+    d = isll(d,3-rem);
+    c = substr(OctChar,d+1,1);          /* Character value           */
+    call move_to_buffer(addr(c),1);
+    end;                                                      /*1.3.2*/
+  end put_oct;                                                /*1.0.0*/
+ %page;
+
+ /*---------------------------------------------*/         /*20091027*/
+ /* Raise the SIZE condition                    */         /*20091027*/
+ /* This is not a recoverable error.            */         /*20091027*/
+ /*---------------------------------------------*/         /*20091027*/
+ signal_SIZE:                                              /*20091027*/
+  if M_size then (size): signal SIZE;                      /*20091027*/
+
+ /*---------------------------------------------*/
+ /* Check to make sure data fits in field       */
+ /*---------------------------------------------*/
+ check_size: proc( pData, count );
+   dcl   pData               ptr;
+   dcl   count               fixed bin(31);
+   dcl   p                   ptr;
+   dcl   n                   fixed bin(31);
+   dcl   c                   char(1)   based;
+
+   n = count;                /* Number of excess chars to check      */
+   p = pData;
+ s: do while( n>0 );
+     if p->cª=' ' then do;   /* Will anything be lost?               */
+       (size): signal SIZE;  /* Yes, raise SIZE condition            */
+       leave s;              /* Normal return comes here             */
+       end;
+     n = n-1;
+     p = p+1;
+     end s;
+   return;
+
+   end check_size;
+
+ /*---------------------------------------------*/
+ /* Blank-Pad a field                           */
+ /*---------------------------------------------*/
+ pad: proc(n);               /* Blank-pad field              20060901*/
+   dcl   n                   fixed bin(31);
+   dcl  (i,j)                fixed bin(31);
+   i = n;
+   do while( i>0 );          /* move spaces in chunks of up to 32b   */
+     j = min( i, stg(Blanks) );                            /*20060901*/
+     call move_to_buffer( addr(Blanks), j );
+     i = i-j;
+     end; /* do while */
+   end pad;
+
+ /*---------------------------------------------*/
+ /* Move data to line buffer                    */
+ /*---------------------------------------------*/
+ move_to_buffer: proc(where,howmuch);
+   dcl   where               ptr;
+   dcl   howmuch             fixed bin(31);
+   dcl  (i,n)                fixed bin(31);
+   dcl   p                   ptr;
+   i = howmuch;
+   p = where;
+   /* Each iteration of this loop will move as much data as will fit */
+   /* in the space remaining on the current line.                    */
+   /* Full lines are written as we go.                               */
+   do while( i>0 );
+     if pSBB->SBB_col >= pSBB->SBB_lnsize /* This line is full       */
+     then call PL.SPL_LineEnd(0,0);       /*  so write it out        */
+     n = pSBB->SBB_lnsize - pSBB->SBB_col;/* Space left in buffer    */
+     if i<n then n=i;                     /* n=min(i,n)              */
+     call plimove(pSBB->SBB_pline,p,n);   /* Move data that fits     */
+     i = i-n;                             /* Adjust addr and count   */
+     p = p+n;
+     pSBB->SBB_pline  = pSBB->SBB_pline+n;/* Bump line ptr           */
+     pSBB->SBB_col    = pSBB->SBB_col+n;  /* Bump col position       */
+     end; /* do while */
+   end move_to_buffer;
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /* Convert Coded Arithmetic data to CHARACTER for printing          */
+ /* "The conversion from decimal fixed-point type to character       */
+ /*  type is performed according to the normal rules for             */
+ /*  conversion. ... if the field-width is such that any             */
+ /*  character is lost, the SIZE condition is raised."               */
+ /*               -SC26-3114-01, p.280                               */
+ /*------------------------------------------------------------------*/
+ convert_to_char: proc( pDesc, pData, pWork, lWork );
+   dcl   pDesc               ptr;
+   dcl   pData               ptr;
+   dcl   pWork               ptr;
+   dcl   lWork               fixed bin(31);
+
+   /* Convert BINARY data to DECIMAL  */
+   if pDesc->XB_id = '41'x then do;    /* FIXED BINARY               */
+     call fixed_bin_to_dec(pDesc,pData,
+             1 + B2D(pDesc->XB_prec),                      /*20051208*/
+             B2D(pDesc->XB_scale) );                       /*20051208*/
+     end; /* FIXED BINARY  */
+   if pDesc->XB_id = '43'x then do;    /* FLOAT BINARY               */
+     call float_bin_to_dec(pDesc,pData);
+     end; /* FLOAT BINARY  */
+   if pDesc->XB_id = '42'x then do;    /* FIXED DECIMAL              */
+     pWork = addr(char_workarea);
+     call CAC( pData, pDesc, pWork );
+     lWork = length(pWork->VarStr);    /* Return string length       */
+     pData = pWork+stg(pWork->VarStr); /*   and address              */
+     end; /* FIXED DECIMAL */
+   if pDesc->XB_id = '44'x then do;    /* FLOAT DECIMAL              */
+     call CLC( pData, pDesc, addr(char_workarea) );
+     lWork = length(pWork->VarStr);    /* Return string length   0.8c*/
+     pData = pWork+stg(pWork->VarStr); /*   and address          0.8c*/
+     end; /* FLOAT DECIMAL */
+   end convert_to_char;
+
+ /*------------------------------------------------------------0.9.10*/
+ /* Convert other data types to bit string                     0.9.10*/
+ /* For arithmetic data "the arithmetic value converts to       1.0.0*/
+ /*    binary, and both the sign and any fractional aprt are    1.0.0*/
+ /*    ignored. (If the arithmetic value is complex, the        1.0.0*/
+ /*    imaginary part is also ignored). The resulting binary    1.0.0*.
+ /*    value is treated as a bit string. It is assigned to the  1.0.0*/
+ /*    target according to the rules for string assignment."    1.0.0*/
+ /* For character "Character 0 becomes bit 0 and character 1    1.0.0*/
+ /*    becomes bit 1. Any character other than 0 or 1 raises    1.0.0*/
+ /*    the CONVERSION condition.          -SC26-3114-01, p.92   1.0.0*/
+ /*------------------------------------------------------------0.9.10*/
+ convert_to_bit: proc( pDesc, pData, pWork, lWork )          /*0.9.10*/
+                 returns( fixed bin(31) );                    /*1.0.0*/
+   dcl   pDesc               ptr;       /* ->Source descriptor       */
+   dcl   pData               ptr;       /* ->Source data             */
+   dcl   pWork               ptr;       /* ->Output area             */
+   dcl   lWork               fixed bin(31);  /* Result length        */
+   dcl 1 src_loc_desc,                                        /*1.0.0*/
+         5 src_pData          ptr,                            /*1.0.0*/
+         5 src_pDesc          ptr;                            /*1.0.0*/
+   dcl 1 tgt_loc_desc,                                        /*1.0.0*/
+         5 tgt_pData          ptr,                            /*1.0.0*/
+         5 tgt_pDesc          ptr;                            /*1.0.0*/
+   dcl   data_width           fixed bin(31);
+   dcl   converted            fixed bin(31);                  /*1.0.0*/
+   dcl   var_bit_res          bit(64)   varying;              /*1.1.1*/
+
+   if pDesc->ST_id^='10'x &             /* Is this character data?   */
+      pDesc->ST_id^='11'x
+   then do;
+     call CAB(pData,pDesc,addr(var_bit_res));                 /*1.1.1*/
+     pWork->B64 = var_bit_res;                                /*1.1.1*/
+     lWork = length(var_bit_res);                             /*1.1.1*/
+     return( length(var_bit_res) );                           /*1.1.1*/
+     end;
+
+   /* Character to bit */
+   if pDesc->ST_id = '10'x              /* Nonvarying character?     */
+   then do;
+     data_width = pDesc->ST_len;
+     end; /* nonvarying string */
+   else if pDesc->ST_id = '11'x         /* VARYING CHAR              */
+     then do; 
+     data_width = length( pData->VarStr );
+     pData = pData + stg(null->VarStr);                       /*1.1.1*/
+     end;
+
+   /* (CCB only converts as many bits as specified */
+   addr(desc_workarea)->ST_id  = '20'x;
+   addr(desc_workarea)->ST_len = data_width;                  /*1.0.0*/
+   src_pData = pData;                   /* Build loc/desc addrs      */
+   src_pDesc = pDesc;
+   tgt_pData = pWork;
+   tgt_pDesc = addr(desc_workarea);
+   /* SYSNULL here is ONFILE */
+   converted =  CCB( addr(src_loc_desc), 
+                     addr(tgt_loc_desc), 
+                     sysnull() );
+   return(converted);                                         /*1.0.0*/
+
+   end convert_to_bit;                                       /*0.9.10*/
+
+ /*----------------------------------------------------------20060512*/
+ /* Convert String data to arithmetic FIXED DECIMAL          20060512*/
+ /* Output in dec_workarea and desc_workarea                 20060512*/
+ /*----------------------------------------------------------20060512*/
+ convert_to_arith: proc( pDesc, pData, pWork, lWork );     /*20060512*/
+   dcl   pDesc               ptr;                /* ->String Descript*/
+   dcl   pData               ptr;                /* ->String Data    */
+   dcl   pWork               ptr;                /* ->Output Workarea*/
+   dcl   lWork               fixed bin(31);      /* Workarea Length  */
+   dcl   BinValue            fixed bin(31);      /* Temporary        */
+   dcl   pBits               ptr;
+   dcl   tmp_workarea        char(16);                        /*1.2.1*/
+
+   /*---------------------------------*/
+   /* Convert CHAR to FIXED DEC(m,q)  */
+   /*---------------------------------*/
+   if pDesc->ST_id = '10'x |           /* Nonvarying CHAR            */
+      pDesc->ST_id = '11'x             /* VARYING CHAR               */
+   then do;
+     /* Build descriptor -- need to know dec places */
+     /* desc_workarea contains descriptor to be used for converted   */
+     /* data. */
+     addr(tmp_workarea)->XD_id    = '42'x;                    /*1.2.1*/
+     addr(tmp_workarea)->XD_cplx  = '00'bx;                   /*1.2.1*/
+     addr(tmp_workarea)->XD_prec  = field_width;              /*1.2.1*/
+     addr(tmp_workarea)->XD_scale = frac_digits;              /*1.2.1*/
+     call CCA( pData, pDesc,           /* Convert CHAR->FIXED DEC    */
+               addr(dec_workarea),     /* Result field               */
+               addr(tmp_workarea),     /* Result descriptor     1.2.1*/
+               sysnull                 /* ONFILE not used for output */
+             );
+     desc_workarea = tmp_workarea;
+     end; /* Character */
+   /*---------------------------------*/
+   /* Convert BIT to FIXED DEC(m,0)   */
+   /*---------------------------------*/
+   if pDesc->ST_id = '20'x |           /* Nonvarying BIT             */
+      pDesc->ST_id = '21'x             /* VARYING BIT                */
+   then do;
+     BinValue = pDesc->ST_len;         /* Max string length          */
+     pBits    = pData;
+     if pDesc->ST_id = '21'x           /* VARYING string?            */
+     then do;
+       BinValue = length( pData->VarStr );       /* Yes, use pfx len */
+       pBits = pBits + stg( null()->VarStr );    /* ->Data           */
+       end; /* VAR */
+     BinValue = CBA( pBits, pDesc->ST_bo, BinValue );
+     pWork->FD18 = BinValue;                               /*20071130*/
+     addr(desc_workarea)->XD_id    = '42'x;
+     addr(desc_workarea)->XD_cplx  = '00'bx;
+     addr(desc_workarea)->XD_prec  = field_width;
+     addr(desc_workarea)->XD_scale = frac_digits;
+     end; /* Bit */
+   /*---------------------------------*/
+   /* Convert PIC to FIXED/FLOAT DEC  */
+   /*---------------------------------*/
+   if pDesc->NP_id = '45'x |                /* FIXED PIC        0.9.4*/
+      pDesc->NP_id = '46'x |                /* FLOAT PIC        0.9.4*/
+      pDesc->NP_id = '47'x                  /* CHAR PIC         0.9.4*/
+   then do;                                                   /*0.9.4*/
+     call convert_pic(pDesc,pData);                           /*0.9.4*/
+     data_width = pDesc->XD_prec+1;                           /*0.9.4*/
+     if pDesc->XD_scale^=0                                    /*0.9.4*/
+     then data_width=data_width+1;                            /*0.9.4*/
+     if pDesc->NP_id = '46'x                /* FLOAT PIC        0.9.4*/
+     then addr(desc_workarea)->XD_id  = '44'x; /* Then FLOAT  DE0.9.4*/
+     else addr(desc_workarea)->XD_id  = '42'x; /* Else FIXED  DE0.9.4*/
+     addr(desc_workarea)->XD_cplx  = '00'bx;
+     addr(desc_workarea)->XD_prec  = pPic->NP_prec;
+     addr(desc_workarea)->XD_scale = pPic->NP_scale;
+     end; /* PIC */                                           /*0.9.4*/
+     
+   pDesc = addr(desc_workarea);
+   pData = addr(dec_workarea);
+
+   end convert_to_arith;                                   /*20060512*/
+
+ /*-------------------------------------------------------------0.9.4*/
+ /* Convert pictured data to fixed/float decimal                0.9.4*/
+ /*-------------------------------------------------------------0.9.4*/
+ convert_pic: proc( pDesc, pData );                           /*0.9.4*/
+   dcl   pDesc               ptr;
+   dcl   pData               ptr;
+   dcl   p                   ptr;
+   call plifill( addr(desc_workarea), '00'x, stg(desc_workarea) ); 
+   call plifill( addr(dec_workarea(1)), '00'x, stg(dec_workarea(1)) ); 
+   p = addr(desc_workarea);
+   /* NOTE: FLOAT and CHARACTER pictures not supported               */
+   /*       RETURN zero.                                             */
+   if pDesc->NP_id = '46'x then do;     /* FLOAT picture             */
+     p->XD_id = '44'x;                  /* FLOAT DECIMAL(6)          */
+     p->XD_prec = 6;
+     signal condition(UNIMPLEMENTED);   /* (temporary)               */
+     return;
+     end;
+   if pDesc->NP_id = '47'x then do;     /* CHARACTER picture         */
+     p->XD_id = '42'x;                  /* FIXED DECIMAL(6,0)        */
+     p->XD_prec = 6;
+     signal condition(UNIMPLEMENTED);   /* (temporary)               */
+     return;
+     end;
+   if (pDesc->NP_cplx&'80'bx)^='00'bx   /* COMPLEX                   */
+   then do;
+     signal condition(UNIMPLEMENTED);   /* (temporary)               */
+     end;     
+   p->XD_id    = '42'x;                 /* FIXED DECIMAL             */
+   p->XD_prec  = pDesc->NP_prec;
+   p->XD_scale = pDesc->NP_scale;
+   p->XD_cplx  = pDesc->NP_cplx;
+   dec_workarea(1) = NPI(pData,pDesc);                        /*0.9.4*/ 
+   pDesc = p;
+   pData = addr(dec_workarea(1));
+   end convert_pic;                                           /*0.9.4*/
+
+ /*------------------------------------------------------------------*/
+ /* Convert FIXED BINARY to FIXED DECIMAL                            */
+ /* Output in dec_workarea and desc_workarea                         */
+ /*------------------------------------------------------------------*/
+ fixed_bin_to_dec: proc( pDesc, pData, prec, scale );      /*20051208*/
+   dcl   pDesc               ptr;                /* -> Desc (In/Out) */
+   dcl   pData               ptr;                /* -> Data (In)     */
+   dcl   prec                fixed bin(7);       /* Precision20051208*/
+   dcl   scale               fixed bin(7);       /* Scale factor     */
+   dcl   pWork               ptr;                /* -> Workarea (In) */
+   dcl   local_desc_workarea char(16);           /* Local wor20060215*/
+
+   dcl   p                   ptr;
+
+   p = addr(local_desc_workarea); /* Build output descriptor 20060215*/
+   p->XD_id    = '42'x;           /* FIXED DECIMAL                   */
+   p->XD_cplx  = pDesc->XB_flgs&'80'bx;  /* REAL/COMPLEX             */
+   p->XD_prec  = prec;                                     /*20051208*/
+   p->XD_scale = scale;                                    /*20090729*/
+   call CBD( pData, pDesc,
+             addr(dec_workarea(1)), p );                   /*20060214*/
+   call plimove( addr(desc_workarea), p,                   /*20060215*/
+                 stg(sysnull()->pli_ded_XD) );             /*20060620*/
+   pDesc = addr(desc_workarea);   /* Addr(returned_descriptor)       */
+   pData = addr(dec_workarea(1)); /* Addr(returned_data)     20060214*/
+
+   end fixed_bin_to_dec;
+
+ /*----------------------------------------------------------20071214*/
+ /* Convert FIXED data to FLOAT                              20071214*/
+ /* (FLOAT output is in 'internal float' format)                     */
+ /*----------------------------------------------------------20071214*/
+ fixed_to_float: proc( pDesc, pData );
+   dcl  (pDesc,pData)        ptr;
+   if pDesc->XB_id = '41'x then do;    /* Source: FIXED BIN  20071214*/
+     call fixed_bin_to_dec(pDesc,pData,
+             1 + B2D(pDesc->XB_prec),
+             B2D(pDesc->XB_scale) );
+     pData = addr(dec_workarea);
+     pDesc = addr(desc_workarea);
+     call F2I( pData, pDesc, addr(float_workarea) );          /*0.9.4*/
+     end; /* '41'x */
+   if pDesc->XB_id = '42'x then do;    /* Source: FIXED DEC  20071214*/
+     float_frac(1) = pData->FD18;      /* Get value                  */
+     float_frac(1) = float_frac(1) *   /* Shift              20080215*/
+                     10**(18-pDesc->XD_prec);                 /*0.9.4*/
+     float_exp(1)  = pDesc->XD_prec -  /* Power-of-ten exponent      */
+                     pDesc->XD_scale -1;
+     /* Normalize converted FIXED DECIMAL value                      */		     
+     do while( abs(float_frac(1))<100000000000000000 );       /*0.9.4*/
+       float_frac(1) = float_frac(1)*10;                      /*0.9.4*/
+       float_exp(1) = float_exp(1)-1;                         /*0.9.4*/
+       end;                                                   /*0.9.4*/
+     end; /* '42'x */
+   end fixed_to_float;                                     /*20071214*/
+
+ /*--------------------------------------------------------------0.7b*/
+ /* Convert FLOAT data to FIXED                                  0.7b*/
+ /* IBM: (conversion of FLOAT DECIMAL/BINARY to FIXED DECIMAL):  0.7b*/
+ /*      "The precision conversion is as described under         0.7b*/
+ /*       'Converting Ariithmetic Precision' on page 84          0.7b*/
+ /*       with p1 as declared or indicated and q1 indicated      0.7b*/
+ /*       by the decimal point position and modified by the      0.7b*/
+ /*       value of the exponent."    -SC26-3114-01, p.87         0.7b*/
+ /*--------------------------------------------------------------0.7b*/
+ float_to_fixed: proc( pDesc, pData );
+   dcl  (pDesc,pData)        ptr;
+   dcl  (p,q,e1,e2)          fixed bin(31); 
+   dcl   bCplx               bit(1);
+
+   bCplx = pDesc->LD_cplx;             /* Save COMPLEX flag          */
+   p = pDesc->LD_prec;                 /* Get declared precision     */
+   if pDesc->LB_id = '43'x             /* If BINARY FLOAT            */
+   then p = B2D(p);                    /*   convert prec to DECIMAL  */
+   if p>18 then p=18;                                         /*0.9.4*/   
+   /* Convert the data                */
+   call F2I( pData, pDesc, addr(float_workarea) );             /*0.7b*/
+   /* This stores the fraction as a maximum-length decimal number,   */
+   /* Initialize descriptor           */
+   call plifill( addr(desc_workarea), '00'x, stg(desc_workarea) );
+   pDesc = addr(desc_workarea);        /* Build new descriptor       */
+   pDesc->XD_id   = '42'x;             /* FIXED DEC                  */
+   pDesc->XD_cplx = bCplx;             /* COMPLEX flag               */
+   pDesc->XD_prec = p;                 /* Precision                  */
+   /* Round the decimal value(s).                                    */
+   if p<17 then do;
+     ovf = RND( addr(float_workarea(1)), 
+                addr(float_workarea(1)), 17-p );/* Round data at p+1 */
+     if ovf=1 then do;                 /* Adjust for overflow        */
+       float_frac(1) = float_frac(1) / 10;
+       float_frac(1) = float_frac(1) + 100000000000000000;
+       float_exp(1)  = float_exp(1) + 1;
+       end; /* ovf */
+     end; /* p<17 */
+   if bCplx then do;                   /* COMPLEX?                   */
+     if p<17 then do;
+       ovf = RND( addr(float_workarea(2)), 
+                  addr(float_workarea(2)), 18-p );/* Round at p+1    */
+       if ovf=1 then do;               /* Adjust for overflow        */
+         float_frac(2) = float_frac(2) / 10;
+         float_frac(2) = float_frac(2) + 100000000000000000;
+         float_exp(2)  = float_exp(2) + 1;
+         end; /* ovf */
+       end; /* p<17 */
+     end; /* COMPLEX */
+   
+   /* Calculate imputed scale factor.                                */
+   /* 'float_frac' always has a non-zero digit in the most-          */
+   /* significant position and 'float_exp' is the power-of-ten       */
+   /* scale factor.                                                  */
+   e1,e2 = float_exp(1);               /* Get exponent               */
+   if bCplx then e2 = float_exp(2);
+   /* For COMPLEX data we're forcing the same scale for both the real*/
+   /* and imaginary components, since we only have one descriptor.   */
+   /* Pick the scale factor that allows for the largest number of    */
+   /* integral digits, then adjust the 'losing' component to match.  */
+   /* This may reduce the loser to zero.                             */
+   q = max(e1,e2);                     /* Pick largest exponent      */
+   /* F2I stores the result as a maximum-length decimal number.      */
+   /* After rounding we have to adjust for the required precision.   */
+   float_frac(1) = float_frac(1) / 10**(18-p);
+   if bCplx then float_frac(2) = float_frac(2) / 10**(18-p);
+   pDesc->XD_scale = p-q-1;            /* Actual scale factor        */
+   dec_workarea(1) = float_frac(1);    /* Move results               */
+   if bCplx then  dec_workarea(2) = float_frac(2);
+   pData = addr(dec_workarea(1));      /* ->Result Data              */
+ 
+   end float_to_fixed;                                         /*0.7b*/
+
+ /*------------------------------------------------------------------*/
+ /* Convert FLOAT BINARY to FLOAT DECIMAL                            */
+ /* (only the descriptor is converted)                               */
+ /*------------------------------------------------------------------*/
+ float_bin_to_dec: proc( pDesc, pData );
+   dcl   pDesc               ptr;
+   dcl   pData               ptr;
+   dcl   prec                fixed bin(7);                 /*20060919*/
+   dcl   desc_work           char(8);  /* Should be stg(pli_ded_LD)  */
+
+   call plifill( addr(desc_work), '00'x, stg(desc_work) ); /*20060919*/
+   prec  = B2D(pDesc->XB_prec);                            /*20060919*/
+   if prec>18 then prec=18;                                   /*0.9.4*/
+   addr(desc_work)->LD_id   = '44'x;                       /*20060919*/
+   addr(desc_work)->LD_prec = prec;                        /*20060919*/
+   call plimove( addr(desc_workarea),                      /*20060919*/
+                 addr(desc_work),                          /*20060919*/
+                 stg(desc_work) );                         /*20060919*/
+   end float_bin_to_dec;
+
+ /*-------------------------------------------------------------0.9.4*/
+ /* Scale a FIXED DECIMAL value                                 0.9.4*/
+ /*-------------------------------------------------------------0.9.4*/
+ scale: proc(pData,src,dst);                                  /*0.9.4*/
+   dcl    pData               ptr;
+   dcl   (src,dst)            fixed bin(15);
+   dcl    tmp                 fixed dec(18);
+   tmp = pData->FD18;
+   if src>dst
+   then tmp = tmp / 10**(src-dst);
+   if src<dst 
+   then tmp = tmp * 10**(dst-src);
+   pData->FD18 = tmp;
+   end scale;                                                 /*0.9.4*/
+	 
+ /*------------------------------------------------------------------*/
+ /* B2D: Convert number of binary digits to number of decimal digits */
+ /*------------------------------------------------------------------*/
+ B2D: proc(n) returns( fixed bin(7) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   do i=1 to 33;
+     if w<=n_3dot32(i) then leave;
+     end;
+   if neg then i=-i;
+   return(i);
+   end B2D;
+
+ signal_CONV: proc(p);
+   dcl    p                   ptr;
+   if M_Conversion then do;
+     /*--------------------------------------------------------------*/
+     /* "Signal CONVERSION;"                                         */
+     /* This can't be done via SIGNAL statement due to the need to   */
+     /* pass a parameter for the ONSOURCE and ONCHAR information.    */
+     /*--------------------------------------------------------------*/
+ (conversion):    
+     call CONV( oncode_conv, p ); 
+     /* Then return to caller to retry conversion */
+     /* COMMENT: "If the ONSOURCE or ONCHAR pseudovariable is used,  */
+     /*          the program retries the conversion on return from   */
+     /*          the ON-unit.  If the error is not corrected, the    */
+     /*          program loops.  If these pseudovariables are not    */
+     /*          used, the ERROR condition is raised."               */
+     /*             -SC26-3114-2, p.313,                             */
+     /*          SIG checks to see whether these pseudovariables     */
+     /*          have been used, and raises ERROR if not.  If the    */
+     /*          code returns here, they have been used.             */
+     end; /* M_CONVERSION */
+   else do;                            /* CONVERSION disabled        */
+     /* COMMENT: "If the CONVERSION condition is raised and it is    */
+     /*          disabled, the program is in error."                 */
+     /*          (I.E. The behavior is undefined.)                   */
+     /*               -SC26-3114-2, p.313.                           */
+     /*          Our default action is to raise ERROR.               */
+     signal ERROR;
+     end;
+   end signal_CONV;
+
+ %page;
+
+ %include SRB;
+ %include LOCDESC;
+ %include DESC;
+ %include N3DOT32;
+ %include BCDINC;                                              /*0.8b*/
+ %include ONCODE;                                            /*0.9.10*/
+
+ end pli_PutE;

@@ -1,6 +1,8 @@
 fastapi
 uvicorn
+websockets
 sqlalchemy
 pydantic
 openai
 python-dotenv
+cryptography

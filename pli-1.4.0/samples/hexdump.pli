@@ -1,0 +1,62 @@
+ /* hexdump                                                          */
+ /********************************************************************/
+ /*                                                                  */
+ /*      Module:        hexdump                                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2000                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      hex and character dump to stderr of a        */
+ /*                     specified number of bytes oif storage        */
+ /*                     beginning at an address provided             */
+ /*                     by the caller.                               */ 
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL where   PTR;                             */
+ /*                     DCL howmany FIXED BIN(31); VARYING );        */
+ /*                     CALL hexdump( where, howmany );              */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ hexdump: proc(where,howmany);
+   dcl   where               ptr;
+   dcl   howmany             fixed bin(31);
+   dcl   w                   ptr;
+   dcl   h                   fixed bin(31);
+   dcl   n                   fixed bin(31);
+   dcl   line                char(80) var;
+
+   w = where;
+   h = howmany;
+   do while(h>0);
+     if h>20 then n=16;
+     else         n=h;
+     line = heximage(addr(w),4) || ': ';      /* Address      */
+     if h>0 then do;
+       line = line || heximage(w,4) || ' ';   /* First dword  */
+       w = w+4;
+       h = h-4;
+       end;
+     if h>0 then do;
+       line = line || heximage(w,4) || ' ';   /* Second dword */
+       w = w+4;
+       h = h-4;
+       end;
+     if h>0 then do;
+       line = line || heximage(w,4) || ' ';   /* Third dword  */
+       w = w+4;
+       h = h-4;
+       end;
+     if h>0 then do;
+       line = line || heximage(w,4) || ' ';   /* Fourth dword */
+       w = w+4;
+       h = h-4;
+       end;
+     display( line );
+     end; /* do while */
+   end hexdump;

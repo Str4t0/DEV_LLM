@@ -1,0 +1,71 @@
+ /* _pli_GetTime                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_TM  (PL/I runtime)                      */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GetTime      [TIME() BIF]               */
+ /*                                                                  */
+ /*      Function:      Implement time builtin function.             */
+ /*                     Calls Operating-System-Dependent procedure   */
+ /*                     OSGetDateTime to get the current date and    */
+ /*                     time information.                            */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                                                                  */
+ /*      Calling sequence: Called with no arguments, returns the     */
+ /*                     appropriate character string result.         */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2011-02-06: Correct milliseconds calculation         0.9.5*/
+ /*        2011-06-11: Fix hundredths of sec. calculation       0.9.2*/
+ /*        2009-12-14: Modified to call OSGetDateTime.           0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_TM:  proc returns( character(9) )
+               options( linkage(system) )
+               ext( '_pli_GetTime' );
+
+ /*------------------------------------------------------------------*/
+ /* TIME() Result string hhmmssttt                                   */
+ /*------------------------------------------------------------------*/
+ dcl   1 rTime,
+         5 Hours             pic'99',
+         5 Minutes           pic'99',
+         5 Seconds           pic'99',
+         5 Hundredths        pic'999';
+
+ /*-----------------------------------*/
+ /* System OSGetDateTime Function     */
+ /*-----------------------------------*/
+ dcl     OSGetDateTime       entry(ptr,ptr)
+                             external( '_pli_OSGetDateTime' )
+                             returns( fixed bin(31) ) /* unsigned */
+                             options( asm linkage(system) );
+
+ dcl   1 datetime            like tm;
+ dcl     usec                fixed bin(31);                   /*0.9.2*/
+
+ dcl     retcode             fixed bin(31) /* unsigned */ ;
+
+ dcl    (addr,string)        builtin;
+
+ retcode = OSGetDateTime( addr(datetime), addr(usec) );       /*0.9.2*/
+ /*rTime = os2_datetime, by name;*/
+ rTime.Hours      = datetime.tm_hour;
+ rTime.Minutes    = datetime.tm_min;
+ rTime.Seconds    = datetime.tm_sec;
+ rTime.Hundredths = usec/1000;         /* 10**-6 ==> 10**-3     0.9.5*/
+ return( string(rTime) );
+
+ %include tm;
+
+ end pli_TM;

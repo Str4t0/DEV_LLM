@@ -1,0 +1,154 @@
+ /* _pli_Close                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Close (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Close                                   */
+ /*                                                                  */
+ /*      Function:      Close closes a file and flushes buffers.     */
+ /*                     It is called either from IOR for a PL/I      */
+ /*                     CLOSE statement, or from termination code    */
+ /*                     when all open files are being closed.        */
+ /*                                                                  */
+ /*                     If called by CLOSE statement, the address of */
+ /*                     the close IORB is passed from which the      */
+ /*                     CLOSE environment options (LEAVE|REREAD)     */
+ /*                     could be extracted if they were used.        */
+ /*                                                                  */
+ /*                     If called by termination code, the IORB      */
+ /*                     address will be SYSNULL.                     */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Control block formats:                       */
+ /*                       FILE, FCB, IORB                            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Address of FCB, Address of IORB.             */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2020-06-23: Changed to use new OSClose.            0.9.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Close: proc(pIORB,pFCB)
+               ext( '_pli_Close' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pIORB               ptr;
+ dcl     pFCB                ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     pF                  ptr;
+ dcl     pN                  ptr;
+ dcl     zStr                char(1024)     based;
+ dcl     bCloseOpt           bit(32)             init( '00000000'bx );
+         /* These options are not used by version 1.0.              */
+         /* '80000000'bx - LEAVE                                    */
+         /* '40000000'bx - REREAD                                   */
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     OSClose             entry( fixed bin(31) )
+                             options( linkage(system) )
+                             returns( fixed bin(31) )
+                             external( '_pli_OSClose' );
+ dcl     PLI_BufF            entry( ptr )
+                             external( '_pli_BufF' );
+ dcl     PLI_BufO            entry( ptr, ptr, fixed bin(31) )
+                             options( linkage(system) )       /*0.9.4*/
+                             external( '_pli_BufO' );
+
+ dcl    ( addr,allocate,null,plifree,stg,string,substr,sysnull
+        )                    builtin;
+
+ pF = pFCB->FCB_pFile;                 /* A(FILE)                    */
+ pN = pF->FC_pName;                    /* A(File_Name)               */
+ 
+ /*-------------------------------------------------------*/
+ /* Make sure file is open before closing                 */
+ /*-------------------------------------------------------*/
+
+ if substr(pFCB->FCB_status,1,1)^='1'b /* File not open         0.9.1*/
+ then return;                                                 /*0.9.1*/
+
+ /*-------------------------------------------------------*/
+ /* Cleanup any pending line data and delete line buffer  */
+ /*-------------------------------------------------------*/
+ if substr(pFCB->FCB_attrib,11,1)='1'b /* STREAM file?               */
+ then do;
+   if substr(pFCB->FCB_attrib,17,1)='1'b /* OUTPUT?                  */
+   then call flush_line;               /* Yes, flush last line       */
+   /* NOTE: A record read with the SET() option will not be          */
+   /*       available after the file is closed!!                     */
+   if pFCB->FCB_aLineª=SYSNULL         /* Delete line buffer         */
+   then call plifree(pFCB->FCB_aLine);
+   pFCB->FCB_aLine,pFCB->FCB_pLine = SYSNULL;/* Mark deleted         */
+   end; /* STREAM */
+
+ /*-------------------------------------------------------*/
+ /* Write the file buffer if dirty.                       */
+ /* Dirty bit is set only for OUTPUT or UPDATE files.     */
+ /*-------------------------------------------------------*/
+ if substr(pFCB->FCB_status,32,1)='1'b /* 'Dirty' bit set?           */
+ then call PLI_BufF( pFCB );           /* Yes, flush the file buffer */
+ if pFCB->FCB_aBufª=SYSNULL            /* Delete the buffer          */
+ then call plifree(pFCB->FCB_aBuf); 
+ pFCB->FCB_aBuf,pFCB->FCB_pBuf = SYSNULL;/* Mark deleted             */
+ substr(pFCB->FCB_status,32,1)='0'b;   /* Reset 'Dirty' bit          */
+
+ /*-------------------------------------------------------*/
+ /* Operating System dependent portion of close logic     */
+ /*-------------------------------------------------------*/
+ RC = OSClose( pFCB->FCB_HFILE );      /* O/S dependent CLOSE logic  */
+ pFCB->FCB_HFILE  = 0;                 /* Zero file handle           */
+ pFCB->FCB_LastSt = RC;                /* Set last OS return code    */
+ substr(pFCB->FCB_status,1,1)='0'b;    /* Indicate file now closed   */
+ if pFCB->FCB_pTitleª=sysnull()        /* Free title string     0.9.1*/
+ then call plifree(pFCB->FCB_pTitle);
+ pFCB->FCB_pTitle=sysnull();
+ if RCª=0 then signal ERROR;           /* CLOSE was unsuccessful     */
+ /* NOTE: Need mechanism to report back the system return code.      */
+
+ return;
+
+ /*------------------------------------------------------------------*/
+ /*  Flush the last line buffer for STREAM OUTPUT files              */
+ /*------------------------------------------------------------------*/
+ flush_line: proc;
+   dcl   line_length         fixed bin(31);
+
+   /* The partial data for the last line is contained between        */
+   /* FCB_aLine and FCB_pLine, with no control information.          */
+   /* If the addresses are equal there is no partial last line,      */
+   /* otherwise move data to output buffer.                          */
+   line_length = pFCB->FCB_pLine - pFCB->FCB_aLine;
+   if line_length>0 then do;           /* Any pending data?          */
+     call PLI_BufO( pFCB, pFCB->FCB_aLine, line_length );
+     end;
+
+   end flush_line;
+
+ %page;
+ %include FCB;
+ %include IORB;
+ %include FILE;
+
+ end pli_Close;

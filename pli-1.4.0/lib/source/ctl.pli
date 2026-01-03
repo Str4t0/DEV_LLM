@@ -1,0 +1,518 @@
+ /* _pli_Ctl                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.3         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_ctl (PL/I runtime)                      */
+ /*      Version:       1.1                                          */
+ /*      Date:          Mar, 2012                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_ctl                                     */
+ /*                                                                  */
+ /*      Function:      CONTROLLED storage manager.                  */
+ /*                                                                  */
+ /*          A CONTROLLED variable is identified by its unique index */
+ /*          in the PRV.  The value of this index is assigned        */
+ /*          here during execution when a controlled variable is     */
+ /*          first referenced.  The PRV entry will point to the      */
+ /*          most recent controlled variable prefix (CTLH) for       */
+ /*          this variable.                                          */
+ /*                                                                  */
+ /*          A PRV is maintained for each task/thread, copied from   */
+ /*          the attaching task when a new task is started.          */
+ /*                                                                  */
+ /*          Controlled variable prefix:                             */
+ /*    1 CTLH                aligned based,                          */
+ /*      5 CH_LocDesc,                           /* Loc/Desc       00*/
+ /*        10 CH_pData       ptr,                /* addr(data)     00*/
+ /*        10 CH_pDesc       ptr,                /* addr(descr)    04*/
+ /*      5 CH_prev           ptr,                /* addr(prev gen) 08*/
+ /*      5 CH_pTCB           ptr,                /* addr(owners TCB0C*/
+ /*      5 CH_AllocCnt       fixed bin(31),      /* Alloc Count    10*/
+ /*      5 CH_TaskNext       ptr,                /* Task CV chain  14*/
+ /*      5 CH_TaskPrev       ptr,                /* Task CV chain  18*/
+ /*      5 CH_desc           char(0);            /* End of hdr     1C*/ 
+ /*
+ /*      Dependencies:                                               */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*          aGen = GCS(aCtl);                                       */
+ /*            Allocates a new generation of a CONTROLLED variable.  */
+ /*              aCtl is the address of the 'controlled variable'    */
+ /*                  block in STATIC or EXTERNAL storage.            */
+ /*              aGen is the address of the alocated generation.     */
+ /*                                                                  */
+ /*          call FCS(aCtl);                                         */
+ /*            Frees the current generation of a CONTROLLED variable */
+ /*            identified by aCtl.                                   */
+ /*                                                                  */
+ /*          aGen = ACS(aCtl);                                       */
+ /*            Gets the address of the locator/descriptor for the    */
+ /*            controlled variable aCtl.                             */
+ /*                                                                  */
+ /*          aDesc = DCS(aCtl);                                      */
+ /*            Gets the address of the  current descriptor for the   */
+ /*            controlled variable aCtl.  This is either the         */
+ /*            descriptor of the current generation, or the          */
+ /*            default descriptor if no generation allocated.        */ 
+ /*                                                                  */
+ /*          call RCS(to,from,len);                                  */
+ /*            Relocate the descriptors for a controlled structure   */
+ /*            from 'from' to 'to', updating addresses.              */
+ /*                                                                  */
+ /*          n = ALLOCATN(aCtl);                                     */
+ /*            ALLOCATION builtin function for the controlled        */
+ /*            variable aCtl.                                        */
+ /*                                                                  */
+ /*      Logic:                                                      */
+ /*          To allocate a controlled variable, the descriptor for   */
+ /*          the current generation is located and copied to         */
+ /*          temporary storage on the stack.  Any thunks from        */
+ /*          the declaration and any variable data from the          */
+ /*          Allocate statement are applied to the temporary copy.   */
+ /*          Finally GCS is called to compute the required size      */
+ /*          of the data from the temporary descriptor and allocate  */
+ /*          a new generation, including the new descriptor. (whew!) */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*        * I'd like to find a way to do this in fewer steps.       */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2022-10-04: Simplified calling sequence for ANALYZE  1.0.0*/
+ /*                    RCS will not relocate null descript addrs1.0.0*/
+ /*        2021-04-23: Analyze_desc moved to dyndesc          0.9.10e*/
+ /*        2020-04-18: (RCS) New structure mapping algorithm  0.9.10c*/
+ /*        2014-10-27: FIXED DECIMAL OPTIONS(IBM)               0.9.6*/
+ /*        2013-01-06: Add RCS                                  0.9.4*/
+ /*        2013-01-02: Correct default descr addr for ctl struct0.9.4*/
+ /*                                                                  */
+ /********************************************************************/
+ 
+ pli_Ctl: package exports(GCS,FCS,ACS,DCS,RCS,ALLOCN);
+ 
+ /*-------------------------*/
+ /* STATIC data             */
+ /*-------------------------*/
+ dcl     Ctl_hmtx            fixed bin(31)  static init(-1);
+ dcl     Ctl_cnt             fixed bin(31)  static init(1);
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     VarStr              char(0)   varying   based;
+ dcl     PTR                 ptr                 based;
+ 
+ /*------------------------------------------------------------------*/
+ /* The PRV is chained off the TCB for each task.  It has one entry  */
+ /* for each allocated controlled variable, determined by the        */
+ /* index assigned at the first allocation for this variable.        */
+ /* The entry points to the current generation of data.              */
+ /*------------------------------------------------------------------*/
+ dcl    1 PRV                 based,    /* "Pseudo-register vector"  */
+          5 PRV_num           fixed bin(31), /* Number of entries    */
+	  5 PRV_ent        (1)ptr;           /* ->Ctl Var curr gen   */
+ 
+ dcl     gettcb              entry( fixed bin(31) )
+                             returns( ptr )
+                             options( linkage(system) )   
+                             ext( '_pli_GetTCB' );
+ dcl      Analyze            entry( ptr, ptr )              /*0.9.10e*/
+                             options( linkage(system) )       /*1.0.0*/ 
+                             returns( fixed bin(31) )         /*1.0.0*/  
+                             ext( '_pli_Analyze' );         /*0.9.10e*/			      
+
+ dcl    (
+         addr,binvalue,CS,length,
+         plimove,ptradd,ptrvalue,
+         stg,string,substr,
+         sysnull  
+        )                    builtin;
+	
+ %page;
+ /*------------------------------------------------------------------*/
+ /* GCS: Allocate CONTROLLED variable                                */
+ /*------------------------------------------------------------------*/ 
+ GCS: proc( aCtl, pDesc )
+      returns( ptr )
+      options( linkage(system) )
+      ext( '_pli_GCS' );
+      
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   aCtl                ptr;      /* ->Controlled var block     */
+   dcl   pDesc               ptr;      /* ->Updated descriptor       */
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   aTCB                ptr;       /* ->Current TCB             */
+   dcl   pPRV                ptr;       /* ->Current PRV             */
+   dcl  (pCur,pNew)          ptr;       /* ->Current generation      */
+   dcl   zero                fixed bin(31)   init(0);
+   dcl   RC                  fixed bin(31);
+   dcl  (size,hsize)         fixed bin(31);
+   dcl   id                  fixed bin(31);
+   dcl   desc_len            fixed bin(31);
+   dcl 1 ElemLength,
+         5 ElemByteLength    fixed bin(31),
+         5 ElemBitLength     fixed bin(7),
+         5 fil               char(3);
+   dcl   pSED                ptr;                             /*0.9.4*/
+   dcl   pData               ptr;                             /*0.9.4*/
+   
+   aTCB = gettcb(0);                    /* Get my TCB address        */
+   desc_len  = aCtl->CV_desclen;        /* Get descriptor length     */
+   
+   /* If allocation() for this controlled variable is zero, assign   */
+   /* an index to it.                                                */
+   RC = CS( addr(zero), addr(aCtl->CV_id), zero );/* See if var activ*/
+   if RC=0 then call init_ctl_var(aCtl);          /* No              */
+   
+   /* If no current PRV, or the current PRV is too small, fix the    */
+   /* problem.  This code runs only in the context of a single task, */
+   /* so no lock is required.                                        */
+   id = aCtl->CV_id;
+   pPRV = aTCB->TCB_pPrv;               /* Get PRV address           */
+   if pPRV=sysnull()   then pPRV = init_prv(aTCB,id);
+   if pPRV->PRV_num<id then pPRV = init_prv(aTCB,id);
+   pCur = pPRV->PRV_ent(id);            /* Addr(current generation)  */
+   
+   /* Compute the storage required for the controlled variable       */   
+   /* header (CTLH), the descriptor, and the data.                   */
+   /* Allocate and initialize the block.                             */
+/* ANALYZE logic changed 2022-10-04 for 1.0.0*/
+/* ElemByteLength,ElemBitLength=0;                                   */
+/* call Analyze( pDesc, addr(ElemLength) );                 /*0.9.10e*/
+/* /* Round the length up to dwords */ /*                     /*1.0.0*/
+/* size = ElemByteLength;                                     /*1.0.0*/
+/* if ElemBitLength>0 then size = size+1;                     /*1.0.0*/
+   size = Analyze(pDesc,sysnull);                             /*1.0.0*/
+   size = (size+3) / 4;
+   size = size*4;  
+   hsize = desc_len + stg( null()->CTLH );
+   pNew = allocate( size+hsize );
+   call plifill( pNew, '00'x, size+hSize );   
+   
+   /* Initialize the header */
+   pNew->CH_pData = pNew + hsize;
+   pNew->CH_pDesc = addr(pNew->CH_desc);
+   pNew->CH_prev  = pCur;
+   pNew->CH_pTCB  = aTCB; 
+   if pCur=sysnull()
+   then pNew->CH_AllocCnt = 1;                                      
+   else pNew->CH_AllocCnt = pCur->CH_AllocCnt+1;
+   
+   /* CH_TaskNext, CH_TaskPrev? Are they needed? */
+    
+   /* Move the descriptor */
+   if pDesc->XB_id ='80'x then do;
+     pNew->CH_pDesc = RCS( addr(pNew->CH_Desc), pDesc, desc_len );  
+     /* Convert values in SEDs from offsets to addresses             */
+     pSED = pDesc->SDD_pSED;
+     pData = pNew->CH_pData;
+     do while( '1'b ); /* NOTE: What is this loop supposed to do???  */
+     /*pSED->SE_offset = pSED->SE_offset; NOTE: What??? */
+       if pSED->SE_last then leave;
+       pSED = addr(pSED->SE_end);
+       end; /* do while */
+     end; /* structure */
+   else call plimove( pNew->CH_pDesc, pDesc, desc_len);
+     
+   /* The data is initialized by compiled code                       */ 
+   
+   pPRV->PRV_ent(id) = pNew;            /* Update PRV                */
+ 
+   return(pNew);
+   
+   end GCS;
+
+ %page;   
+ /*------------------------------------------------------------------*/
+ /* FCS: Free CONTROLLED variable                                    */
+ /* This code runs only in the context of a single task,             */
+ /* so no lock is required.                                          */
+ /*                                                                  */
+ /* "If a controlled variable has no allocated storage at the time   */
+ /*  the FREE statement is executed, no action is taken."            */
+ /*                                   -SC28-3114-01, p.191           */
+ /*                                                                  */
+ /*------------------------------------------------------------------*/ 
+ FCS: proc( aCtl )
+      options( linkage(system) )
+      ext( '_pli_FCS' );
+      
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   aCtl                ptr;      /* ->Controlled var block     */
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   aTCB                ptr;       /* ->Current TCB             */
+   dcl   pPRV                ptr;       /* ->Current PRV             */
+   dcl   pCur                ptr;       /* ->Current generation      */
+   dcl   id                  fixed bin(31);
+
+   if aCtl->CV_id = 0  then return;     /* No allocations            */
+   id = aCtl->CV_id; 
+   aTCB = gettcb(0);                    /* Get my TCB address        */
+   
+   pPRV = aTCB->TCB_pPrv;               /* Get PRV address           */
+   if pPRV=sysnull()   then return;            
+   if pPRV->PRV_num<id then return;      
+   pCur = pPRV->PRV_ent(id);            /* Addr(current generation)  */
+   if pCur=sysnull()   then return; 
+   if pCur->CH_pTCB ^= aTCB             /* Not my storage            */
+                       then return;
+   pPRV->PRV_ent(id) = pCur->CH_prev;   /* Unchain generation        */
+   call plifree(pCur);                  /* Free this generation      */
+   /* And that's all we have to do */
+   
+   return;
+   end FCS;  
+   
+ /*------------------------------------------------------------------*/
+ /* ACS: Return the address of the current generation of a           */
+ /*      controlled variable.                                        */
+ /*------------------------------------------------------------------*/ 
+ ACS: proc( aCtl )       
+      returns( ptr ) 
+      options( linkage(system) )
+      ext( '_pli_ACS' );
+
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   aCtl                ptr;      /* ->Controlled var block     */
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   aTCB                ptr;       /* ->Current TCB             */
+   dcl   pPRV                ptr;       /* ->Current PRV             */
+   dcl   pCur                ptr;       /* ->Current generation      */
+   dcl   id                  fixed bin(31);
+   
+   aTCB = gettcb(0);                    /* Get my TCB address        */
+   id = aCtl->CV_id;
+   if id = 0           then return(sysnull); /* No generations       */
+   pPRV = aTCB->TCB_pPrv;               /* Get PRV address           */
+   if pPRV=sysnull()   then return(sysnull); 
+   if pPRV->PRV_num<id then return(sysnull);                  /*0.9.4*/
+   pCur = pPRV->PRV_ent(id);            /* Addr(current gen CTLH)    */
+   /* NOTE: Shouldn't there be a condition accessing a nonexistent   */
+   /*       generation?                                              */
+  
+   return(pCur);
+   end ACS;  
+   
+ /*------------------------------------------------------------------*/
+ /* DCS: Return the address of the current descriptor for a          */
+ /*      controlled variable.                                        */
+ /*------------------------------------------------------------------*/ 
+ DCS: proc( aCtl )       
+      returns( ptr ) 
+      options( linkage(system) )
+      ext( '_pli_DCS' );
+      
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   aCtl                ptr;      /* ->Controlled var block     */
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   aTCB                ptr;       /* ->Current TCB             */
+   dcl   pPRV                ptr;       /* ->Current PRV             */
+   dcl   pCur                ptr;       /* ->Current generation      */
+   dcl   id                  fixed bin(31);
+   dcl   p                   ptr;
+   
+   pCur = aCtl->CV_pDesc;               /* Addr(default_descriptor)  */
+   aTCB = gettcb(0);                    /* Get my TCB address        */
+   pPRV = aTCB->TCB_pPrv;               /* Get PRV address           */
+   id = aCtl->CV_id;
+   if id=0 | pPRV=sysnull() | pPRV->PRV_num<id /* No generations     */
+   then /*continue*/ ;
+   else do;;
+     p = pPRV->PRV_ent(id);             /* Addr(current generation)  */
+     if p^=sysnull() 
+     then pCur = p->CH_pDesc;           /* Addr(current descriptor)  */
+     end; /* else */
+     
+   return(pCur); 
+   
+   end DCS;  
+   
+ /*------------------------------------------------------------------*/
+ /* RCS: Relocate the structure descriptors for a controlled         */
+ /*      structure. 'TO' is the the low address of the target area.  */
+ /*      'FROM' is the address of the source SDD.                    */
+ /*      Note that all descriptors of controlled elements are        */
+ /*      potentially adjustable, so all must be relocated.           */
+ /*------------------------------------------------------------------*/ 
+ RCS: proc( to, from, len )
+      returns( ptr )
+      options( linkage(system) )
+      ext( '_pli_RCS' );
+      
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   to                  ptr;      /* ->Destination address      */
+   dcl   from                ptr;      /* ->Source descriptor        */
+   dcl   len                 fixed bin(31); /* Descr length          */
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl  (p,q)                ptr;
+   dcl   dest_pSDD           ptr;  
+   dcl   reloc               fixed bin(31);
+    
+   p = from-len+stg(null()->pli_ded_SDD);/* ->Start of descriptor lis*/
+   call PLIMOVE(to,p,len);              /* Move the descriptors      */
+   dest_pSDD = to+len-stg(null()->pli_ded_SDD); /* ->New SDD         */
+   
+   reloc = from->SDD_pSED - from;
+   dest_pSDD->SDD_pSED = dest_pSDD + reloc;  /* Updt ->1st SED  0.9.4*/
+   p = dest_pSDD->SDD_pSED;
+    
+  /* Now relocate all the descriptor addresses */ 
+  do while( p->PTR^=sysnull );
+    if p->SE_desc^=sysnull then do;                           /*1.0.0*/
+      reloc = from - p->SE_desc;
+      p->SE_desc = dest_pSDD - reloc;
+      end;                                                    /*1.0.0*/
+    p = addr(p->SE_end);
+    end; /* do while */
+    
+  return( dest_pSDD ); 
+     
+   end RCS;  
+   
+ /*------------------------------------------------------------------*/
+ /* ALLOCN: Allocation() built-in function                           */
+ /*------------------------------------------------------------------*/ 
+ ALLOCN: proc( aCtl )       
+         returns( fixed bin(31) ) 
+         options( linkage(system) )
+         ext( '_pli_ALLOCN' );
+      
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   aCtl                ptr;      /* ->Controlled var block     */
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   aTCB                ptr;       /* ->Current TCB             */
+   dcl   pPRV                ptr;       /* ->Current PRV             */
+   dcl   pCur                ptr;       /* ->Current generation      */
+   dcl   id                  fixed bin(31);
+   
+   aTCB = gettcb(0);                    /* Get my TCB address        */
+   id = aCtl->CV_id;
+   if id = 0           then return(0);  /* No generations            */
+   pPRV = aTCB->TCB_pPrv;               /* Get PRV address           */
+   if pPRV=sysnull()   then return(0);         
+   if pPRV->PRV_num<id then return(0);   
+   pCur = pPRV->PRV_ent(id);            /* Addr(current generation)  */
+   if pCur=sysnull()   then return(0);   
+   return(pCur->CH_AllocCnt);
+   end ALLOCN;  
+   
+ %page;
+ /*------------------------------------------------------------------*/
+ /* Initialize or re-initialize a PRV with at least 'index' entries  */
+ /*------------------------------------------------------------------*/ 
+ init_prv: proc( pTCB, index ) returns( ptr );;
+   dcl   pTCB                ptr;            /* ->Current TCB        */
+   dcl   index               fixed bin(31);  /* Required index       */
+   dcl  (n,m)                fixed bin(31);
+   dcl  (p,q)                ptr;
+   
+   n = mod(index,1024)+1;               /* Round up to 1K entries    */
+   n = n*1024;
+   p = pTCB->TCB_pPRV;                  /* Addr(old_PRV) if any      */
+   
+   /* Compute the size of the PRV required and allocate it.          */
+   /* If there is an existing PRV, copy its contents and free it.    */
+   m = stg(null()->PRV) + (n-1)*stg(null()->PRV_ent);
+   q = allocate( m );
+   call plifill( q, '00'x, m );
+   if p^=sysnull() then do;              /* Have PRV data to copy?   */
+     m = stg(null()->PRV) + 
+         (p->PRV_num-1)*stg(null()->PRV_ent(1));              /*0.9.9*/
+     call plimove(q,p,m);
+     call plifree(p);
+     end;
+   q->PRV_num = n;                       /* Set new number of entries*/
+   pTCB->TCB_pPRV = q;                   /* ->New PRV                */
+   return( q );                          /* Return new address       */                       
+   
+   end init_prv;
+   
+ /*------------------------------------------------------------------*/
+ /* Controlled variable initialization                               */
+ /*------------------------------------------------------------------*/ 
+ init_ctl_var: proc(aCtl);
+   dcl   aCtl                ptr;      /* ->Controlled var          */
+   dcl   zero                fixed bin(31)   init(0);
+   dcl   one                 fixed bin(31)   init(1);
+   dcl   RC                  fixed bin(31);
+   dcl   spinlock            fixed bin(31)   init(0);
+   
+   /* The counter and the current controlled variable id have to be  */
+   /* updated atomically.  Use a spinlock to protect this code.      */
+   do while( '1'b );
+     zero = 0;
+     RC = CS( addr(zero), addr(spinlock), one );
+     if RC=0 then leave;                /* Have the spinlock         */
+     end;
+   /* Check again to see if variable is active                       */
+   zero = 0;
+   RC = CS( addr(zero), addr(aCtl->CV_id), zero );
+   if RC=0 then do;                     /* Still no                  */
+     RC = Ctl_cnt;                      /* Get the next index        */
+     Ctl_cnt = Ctl_cnt + 1;             /*   and bump it.            */
+     aCtl->CV_id = RC;                  /* Set control variable ID   */
+     end;
+   zero = 0;
+   RC = CS( addr(one), addr(spinlock), zero );/* Release the lock    */
+   
+   end init_ctl_var;  
+
+/*----- debug code only
+dump: proc(#addr,len);
+  dcl (#addr,a) ptr;
+  dcl (len,l) fixed bin(31);
+  dcl line char(80) varying;
+  a = #addr; l=len;
+  do while(l>0);
+    line = heximage( addr(a), 4) || ': ' || heximage(a,4) || ' ';
+    a = a+4; l = l-4;
+    if l>0 then line = line || heximage(a,4) || ' ';
+    a = a+4; l = l-4;
+    if l>0 then line = line || heximage(a,4) || ' ';
+    a = a+4; l = l-4;
+    if l>0 then line = line || heximage(a,4);
+    a = a+4; l = l-4;
+    display( line );
+    end;   
+  end dump;
+  ----- end debug code */
+
+
+ %include ctlvar;
+ %include ctlh;
+ %include tcb;
+ %include desc;
+
+ end pli_Ctl;

@@ -1,0 +1,185 @@
+ /* _pli_Event                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.2         */
+ /*              See license for terms of use                        */
+ /*                                                                  */
+ /*      Module:        _pli_Event (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Oct, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:						     */
+ /*	    _pli_Wait   - WAIT statement                 	     */
+ /* 		wait: proc(pEvent)				     */
+ /*       		options( linkage(system) )		     */
+ /*       		ext( '_pli_Wait' );			     */
+ /*	    _pli_Cmpl   - COMPLETION pseudovariable	     	     */	
+ /* 		cmpl: proc(pEvent,bCmp)				     */
+ /*       		options( linkage(system) )		     */
+ /*       		ext( '_pli_Cmpl' );			     */
+ /*                                                                  */
+ /*      Function:      _pli_Event is the active event manager:      */
+ /*                     COMPLETION builtin and STATUS handled inline.*/
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Returns:                                                    */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2011-07-14: Fix for old kernels that don't support futex*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Event: package exports(wait,cmpl);
+ 
+ %include errno;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      complete            bit(32)   static    init( '80000000'bx );
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      FB31                fixed binary(31)    based;
+ dcl	  B32		      bit(32)		  based;
+		    
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_FUTEX   by 240;
+ %replace FUTEX_WAIT  by 0;
+ %replace FUTEX_WAKE  by 1;
+ dcl      syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+ dcl     GetFlags            entry                           /*0.9.10*/
+                             external( '_pli_GetFlags' )     /*0.9.10*/
+                             returns( bit(16) )              /*0.9.10*/
+                             options( LINKAGE(SYSTEM) );     /*0.9.10*/
+			     
+ dcl    (addr,cs,heximage,substr,sysnull)
+                             builtin;
+ %page;
+
+ /*---------------------------------------------*/
+ /* Wait for event completion                   */
+ /*---------------------------------------------*/
+ wait: proc(pEvent)
+       options( linkage(system) )
+       ext( '_pli_Wait' );
+
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   pEvent              ptr;
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   RC                  fixed bin(31);
+   dcl   comp_event	     bit(32)		  init( '80000000'bx );
+   dcl   incl_event	     bit(32)		  init( '00000000'bx ); 
+
+ %include CONDMASK;                                          /*0.9.10*/
+
+   /*-----------------------*/
+   /* Static Data           */
+   /*-----------------------*/
+   dcl   no_futex            fixed bin(31)   static    init(0);/*0714*/
+
+   string(cond_mask) = GetFlags();     /* Get enabled conditions     */
+   /* Interlocked test that the event is incomplete.  If so we can   */
+   /* skip semaphore system call.  A '1' is returned if the event    */
+   /* is complete.                                                   */
+   incl_event = pEvent->B32&'7FFFFFFF'bx;
+   RC = CS( addr(incl_event), pEvent, addr(incl_event)->FB31 ); 
+   if RC=1 then return;		           /* Event complete         */
+   /*            eax        ebx     ecx         edx esi              */
+   /* Check for old kernels */
+   if no_futex^=0 then return;
+wait_loop:
+   RC = syscall( SYS_FUTEX, pEvent, FUTEX_WAIT, 0,  sysnull );
+   if RC=0 then return;		           /* Event _now_ complete   */
+   /* Test for no futex support in kernel.  If none, set flag20110714*/
+   /* to avoid subsequent calls and exit.                    20110714*/
+   if RC=-ENOSYS then do;                  /* ENOSYS         20110714*/
+     no_futex = 1;                                         /*20110714*/
+     return;                                               /*20110714*/
+     end;                                                  /*20110714*/
+   if RC=-EINTR then goto wait_loop;       /* EINTR                  */
+   /* display( 'WAIT: SYS_FUTEX RC=' || RC || ' pEvent=' ||      /**/
+   /* 	       heximage(addr(pEvent),4) );                       /**/
+   /* EWOULDBLOCK or EAGAIN means that the futex value was not zero, */
+   /* i.e. event already marked complete.			     */
+   /* The call returns -EINTR if a signal was received during wait.  */
+   if RC=-EAGAIN      then return;
+   if RC=-EWOULDBLOCK then return;
+   /* It would be nice to pass the error code.  'conv' does this,    */
+   /* but currently only for CONVERSION and NAME.                    */
+   signal error;
+       
+   end wait;       
+		
+ /*---------------------------------------------*/
+ /* Completion pseudovariable                   */
+ /*---------------------------------------------*/
+ cmpl: proc(pEvent,bCmp)
+       options( linkage(system) )
+       ext( '_pli_Cmpl' );
+
+   /*-----------------------*/ 
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   pEvent              ptr;
+   dcl	 bCmp		     bit(1);
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   RC                  fixed bin(31);
+   dcl   new_event 	     bit(32)		  init( '00000000'bx );
+   dcl   old_event 	     bit(32)		  init( '00000000'bx );
+
+   /* Set the event completion.  This doesn't strictly have to be    */
+   /* an atomic operation.  Not that the completion bit will be	     */
+   /* set BEFORE waking up any waiting tasks.			     */
+   substr(new_event,1,1)=bCmp;
+   substr(old_event,1,1)=^bCmp;
+   /* Note that if the 'new_event' VALUE is passed to CS, it is      */
+   /* converted to the value 2**31.			             */
+   RC = CS( addr(old_event), pEvent, addr(new_event)->FB31 ); 
+   /* RC=0 indicates that the event completion was not equal to      */
+   /* the desired value prior to this point, and is now set.         */
+   /* RC=1 indicates that the event completion was already set to    */
+   /* the desired value (complete or incomplete).		     */
+   if RC=1  then return;
+   /* Exit if we have just set the event to incomplete.		     */
+   if ^bCmp then return;
+   /* If we have just marked the event complete, wake up any         */
+   /* waiting tasks.  '2147483647' is 2**31-1, to wake up all.	     */
+   /*            eax        ebx     ecx         edx                  */
+   RC = syscall( SYS_FUTEX, pEvent, FUTEX_WAKE, 2147483647 );   
+   if RC>=0 then return;		   /* Event _now_ complete   */
+   /* Test for no futex support in kernel.  If none, set flag20110714*/
+   /* to avoid subsequent calls and exit.                    20110714*/
+   if RC=-ENOSYS then do;                  /* ENOSYS         20110714*/
+     return;                                               /*20110714*/
+     end;                                                  /*20110714*/
+   /*display( 'POST: SYS_FUTEX RC=' || RC || ' pEvent=' || */
+   /*	       heximage(addr(pEvent),4) );                 */
+   /* It would be nice to pass the error code.  'conv' does this,    */
+   /* but currently only for CONVERSION and NAME.                    */
+   signal error;
+      
+   end cmpl;
+  
+ %include event;
+ 
+ end pli_Event;

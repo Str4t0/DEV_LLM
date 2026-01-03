@@ -1,0 +1,71 @@
+ /* _pli_OSSleep                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        OSSleep (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Dec, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSSleep                                 */
+ /*                                                                  */
+ /*      Function:      This is the operating-system dependent code  */
+ /*                     for the PL/I 'DELAY' statement.              */
+ /*                                                                  */
+ /*                     The Linux code calls SYS_NANOSLEEP.          */
+ /*                                                                  */
+ /*      Dependencices: Linux                                        */
+ /*                                                                  */
+ /*      Called From:   _pli_Delay                                   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL msec fixed bin(31);                      */
+ /*                     DCL _pli_OSSleep entry( fixed bin(31) )      */
+ /*                         options( linkage(system) );              */
+ /*                     CALL _pli_OSSleep(msec)                      */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2014-02-21: Fix nanoseconds calculation              0.9.5*/
+ /*	   2010-11-01: Fix ZERODIVIDE in mod() for times < 1 sec.    */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSSleep: proc(msec) external( '_pli_OSSleep' )
+                   options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     msec                fixed bin(31);           /* unsigned    */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     timespec         (2)fixed bin(31);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_NANOSLEEP by 162;
+ dcl      syscall	     entry
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( '_pli_Syscall' );
+ %include errno;
+
+ timespec(1) = msec/1000;              /* Get seconds to wait        */
+ timespec(2) = mod(msec,1000);         /* Milliseconds to wait.9.3   */
+ timespec(2) = timespec(2) * 1000000;  /* Millisec ==> Nanosec       */
+ RC = syscall( SYS_NANOSLEEP, addr(timespec(1)), addr(timespec(1)) );
+ /* If the wait is interrupted by a signal, SYS_NANOSLEEP returns    */
+ /* -EINTR and sets the third argument to the unexpired portion of   */
+ /* the wait.  We'll just end the wait.                              */
+ if RC=0 | RC=-EINTR then return;
+ signal error;                         /* -EFAULT or -EINVAL         */
+
+ end pli_OSSleep;
+

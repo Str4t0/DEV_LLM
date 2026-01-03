@@ -1,0 +1,129 @@
+ /* _pli_FmtSub                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.8         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_FmtSub (PL/I Runtime)                   */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2014                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_FmtSub                                  */
+ /*                                                                  */
+ /*      Function:      Format a data name with a list of.           */
+ /*                     subscripts for stream I/O.                   */
+ /*                                                                  */
+ /*      Called from:   PUTX for PUT DATA(array)                     */
+ /*                     Compiled code for PUT DATA(array_element)    */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*        * DANGER -- We don't have a maximum length for the result */
+ /*          string (because of LINKAGE(SYSTEM)).                    */
+ /*          FmtSub is called from aggio with a maximum              */
+ /*          length of 256, so let's assume that.               1.2.1*/
+ /*          Make sure that all calls use this length           1.2.1*/
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*         FmtSub: Proc(pName,pSubs,pRes)                           */
+ /*           pName->data name as VARTING string                     */
+ /*           pSubs->Subscript list as follows:                      */
+ /*             Num_Subs    fixed bin(31)  /* Number of subscripts   */
+ /*             Subs     (n)fixed bin(31)  /* Subscripts [n=1 to 16] */
+ /*           pRes->pointer to result varying string                 */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*        * Still no check to ensure that the length of the         */
+ /*          subscript string does not exceed the maxlength(tmp_str) */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2023-03-09: Limit output string to 256 bytes.      1.2.1*/
+ /*          2023-03-06: Handle case with no subscripting       1.0.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ FmtSub: proc( pName, pSubs, pRes )
+               options( linkage(system) )
+               ext( '_pli_FmtSub' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    (pName,pSubs,pRes)   ptr;            /* -> Parameters        */
+ dcl    1 SubList            based(pSubs),   /* pSubs->List of subscr*/
+          5 num_subs         fixed bin(31),
+	  5 subs         (16)fixed bin(31);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     i                   fixed bin(31);
+ dcl     tp                  fixed bin(31);
+ dcl     tmp_str             char(180); /* This should hold all subs */
+ dcl     res_str             char(256)  varying;              /*1.2.1*/
+ dcl     pN                  ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     dummy_name          char(1)    varying   static    init('?' );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     VarStr              char(256)     based varying;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry                                                  */
+ /*------------------------------------------------------------------*/ 
+   pN = pName;
+   if pSubs->num_subs=0 then do;       /* No subscripting       1.0.1*/
+     pRes->VarStr = pN->VarStr;                               /*1.0.1*/
+     return;                                                  /*1.0.1*/
+     end;                                                     /*1.0.1*/
+   substr(tmp_str,1,1) = '(';          /* Opening paren              */
+   tp = 1;
+   do i=1 to num_subs;
+     tp = tp+1;
+     call f( subs(i) );                /* Format one subscript       */
+     if i<num_subs then substr(tmp_str,tp,1) = ',';
+     else               substr(tmp_str,tp,1) = ')';
+     end; /* do i */
+   if pN = sysnull() then pN=addr(dummy_name);
+   else do;                                                   /*1.2.1*/
+     /* The following will truncate the result to 256 bytes     1.2.1*/
+     res_str = pN->VarStr || substr(tmp_str,1,tp);            /*1.2.1*/
+     pRes->VarStr = res_str;                                  /*1.2.1*/
+     end;                                                     /*1.2.1*/
+   return;
+
+   f: proc(s);
+     dcl s                   fixed bin(31);
+     dcl t                   fixed bin(31);
+     dcl d                   fixed bin(7);
+     dcl x               (10)char(1),
+         x1                  char(10) defined(x);
+     dcl xp                  fixed bin(7)        init(10);
+     dcl digits         (0:9)char(1)   static    init( 
+          '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' );
+     t = s;
+     x1 = '';
+     if t<0 then t=-t;
+     if t=0 then do;
+       x(xp) = '0';
+       xp = xp-1;
+       end;
+     else do while(t>0);
+       d = mod(t,10);
+       t = t/10;
+       x(xp) = digits(d);
+       xp = xp-1;
+       end;
+     if s<0 then do;
+       x(xp) = '-';
+       xp = xp-1;
+       end;
+     substr(tmp_str,tp,10-xp) = substr(x1,xp+1,10-xp);
+     tp = tp + 10-xp;
+     end f;
+   
+   end FmtSub;

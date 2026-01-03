@@ -1,0 +1,277 @@
+ /* _pli_CBD                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CBD (PL/I runtime)                      */
+ /*      Version:       2.0                                          */
+ /*      Date:          Sep, 2020                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CBD                                     */
+ /*                                                                  */
+ /*      Function:      Convert non-integral or COMPLEXFIXED BINARY  */
+ /*                     to FIXED DECIMAL.                            */
+ /*                                                                  */
+ /*                     Integral conversions are done inline.        */
+ /*                                                                  */
+ /*                     Complex data will have one input and output  */
+ /*                     descriptor, and the input and output         */
+ /*                     data will be two contiguous fields.          */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Intel BCD format.                            */
+ /*                     PL/I Descriptor format                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                    +12 | -> Descriptor for FIXED DEC output   |  */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> FIXED DEC output                  |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Descriptor for FIXED BIN input    |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> FIXED BIN input                   |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Converted decimal value is returned.         */
+ /*                     The output descriptor is not strictly        */
+ /*                     required as it can be derived from the input.*/
+ /*                                                                  */
+ /*      Called from:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:         Since 2**31 is defined in twopower we could  */
+ /*                     avoid special handing for unsigned values    */
+ /*                     if the precision is correct.                 */
+ /*                                                                  */
+ /*      Errors:        SIZE                                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2020-09-23: (459) Fix conversion of binary fract   0.9.10d*/
+ /*        2015-09-28: UNSIGNED                                0.9.10*/
+ /*        2009-07-23: Handle negative scale factors.            0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CBD: proc(pBin,pBDesc,pDec,pDDesc)
+                             external( '_pli_CBD' )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pBin                ptr;      /* -> FIXED BINARY input      */
+ dcl     pBDesc              ptr;      /* FIXED BIN Descriptor       */
+ dcl     pDec                ptr;      /* -> FIXED DEC output        */
+ dcl     pDDesc              ptr;      /* FIXED DEC Descriptor       */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ /* Digit positions for digits 0:17 within BCD number                */
+ dcl     d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pB,qB)              fixed bin(7);
+ dcl    (pD,qD)              fixed bin(7);
+ dcl     sz                  fixed bin(7);
+ dcl     max_prec            fixed bin(7);                  /*0.9.10d*/
+ dcl     bSize               bit(1)                   init( '0'b );
+ dcl     bUns                bit(1)                   init( '0'b );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18)       based;
+ dcl     FB7                 fixed bin(7)        based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB31                fixed bin(31)       based;
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (addr,mod,string,substr) builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ pB = pBDesc->XB_prec;
+ qB = pBDesc->XB_scale;
+ pD = pDDesc->XD_prec;
+ qD = pDDesc->XD_scale;
+ if (pBDesc->XB_flgs&'40'bx)^='00'bx    /* UNSIGNED            0.9.10*/
+ then do;                                                    /*0.9.10*/
+   max_prec = 32;                                           /*0.9.10d*/
+   bUns = '1'b;                                              /*0.9.10*/
+   if pB<=8       then sz=1;                                 /*0.9.10*/
+   else if pb<=16 then sz=2;                                 /*0.9.10*/
+   else                sz=4;                                 /*0.9.10*/
+   end;                                                      /*0.9.10*/
+ else do;                               /* SIGNED              0.9.10*/  
+   max_prec = 31;                                           /*0.9.10d*/
+   if pB<=7       then sz=1;                                 /*0.9.10*/
+   else if pb<=15 then sz=2;                                 /*0.9.10*/
+   else                sz=4;                                 /*0.9.10*/
+   end;                                                      /*0.9.10*/
+
+ /*---------------------------------------------*/
+ /* Convert real part                           */
+ /*---------------------------------------------*/
+ call convert;                         /* Convert real part          */
+
+ /*---------------------------------------------*/
+ /* Convert imaginary part                      */
+ /*---------------------------------------------*/
+ if (pBDesc->XB_flgs&'80'bx)='80'bx    /* Complex?             0.9.10*/
+ then do;
+   pDec = addr(pDec->BCD_end);         /* -> Imaginary part of output*/
+   pBin = pBin + sz;                   /* -> Imaginary part of 0.9.10*/
+   call convert;                       /* Convert imaginary part     */
+   end; /* Complex */
+
+ /*---------------------------------------------*/
+ /* Raise SIZE condition if enabled by caller   */
+ /*---------------------------------------------*/
+ (size): if bSize & M_size then signal SIZE;               /*20060215*/
+
+ return;
+
+ /*---------------------------------------------*/
+ /* Convert Real or Imaginary Part of Source    */
+ /*---------------------------------------------*/
+ convert: proc;
+   dcl  (int,frac)           fixed bin(31);
+   dcl   tmpb                fixed bin(31);
+   dcl   tmpd                fixed dec(18);
+   dcl   df                  fixed dec(18);                 /*0.9.10d*/
+   dcl  (l,m,n)              fixed bin(7);                 /*20090723*/
+   dcl   bSign               bit(1)              init( '0'b );
+   dcl   bLarge              bit(1)              init( '0'b );/*.9.10*/
+
+ /* Digit positions for digits 0:17 within BCD number                */
+   dcl   d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+   
+   /* NOTE: Should use unsigned move?                                */
+   if sz=1        then tmpb = pBin->FB7;/* Get binary source data    */
+   else if sz=2   then tmpb = pBin->FB15;
+   else                tmpb = pBin->FB31;
+
+   /* COMMENT: I was just converting directly if qB was zero, but    */
+   /*          recent change to putx allows output of fractional     */
+   /*          digits regardless of source scale.                    */
+
+   if tmpb<0 then do;                  /* Make source positive       */
+     if bUns then do;                       /* UNSIGNED        0.9.10*/
+       if sz=1        then n=24;   
+       else if sz=2   then n=16;   
+       else                n=1;
+       /* Clear unused bits if high-order bit was set                */
+       tmpb = ISLL(tmpb,n);                                  /*0.9.10*/
+       tmpb = ISRL(tmpb,n);                                  /*0.9.10*/
+       if sz=4                                               /*0.9.10*/
+       then bLarge = '1'b;                  /* Flag to add 2**31.9.10*/
+       end;                                                  /*0.9.10*/
+     else do;
+       tmpb = -tmpb;
+       bSign='1'b;
+       end;
+     end; /* negative */
+ 
+   /*----------------------------------------------------------------*/
+   /* qB represents the position of the radix point:                 */
+   /*   FIXED BINARY(5,0):     xxxxx.                                */
+   /*   FIXED BINARY(5,2):     xxx.xx                                */
+   /*   FIXED BINARY(5,7):     .00xxxxx (zeros are assumed digits)   */
+   /*   FIXED BINARY(5,-2):    xxxxx00.                              */
+   /*----------------------------------------------------------------*/
+
+   /*---------------------------------*/
+   /* Separate binary integer         */
+   /* and fractional bits             */
+   /*---------------------------------*/
+   /* NOTE: The intermediate results should be decimal, to           */
+   /*       maximize the data range.                                 */
+   /*       Need to handle FIXEDOVERFLOW here.                       */
+   /*       (What to do if range exceeded?)                          */
+   pDec->FD18 = 0;                     /* Zero result field          */
+   int,frac = 0;                                           /*20090723*/
+   n=0; 
+   /* If the scale is out of the range that allows the number to be  */
+   /* handled in a register (of FIXED DEC number), we need to        */
+   /* process some other way...                                      */
+   if abs(qB)>max_prec then do;                             /*0.9.10d*/
+     if qB<0                           /* Scale < zero       20090723*/
+     then int = (tmpb * 2**-qB) / 10**-qD;                 /*20090723*/
+     else frac = (tmpb / 2**qB) * 10**qD;                  /*20090723*/
+     end; /* qB>max_prec */                                 /*0.9.10d*/
+   else do;                                                /*20090723*/
+     if qB<0 then do;                  /* Scaled integer             */
+       int  = tmpb*twopower(-qB);      /* Add trailing zeroes        */
+       frac = 0;
+       end;
+     else do;                          /* Split integer and fraction */
+       int  = tmpb/twopower(qB);
+       frac = mod(tmpb,twopower(qB));
+       end;
+     end; /* qB<=max_prec */                                /*0.9.10d*/
+   if bSign                            /* Set sign if negative       */
+   then pDec->BCD_sign = '1'b;
+   /*----------------------------------------------------------------*/
+   /* Convert fractional digits                                      */
+   /* frac = (frac * 10**qD) / 2**qB                                 */
+   /* (this is done in decimal because all 10**n can't be            */
+   /*  represented in binary)                                        */
+   /*----------------------------------------------------------------*/
+   n=0;                                /* Init digit position20051124*/
+   tmpd = frac;  
+   if qD>0 then do;
+     if tmpdª=0 then do;                                   /*20090723*/
+         tmpd = tmpd * tenpower(qD);
+         tmpd = tmpd / twopower(qB);
+       end;                                                /*20090723*/
+     /* Move 'qD' fractional digits                                  */
+     l = min(qD-1,18);                                     /*20090723*/
+     do m=0 to l;                      /* Move fractional dig20090723*/
+       pDec->BCD_dig( d(n) ) = addr(tmpd)->BCD_dig( d(m) );/*20051124*/
+       n=n+1;                                              /*20051124*/
+       end;                                                /*20051124*/
+     end;
+   /*---------------------------------*/
+   /* Convert integer digits          */
+   /*---------------------------------*/
+   tmpd = int;                         /* Convert to decimal         */
+   if qD<=0 | (qD>0 & qD<pD) then do;                      /*20090723*/
+     /* Move 'pD-qD' integer digits                                  */
+     if qD<0 then l=pD;
+     else l = pD-qD-1;                                     /*20090723*/
+     l = min(l,18);
+     do m=0 to l-1;                      /* Move integer digits20090723*/
+       pDec->BCD_dig( d(n) ) = addr(tmpd)->BCD_dig( d(m) );
+       n=n+1;
+       end;
+     if bLarge                           /* Unsigned > 2**31-1 0.9.10*/
+     then pDec->FD18 = pDEC->FD18 + twopower(31);            /*0.9.10*/
+     end; /* qD<=0 */                                      /*20090723*/
+ end convert;
+
+ %include BCDINC;
+ %include DESC;
+ %include TENPOWER;
+ %include TWOPOWER;
+
+ end pli_CBD;

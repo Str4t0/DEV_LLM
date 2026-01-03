@@ -1,0 +1,41 @@
+ /* _pli_OTH                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        pli_OTH  (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2005                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OTH                                     */
+ /*                                                                  */
+ /*      Function:      This procedure is called at the end of a     */
+ /*                     SELECT group  when no WHEN clause is         */
+ /*                     selected and no OTHERWISE clause is present. */
+ /*                                                                  */
+ /*      Dependencices: None                                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Call _pli_OTH(select_statement_number)       */
+ /*                                                                  */
+ /*      Called from:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . Need to provide more information.            */
+ /*                   . Message text/format?                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2009-12-14: Replace WriteLn with Display.           0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OTH: proc(stmt)         external( '_pli_OTH' )
+                             options( linkage(system) );
+ dcl     stmt                fixed bin(31);
+
+ display( 'No WHEN clause selected in SELECT statement,' );    /*0.8c*/
+ display( '   and no OTHERWISE clause present.'          );    /*0.8c*/
+ signal error;
+
+ end pli_OTH;

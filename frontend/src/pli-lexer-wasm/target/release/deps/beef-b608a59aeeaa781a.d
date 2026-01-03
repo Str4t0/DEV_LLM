@@ -1,0 +1,11 @@
+D:\Programozas\Progs\DevAPI\Install\llm_dev_env\frontend\src\pli-lexer-wasm\target\release\deps\beef-b608a59aeeaa781a.d: C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lib.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\traits.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\wide.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\generic.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lean.rs
+
+D:\Programozas\Progs\DevAPI\Install\llm_dev_env\frontend\src\pli-lexer-wasm\target\release\deps\libbeef-b608a59aeeaa781a.rlib: C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lib.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\traits.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\wide.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\generic.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lean.rs
+
+D:\Programozas\Progs\DevAPI\Install\llm_dev_env\frontend\src\pli-lexer-wasm\target\release\deps\libbeef-b608a59aeeaa781a.rmeta: C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lib.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\traits.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\wide.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\generic.rs C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lean.rs
+
+C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lib.rs:
+C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\traits.rs:
+C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\wide.rs:
+C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\generic.rs:
+C:\Users\nagyc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\beef-0.5.2\src\lean.rs:

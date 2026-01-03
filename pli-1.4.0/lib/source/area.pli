@@ -1,0 +1,291 @@
+ /* _pli_Area                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 1.1           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        Area    (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          July, 2023                                   */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Allocate and free storage in an area         */
+ /*                     This is modeled after the IBM PL/I(F)        */
+ /*                     library area routines in IHELSP              */
+ /*                     The documentation in the logic manual        */
+ /*                     (GY28-6801-6) is incomplete, as it doesn't   */
+ /*                     mention that allocated elements have the     */
+ /*                     element control information prepended.       */
+ /*                                                                  */
+ /*                     PL/I(F) stores the flag in the high-order    */
+ /*                     byte of the size, giving a 16-byte header.   */
+ /*                     We keep the flag separate and use 20.        */
+ /*                                                                  */
+ /*                     Calls expect and return pointers. If offsets */
+ /*                     are used, they are computed by the caller.   */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GES: Allocate element in area           */
+ /*                     _pli_FES: Free element in area               */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*              GES:                                                */
+ /*                     The area address and the total size of       */
+ /*                     storage to be allocated passed on the stack. */
+ /*                     The storage requested is allocated, and      */
+ /*                     the addr of the element is returned in EAX.  */
+ /*                                                                  */
+ /*                     Note that allocated elements have an eight-  */
+ /*                     byte element control prepended, which is     */
+ /*                     invisible to the caller.                     */
+ /*                                                                  */
+ /*                     If the requested storage could not be        */
+ /*                     allocated, the STORAGE condition is raised.  */
+ /*                                                                  */
+ /*              FES:                                                */
+ /*                     The area address and the address of the      */
+ /*                     element to be freed is passed on the stack.  */
+ /*                     The length of the element is taken from the  */
+ /*                     element control.                             */
+ /*                     The storage is freed and control is returned */
+ /*                     to the caller. Nothing is returned.          */
+ /*                                                                  */
+ /*                                                                  */
+ /*      Called From:   Compiled code                                */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*                     ERROR:                                       */
+ /*                       * Requested size<0                         */
+ /*                       * Attempt to free element in empty area    */
+ /*                       * Attempt to free element outside of area. */
+ /*                     STORAGE:                                     */
+ /*                       * Insufficlent free storage in area to     */
+ /*                         fulfill request.                         */
+ /*      To Do:                                                      */
+ /*          * If we flip fbh_next and fbh_size, we wouldn't have to */
+ /*            update size when re-using free elements               */
+ /*          * When freeing an element, the element control could    */
+ /*            be cleared.                                           */
+ /*          * When freeing an element, the element data could be    */
+ /*            cleared for security.                                 */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2023-08-25: Allocated have only 4-byte header           */
+ /*                                                                  */
+ /********************************************************************/
+
+ Area: package exports(GES,FES);
+
+ dcl   1 area                based,              /* Area header      */
+         5 area_flags        bit(8),             /*                00*/
+           /* Area empty         - 0... ....    */
+         5 fil1              char(3),            /* (reserved)     01*/
+         5 area_size         fixed bin(31),      /* Allocated size 04*/
+         5 area_end_extent   fixed bin(31),      /* Off end of xtnt08*/
+         5 area_largest_free fixed bin(31),      /* Off larg free  0C*/
+         5 area_end_chn      fixed bin(31),      /* End FL chn (0) 10*/
+         5 area_user_area    char(0);            /* End system info14*/
+
+ /* Free block header */
+ dcl   1 area_fbh            based,              /* Free block hdr   */
+         5 area_fbh_next     fixed bin(31),      /* Off Next free b00*/
+         5 area_fbh_size     fixed bin(31);      /* Free blk size  04*/
+
+ /* Allocated block header */
+ dcl   1 area_abh            based,              /* Alloc bkk hdr    */
+         5 area_abh_size     fixed bin(31);      /* Size incl hdr  04*/
+ %page;     
+ /*------------------------------------------------------------------*/
+ /*  GES: Get storage in area.                                       */
+ /*    Calling sequence: <locator> = GES(area,size)                  */
+ /*      area is the address of the area                             */
+ /*      size is the amount of storage requested                     */
+ /*      <locator> is the returned address of element. GES always    */
+ /*        returns a pointer. If an offset is wanted it is generated */
+ /*        by compiled code.                                         */
+ /*   Storage requested is always rounded up to a multiple of 8 bytes*/
+ /*   Compiled code validates area address                           */
+ /*------------------------------------------------------------------*/
+ GES: proc(pArea,size)
+      returns( ptr )
+      external( '_pli_GES' )
+      options( linkage(system) );
+   dcl    pArea               ptr;           /* ->area               */
+   dcl    size                fixed bin(31); /* size of storage req. */
+
+   dcl    avail               fixed bin(31);
+   dcl    ret_elem            ptr;
+
+   /* The EMPTY() builtin just clears the flag. First use will       */
+   /* reset all the information                                      */
+   if (pArea->area_flags&'80'bx)='00'bx then do;
+     pArea->area_flags = '80'bx;
+     pArea->area_end_extent = addr(pArea->area_user_area) - pArea;
+     pArea->area_largest_free = 0;  
+     end; /* Reset empty */
+
+   if size<0 then signal ERROR;         /* Should not occur          */
+   /* Add size of element control and make multiple of 8             */
+   size = (size+stg(area_abh)+7)/8 * 8;
+
+   /* If there is a free list, see if there is available storage     */
+   if pArea->area_largest_free ^= 0 then do; 
+     ret_elem = get_free_elem(pArea,size);
+     if ret_elem^=sysnull then do;
+       /* Size remains the same for reused free elements */
+       ret_elem->area_abh_size = ret_elem->area_fbh_size; 
+       ret_elem = ret_elem + stg(area_abh);
+       return( ret_elem );
+       end;
+     end; /* has_free_list */
+
+   /* If there is no free list, or no suitable free element,         */
+   /* allocate storage at end of extent                              */
+   avail = pArea->area_size - pArea->area_end_extent;
+   if avail<size then do;               /* Not enough space          */
+     signal AREA;      
+     return(null);                      /* Normal return from STG    */
+     end; 
+   ret_elem = pArea + pArea->area_end_extent;
+   avail = avail-size;
+   pArea->area_end_extent = pArea->area_end_extent + size;
+   ret_elem->area_abh_size = size;
+   ret_elem = ret_elem + stg(area_abh);
+   return( ret_elem );                  /* ->User portion of element */
+     
+   end GES;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*  FES: Free storage in area.                                      */
+ /*    Calling sequence: call FES(pArea,pElem)                       */
+ /*      area is the address of the area                             */
+ /*      addr is the amount of storage to be freed                   */
+ /*      FES always takes a pointer to the element. If FREE          */
+ /*        specifies an offset the address is generated by compiled  */
+ /*        code.                                                     */
+ /*    Compiled code validates area address                          */
+ /*------------------------------------------------------------------*/
+ FES: proc(pArea,pElem)
+      external( '_pli_FES' )
+      options( linkage(system) );
+   dcl    pArea               ptr;           /* ->area               */
+   dcl    pElem               ptr;           /* addr of stg to free  */
+   dcl    size                fixed bin(31); /* size of stg to free  */
+
+   dcl    p                   ptr;
+
+   if (pArea->area_flags&'80'bx)='00'bx      /* Area empty           */
+   then signal ERROR;
+   pElem = pElem - stg(area_abh);            /* Back up to elem ctl  */
+   if pElem<addr(pArea->area_user_area) |    /* Sanity check         */
+      pElem>=pArea + pArea->area_size
+   then signal ERROR;
+   size = pElem->area_abh_size;         /* Size of this element      */
+   /* End of extent, just add back */
+   if (pElem+size)-pArea = pArea->area_end_extent then do;
+     pArea->area_end_extent = pArea->area_end_extent - size;
+     return;
+     end;
+   p = chain_free_elem(pArea,pElem,size);
+   end FES;
+
+ /*                 INTERNAL PROCEDURES                              */
+ /*------------------------------------------------------------------*/
+ /*  Search the free list for the smallest element which will        */
+ /*  satisfy the request. Free elements are chained from largest to  */
+ /*  smallest.                                                       */
+ /*------------------------------------------------------------------*/
+ get_free_elem: proc(pArea,size) returns(ptr);
+   dcl    pArea               ptr;
+   dcl    size                fixed bin(31);
+   dcl   (p,q,r)              ptr;
+   p = addr(pArea->area_largest_free);
+   q = pArea + pArea->area_largest_free;/* ->First list element      */
+   if q->area_fbh_size<size             /* No elements big enough    */
+   then return(sysnull);
+   do forever;                          /* Scan list                 */
+     r = pArea + q->area_fbh_next;
+     if r->area_fbh_size<size then leave;
+     p = q;
+     q = r;
+     end; /* do */
+
+   /* p->block preceding suitable block*/
+   /* q->suitable block                */
+   p->area_fbh_next = q->area_fbh_next; /* Unchain element           */
+   return(q);
+   end get_free_elem;
+
+ /*------------------------------------------------------------------*/
+ /*  Search the free list to find where newly-freed element fits     */
+ /*------------------------------------------------------------------*/
+ chain_free_elem: proc(pArea,pElem,size) returns(ptr);
+   dcl    pArea               ptr;
+   dcl    pElem               ptr;
+   dcl    size                fixed bin(31);
+   dcl   (p,q)                ptr;
+   dcl   (pBef,pAft)          ptr;
+   dcl    pTop                ptr;
+
+   pTop = pArea + pArea->area_size;     /* Top addr+1 for stopper    */
+   pElem->area_fbh_size = size;
+   /* First free element */
+   if pArea->area_largest_free = 0 then do;
+     pArea->area_largest_free  = pElem-pArea;
+     pElem->area_fbh_next = addr(pArea->area_largest_free)-pArea; 
+     return;
+     end;
+   /* Consolidate if needed */
+   pBef = addr(pArea->area_largest_free);    /* Head of chain        */
+   pAft = pTop;
+   p = pArea + pArea->area_largest_free;/* ->First list element      */
+   /* Find free elements preceding and following this one,           */
+   /* may or may not be contiguous                                   */
+   do forever;                          /* Scan list                 */
+     if p->area_fbh_size=0 then leave;
+     if p>pElem & p<pAft then do;
+      pAft  = p;
+      end;
+     if p<pElem & p>pBef then do;
+       pBef  = p;
+       end; 
+     p = pArea + p->area_fbh_next;
+     end; /* do */
+   /* If previous free element is contiguous, unchain it and         */
+   /* consolidate                                                    */
+   if pBef^=sysnull then do;            /* Free element preceding    */
+     if pBef + pBef->area_fbh_size = pElem then do;
+       size = size + pBef->area_fbh_size;
+       pElem = pBef;
+       pElem->area_fbh_size = size; 
+       end;
+     end;
+   if pAft^=pTop then do;               /* Free element follows      */
+     if pElem + size = pAft then do;
+       if pAft = pTop                  /* First on chain?            */
+       then pArea->area_largest_free = pAft->area_fbh_next;
+       else do;
+         size = size + pAft->area_fbh_size;
+         pElem->area_fbh_next = pAft->area_fbh_next;
+         end;
+       pElem->area_fbh_size = size;
+       end; /* consolidate follow */
+     end;
+   /* Now chain new area by size       */
+   p = addr(pArea->area_largest_free);
+   q = pArea + pArea->area_largest_free;/* ->First list element      */
+   if q=pElem then return;              /* Only this element left    */
+   do forever;                          /* Scan list                 */
+     if q->area_fbh_size<size           /* Goes between p and q      */
+     then leave;
+     p = q;
+     q = pArea + p->area_fbh_next;      /* ->Next element            */
+     end; /* do */
+   /* p->element preceding next larger  */
+   pElem->area_fbh_next = p->area_fbh_next;
+   p->area_fbh_next     = pElem-pArea;
+   return;
+   end chain_free_elem;
+
+ end Area; 

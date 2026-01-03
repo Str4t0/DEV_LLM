@@ -1,0 +1,329 @@
+ /* _pli_NPI                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        NPI     (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_NPI                                     */
+ /*                                                                  */
+ /*      Function:      Convert numeric picture to FIXED DECIMAL     */
+ /*                                                                  */
+ /*      Dependencies:  Intel BCD format                             */
+ /*                     Version 1.0 DED formats                      */
+ /*                                                                  */
+ /*                     This program assumes that all pictures are   */
+ /*                     correct (verified during compilation).       */
+ /*                     Unpredictable results may occur otherwise.   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Picture Descriptor                |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Source field                      |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        FIXED DECIMAL result returned in ST(0).      */
+ /*                                                                  */
+ /*      Errors         ERROR.                                       */
+ /*                     NOTE: IBM PL/I doesn't seem to raise         */
+ /*                           CONVERSION.  For supposedly numeric    */
+ /*                           data it appears to take the low-order  */
+ /*                           four bits of the character.  If this   */
+ /*                           is '0000'b thru '1001'b this becomes   */
+ /*                           the digit value.  If it is '1010'b     */
+ /*                           through '1111'b, a data exception      */
+ /*                           results - no even ERROR, which is      */
+ /*                           sloppy.                                */
+ /*                                                                  */
+ /*      Called From:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . Additional checking could be done if desired */
+ /*                     (for example that positions identified by    */
+ /*                     a picture character ',' actually contain     */
+ /*                     a comma.                                     */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2024-02-20: Strip trailing blanks from data string 1.2.1*/
+ /*                      before processing. Apparently a short  1.2.1*/
+ /*                      value can be anywhere in the field.    1.2.1*/
+ /*          2012-05-08: Fix picture chars 'T', 'I', and 'R'.   0.9.3*/
+ /*                                                                  */
+ /********************************************************************/
+
+ NPI: proc(pDat,pPic)
+      returns( fixed dec(18) )
+      external( '_pli_NPI' )
+      options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pDat                ptr;      /* ->PIC data                 */
+ dcl     pPic                ptr;      /* ->PIC desc                 */
+
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl     pDesc               ptr;                     /* -> Pic Desc */
+ dcl    (picPrec,picScale)   fixed bin(7);
+ dcl     signed              bit(1);
+ dcl    (DataLen,PicLen)     fixed bin(7);
+ dcl     pPD                 ptr,      /* -> Data string             */
+         dc                  char(1)   based(pPD);
+ dcl     pPP                 ptr,      /* -> Picture string          */
+         pc                  char(1)   based(pPP);
+ dcl    (i,j)                fixed bin(7);                    /*0.9.3*/
+ dcl     np                  char(1);
+ dcl     nd                  char(1);
+ dcl     dig                 fixed bin(7);
+ dcl     Result              fixed dec(18);
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+ dcl     digit               char(10)  static
+           init( '0123456789' );
+ dcl     op_pos              char(10)  static
+           init( '{ABCDEFGHI' );
+ dcl     op_neg              char(10)  static
+           init( '}JKLMNOPQR' );
+ /* NOTE: '{' and '}' are the EBCDIC graphics for the punch codes    */
+ /*       '12-0; and '11-0'.  These punch codes don't map to         */
+ /*       valid ASCII characters in any punched-card code.           */
+ /*       VAX PL/I uses '{' and '}'.                                 */
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+
+ dcl    (
+         addr,
+         hbound,
+         index,
+         substr
+        )                    builtin;
+
+ /*------------------------------------------------------------------*/
+ /*      Procedure Entry                                             */
+ /*------------------------------------------------------------------*/
+
+ /*-----------------------------------*/
+ /* Extract PIC info from Descriptor  */
+ /*-----------------------------------*/
+ pDesc    = pPic;                      /* addr(PIC descriptor)       */
+ picPrec  = pDesc->NP_prec;            /* Get prec and scale         */
+ picScale = pDesc->NP_scale;
+ signed   = substr(pDesc->NP_flags,1,1);/* If signed PIC             */
+ DataLen  = pDesc->NP_size;
+ PicLen   = pDesc->NP_piclen;
+ pPD  = pDat + DataLen - 1;            /* addr(end_of_PIC_data)      */
+ pPP  = addr(pPic->NP_pic) + PicLen-1; /* addr(end_of_PIC_string)    */
+ Result   = 0;
+ dig      = 0;                         /* Init digit pos             */
+
+ /*-----------------------------------*/                      /*1.2.1*/
+ /* Strip trailing blanks             */                      /*1.2.1*/
+ /*-----------------------------------*/                      /*1.2.1*/
+ do forever;                                                  /*1.2.1*/
+   if pPD->dc^=' ' then leave;                                /*1.2.1*/
+   if pPD=pDat then return(0);          /* All blank            1.2.1*/
+   pPD = pPD-1;                                               /*1.2.1*/
+   end;                                                       /*1.2.1*/
+
+ /*-----------------------------------*/
+ /* Scan PICTURE string               */
+ /*-----------------------------------*/
+ Loop: do i=PicLen to 1 by -1;
+   np = pc;                            /* Get next picture character */
+   nd = dc;                            /* Get the data character     */
+   select( np );
+     /*-------------------------------*/
+     /* Digit positions:              */
+     /* 9, Z, *, Drifting $, S, +, -  */
+     /*-------------------------------*/
+     when( pc_9 )      call putdig(dig,nd);
+     when( pc_Z ) do;
+       if ndª=' ' then call putdig(dig,nd);
+       else leave Loop;
+       end; /* pc_Z */
+     when( pc_Ast ) do;
+       if ndª='*' then call putdig(dig,nd);
+       else leave Loop;
+       end; /* pc_Ast */
+     /*-------------------------------*/
+     /* Drifting S, +, -, $           */
+     /*-------------------------------*/
+     when( pc_Sd ) do;
+       if nd='-' then do;
+         addr(Result)->BCD_sign = '1'b;
+         leave Loop;
+         end; /* - */
+       else if ndª='+' then  call putdig(dig,nd);
+            else leave Loop;
+       end; /* pc_Sd */
+     when( pc_Plsd ) do;
+       if ndª='+' then call putdig(dig,nd);
+       else leave Loop;
+       end; /* pc_Plsd */
+     when( pc_Mind ) do;
+       if nd='-'  then do;
+         addr(Result)->BCD_sign = '1'b;
+         leave Loop;
+         end; /* - */
+       else            call putdig(dig,nd);
+       end; /* pc_Mind */
+     when( pc_Curd ) do;
+       if ndª='$' then call putdig(dig,nd);
+       else leave Loop;
+       /* NOTE: User's currency symbol */
+       end; /* pc_Curd */
+     /*-------------------------------*/
+     /* Sign positions:               */
+     /* S, +, -, 'CR', DB'            */
+     /*-------------------------------*/
+     when( pc_S ) do;
+       if nd='-' then addr(Result)->BCD_sign = '1'b;
+       end; /* pc_S */
+     when( pc_Pls ) do;
+       if nd=' ' then addr(Result)->BCD_sign = '1'b;
+       end; /* pc_Pls */
+     when( pc_Min ) do;
+       if nd='-' then addr(Result)->BCD_sign = '1'b;
+       end; /* pc_Min */
+     when( pc_CRC ) do;
+       if nd='C' then addr(Result)->BCD_sign = '1'b;
+       end; /* pc_CRC */
+     when( pc_DBD ) do;
+       if nd=' ' then addr(Result)->BCD_sign = '1'b;
+       end; /* pc_DBD */
+     /*-------------------------------*/                      /*0.9.3*/
+     /* Overpunched data              */                      /*0.9.3*/
+     /* 'T', 'I', 'R'                 */                      /*0.9.3*/
+     /*-------------------------------*/                      /*0.9.3*/
+     when( pc_T ) do;                                         /*0.9.3*/
+       j = index(op_neg,nd);                                  /*0.9.3*/
+       if j^=0 then do;                                       /*0.9.3*/
+         nd = substr(digit,j,1);                              /*0.9.3*/
+	 addr(Result)->BCD_sign = '1'b;                       /*0.9.3*/
+	 end;                                                 /*0.9.3*/
+       j = index(op_pos,nd);                                  /*0.9.3*/
+       if j^=0 then do;                                       /*0.9.3*/
+         nd = substr(digit,j,1);                              /*0.9.3*/
+	 end;                                                 /*0.9.3*/
+       call putdig(dig,nd);                                   /*0.9.3*/	 
+       end; /* pc_T */                                        /*0.9.3*/
+     when( pc_I ) do;                                         /*0.9.3*/
+       j = index(op_pos,nd);                                  /*0.9.3*/
+       if j^=0 then do;                                       /*0.9.3*/
+         nd = substr(digit,j,1);                              /*0.9.3*/
+	 end;                                                 /*0.9.3*/
+       call putdig(dig,nd);                                   /*0.9.3*/	 
+       end; /* pc_I */                                        /*0.9.3*/
+     when( pc_R ) do;                                         /*0.9.3*/
+       j = index(op_neg,nd);                                  /*0.9.3*/
+       if j^=0 then do;                                       /*0.9.3*/
+         nd = substr(digit,j,1);                              /*0.9.3*/
+	 addr(Result)->BCD_sign = '1'b;                       /*0.9.3*/
+	 end;                                                 /*0.9.3*/
+       call putdig(dig,nd);                                   /*0.9.3*/	 
+       end; /* pc_R */                                        /*0.9.3*/
+     /*--------------------------------------------------------------*/
+     /* Ignore positions containg comma, period, slash, 'B', 'Y',    */
+     /* nondrifting curency, or the second half of 'CR'/'DB'         */
+     /* 'V' does not appear in the picture string.                   */
+     /*--------------------------------------------------------------*/
+     otherwise /* continue */ ;
+     end; /* select */
+   pPD = pPD-1;                        /* Back up in data            */
+   pPP = pPP-1;                        /* Back up in picture         */
+   end; /* do i */
+ return( Result );
+
+ /*-------------------------*/
+ /* Store a Digit           */
+ /*-------------------------*/
+ putdig: proc(i,c);
+   dcl   i                   fixed bin(7);
+   dcl   c                   char(1);
+   dcl   n                   fixed bin(7);
+   dcl   cx                  fixed bin(7);
+
+ /* Digit positions for digits 0:17 within BCD number                */
+   dcl   d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+ /* Bit values for digits 0-9                                        */
+   dcl   bx             (0:9)bit(4)    aligned   static    init(
+         '0000'b, '0001'b, '0010'b, '0011'b, '0100'b,
+         '0101'b, '0110'b, '0111'b, '1000'b, '1001'b );
+
+   cx = index(digit,c)-1;
+   if cx<0 then signal ERROR;                              /*20060517*/
+   n = d(i);                 /* Get digit value                      */
+   addr(Result)->BCD_dig(n) = bx(cx);
+   i = i+1;                  /* Bump digit count                     */
+   return;
+   end putdig;
+
+ %page;
+ /********************************************************************/
+ /*                                                                  */
+ /*      Module:        Picture Character Definitions                */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2002                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Defines values of characters in internal .   */
+ /*                     coded pictures.                              */
+ /*                                                                  */
+ /*                     There is supposed to be some logic to how    */
+ /*                     these are defined:                           */
+ /*                                                                  */
+ /*                     The picture character 'V' is not stored.     */
+ /*                                                                  */
+ /*      Dependencies:  None.                                        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ dcl   1 Picture_Chars       static,   /* Picture char definitions   */
+         5 pc_9              char(1)             init( '82'x ),
+         5 pc_Z              char(1)             init( '90'x ),
+         5 pc_Ast            char(1)             init( '91'x ),
+         5 pc_Com            char(1)             init( 'A0'x ),
+         5 pc_Per            char(1)             init( 'A1'x ),
+         5 pc_Sl             char(1)             init( 'A2'x ),
+         5 pc_B              char(1)             init( 'A3'x ),
+         5 pc_S              char(1)             init( '93'x ),
+         5 pc_Pls            char(1)             init( '94'x ),
+         5 pc_Min            char(1)             init( '95'x ),
+         5 pc_T              char(1)             init( 'B3'x ),
+         5 pc_I              char(1)             init( 'B4'x ),
+         5 pc_R              char(1)             init( 'B5'x ),
+         5 pc_Cur            char(1)             init( 'A4'x ),
+         5 pc_CRC            char(1)             init( 'B6'x ),
+         5 pc_CRR            char(1)             init( 'B7'x ),
+         5 pc_DBD            char(1)             init( 'B8'x ),
+         5 pc_DBB            char(1)             init( 'B9'x ),
+         5 pc_Y              char(1)             init( '83'x ),
+         5 pc_A              char(1)             init( '80'x ),
+         5 pc_X              char(1)             init( '81'x ),
+         /* Drifting Characters                                      */
+         5 pc_Sd             char(1)             init( 'B0'x ),
+         5 pc_Plsd           char(1)             init( 'B1'x ),
+         5 pc_Mind           char(1)             init( 'B2'x ),
+         5 pc_Curd           char(1)             init( 'B3'x );
+
+ %include BCDINC;
+ %include DESC;
+
+ end NPI;

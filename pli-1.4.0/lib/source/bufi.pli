@@ -1,0 +1,407 @@
+ /* _pli_BufI                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_BufI (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_BufI                                    */
+ /*                                                                  */
+ /*      Function:      Move a record from an input buffer.          */
+ /*                                                                  */
+ /*      BufI is called by I/O procedures to move data from a buffer.*/
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Control block formats:                       */
+ /*                       FCB                                        */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     lRead  =_pli_BufI( aFCB, aRecord, lRecord ); */
+ /*                     aFCB   = Address of FCB                      */
+ /*                     aRecord = Address of record                  */
+ /*                     lRecord = Maximum length of record.          */
+ /*                     lRead   = Length of record actually read.    */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2014-03-31: RECORD cond not raised in move_to_CRLF 0.9.5*/
+ /*          2009-09-22: Fix problems with ENDFILE.              0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_BufI: proc(pFCB,pRecord,lRecord)
+               ext( '_pli_BufI' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFCB                ptr;           /* -> FCB                */
+ dcl     pRecord             ptr;           /* addr(record_buffer)   */
+ dcl     lRecord             fixed bin(31); /* length(record_buffer) */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     CR                  char(1)   static    init( '0D'x );
+ dcl     LF                  char(1)   static    init( '0A'x );
+ dcl     FF                  char(1)   static    init( '0C'x );
+ dcl     CTRLZ               char(1)   static    init( '1A'x );
+
+ dcl     ERROR_INTERRUPT     fixed bin(31) static init( 95 );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pF                  ptr;
+ dcl     pK                  ptr;
+ dcl     lAvail              fixed bin(31);
+ dcl     lRec                fixed bin(31);
+ dcl     i                   fixed bin(31);
+ dcl     iPrefix             fixed bin(15);
+ dcl     bRecord             bit(1)              init( '0'b );
+ dcl     bHaveRec            bit(1)              init( '0'b );
+ dcl     dummy_key           char(12);                     /*20070402*/
+ dcl     error_code          fixed bin(31);                   /*0.9.2*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     this_file           file                based;
+ dcl     key_ovl             char(12)            based;
+ dcl     buf                 char(32767)         based;
+ dcl     c                   char(1)             based;
+
+ /*-------------------------*/
+ /* External Entries        */ 
+ /*-------------------------*/
+ dcl     OSRead              entry( fixed bin(31), ptr, fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSRead' );
+
+ dcl    ( addr,index,length,max,min,null,plimove,stg,substr,sysnull
+        )                    builtin;
+
+ pF = pFCB;                            /* addr(FCB)                  */
+ if (pF->FCB_status&FCB_endfile)^='00000000'bx /* ENDFILE status0.9.3*/ 
+ then do;                              /* Yes, next read is erro0.9.2*/ 
+   error_code = 1;                                            /*0.9.2*/ 
+   goto ERROR; 
+   end;
+ pF->FCB_pLine = pF->FCB_aLine;                            /*20070402*/
+ if substr(pFCB->FCB_attrib,15,1)='1'b /* RECORD File?       20070402*/
+ then do;                              /* .. Yes             20070402*/
+   pK = pF->FCB_aLine;                 /* addr(Key area)             */
+   pK->key_ovl = (12)'00'x;            /* Zero key fields            */
+   pK->KEY_addr = pF->FCB_CurrPos +    /* Store file pos in key      */
+                  (pF->FCB_pBuf - pF->FCB_aBuf );
+   pF->FCB_pLine = pK+STG( NULL->KEY ); /* Skip over key     20070402*/
+   end;                                                    /*20070402*/
+ else pK = addr(dummy_key);                                /*20070402*/
+ lRec = lRecord;                       /* Get max length to read     */
+ pF->FCB_col = 0;                      /* Reset column position      */
+
+ /*-------------------------------------------------------*/
+ /* Compute available data in buffer                      */
+ /*-------------------------------------------------------*/
+ lAvail = pF->FCB_bufsize - (pF->FCB_pBuf-pF->FCB_abuf);
+ if pF->FCB_pBuf = pF->FCB_abuf then lAvail=0;                /*0.9.5*/
+ 
+ /*-------------------------------------------------------*/
+ /* Variable-length records with prefixes.                */
+ /* The length in the prefix *DOES NOT* include a one-    */
+ /* or two-byte line terminator (LF or CRLF) if present.  */
+ /*-------------------------------------------------------*/
+ if substr(pF->FCB_envflags,1,1)='1'b  /* VARLS records?            */
+ then do;
+   i = move( addr(iPrefix), stg(iPrefix) );
+   if i=0 then goto ENDFILE; 
+   /* COMMENT: The length in the key includes the prefix length      */
+   /*          for compatibility with mainframe PL/I.  The length    */
+   /*          of the prefix in the file excludes it for             */
+   /*          compatibility with IBM OS/2 PL/I.                     */
+   pK->KEY_len = iPrefix+4;                                /*20070810*/
+   if iPrefix<0 | iPrefix>lRec         /* Store record length in key */
+   then do;
+     bRecord='1'b;                     /* Set flag for 'RECORD' cond */
+     /* The flag is set so we can read the data and raise the        */
+     /* "RECORD' condition after.                                    */
+     iPrefix = lRec;                   /* Set max length to use      */
+     end;
+   i = move( pRecord, iPrefix );       /* Read the record data       */
+   pF->FCB_lnsize = i;                 /* Set current line len  0.9.5*/
+   if substr(pF->FCB_envflags,3,3)ª='000'b  /* ENV(CRLF/LF)     0.9.9*/
+   then call check_for_crlf;                /* Check term.   20070403*/
+   if bRecord then goto RECORD;        /* Wrong-length record        */
+   return;
+   end; /* VARLS */
+
+ /*-------------------------------------------------------*/
+ /* For fixed-length records (FS,FBS,FB, or F)            */
+ /* the record length is known                            */
+ /*-------------------------------------------------------*/
+ if (pF->FCB_envflags&'0000003C'bx)ª='00000000'bx
+ then do;
+   i = move( pRecord, lRec );          /* Get the record             */
+   pF->FCB_lnsize = i;                 /* Set current line len  0.9.6*/
+   if i=0 then goto ENDFILE;
+   pK->KEY_len = i;
+   if substr(pF->FCB_envflags,3,3)ª='000'b  /* ENV(CRLF/LF)     0.9.9*/
+   then call check_for_crlf;                /* Check term.   20070403*/
+   /* The only time iª=lRec is if we have a short last record.       */
+   if iª=pF->FCB_recsize then goto RECORD;  /*NOTE: */
+   return;
+   end; /* F */
+
+ /*-------------------------------------------------------*/
+ /* For variable-length records without prefixes,         */
+ /* (VS,VBS,VB,V,DB, or D, and not VARLS)                 */
+ /* we need to scan for a line terminator.                */
+ /*-------------------------------------------------------*/
+ if (pF->FCB_envflags&'00000783'bx)ª='00000000'bx
+ then do;
+   i = move_to_crlf( pRecord, lRec );  /* Move data to LF/CRLF       */
+   if i<0 | i>32767 then goto RECORD;
+   pF->FCB_lnsize = i;                 /* Set current line len  0.9.5*/
+   pK->KEY_len = i+4;                  /* Key_len: See comment above.*/
+   call check_for_crlf;                /* Always check terminator    */
+   if bRecord then goto RECORD;        /* Wrong-length record        */
+   return; 
+   end; /* V */
+
+ /*-------------------------------------------------------*/
+ /* Undefined records                                     */
+ /*-------------------------------------------------------*/
+ if substr(pF->FCB_envflags,26,1)='1'b /* Record format U?           */
+ then do;
+   i = move( pRecord, lRec );          /* Get the data               */
+   pF->FCB_lnsize = i;                 /* Set current line len  0.9.5*/
+   if i=0 then goto ENDFILE;
+   /* No check for term. for RECFM(U) */
+   /* NOTE: What if length of user's buffer=0? */
+   pK->KEY_len = i;
+   return;
+   end; /* U */
+
+ /*-------------------------------------------------------*/
+ /* Raise the ERROR condition                             */
+ /* (normal return terminates)                            */
+ /*-------------------------------------------------------*/
+ ERROR:
+   /*display( 'BUFI error=' || error_code );                  /*0.9.2*/
+   signal ERROR;                       /* Should not occur ...       */
+
+ /*-------------------------------------------------------*/
+ /* Raise the RECORD condition                            */
+ /* (normal return exits to caller)                       */
+ /*-------------------------------------------------------*/
+ RECORD:
+   signal RECORD( pF->FCB_pFile->this_file );
+   return;
+
+ /*-------------------------------------------------------*/
+ /* Raise the TRANSMIT condition                          */
+ /* (normal return exits to caller)                       */
+ /*-------------------------------------------------------*/
+ TRANSMIT:
+   signal TRANSMIT( pF->FCB_pFile->this_file );
+   return;
+
+ /*---------------------------------------------2009-09-22*/
+ /* COMMENT: Do not raise ENDFILE here.  Return empty     */
+ /*          line to caller and let them handle it.       */
+ /*-------------------------------------------------------*/
+ ENDFILE:
+   pF->FCB_status = pF->FCB_status |   /* Set ENDFILE flag      0.9.3*/
+                    FCB_endfile;                              /*0.9.3*/
+   pF->FCB_pLine = SYSNULL();          /* Indicate to caller 20070112*/
+   pF->FCB_lnsize = 0;                                        /*0.9.5*/
+   return;                             /* Normal return from ON-Unit */
+
+ /*-------------------------------------------------------*/
+ /* Move records with LF/CRLF terminators.                */
+ /*-------------------------------------------------------*/
+ move_to_crlf: proc(pData,lData) returns( fixed bin(31) );
+   dcl   pData               ptr;
+   dcl   lData               fixed bin(31);
+   dcl   pD                  ptr;
+   dcl   lD                  fixed bin(31);
+   dcl  (iCR,iLF)            fixed bin(31)       init(0);     /*0.9.3*/
+   dcl   iByteCnt            fixed bin(31);
+   dcl   p                   ptr;
+   dcl   CRLF                bit(1)              init( '0'b );
+
+   pD = pData;
+   lD = lData;
+
+mv: do while( ªCRLF );                                        /*0.9.5*/
+     /*-------------------------------*/
+     /* Read next block               */
+     /*-------------------------------*/
+     if lAvail=0                       /* No data available          */
+     then call read_a_block(pF);
+     if lAvail=0 then do;              /* End-of-file                */
+       if pD=pData then goto ENDFILE;  /* Start of this record       */
+       goto RECORD;                    /* Not start of record        */
+       /* NOTE: Does the last record require a terminating CRLF?     */
+       end;
+     p = pF->FCB_pBuf;                 /* Get buffer address         */
+
+     /*--------------------------------------------------------------*/
+     /* Check for godaweful DOS EOF character (CTRL/Z, '1A'x)        */
+     /*--------------------------------------------------------------*/
+     if p->c = CTRLZ then goto ENDFILE;/* EOF character              */
+
+     /*--------------------------------------------------------------*/
+     /* Check for formfeed.  Multics PL/I treats the formfeed        */
+     /* ("pagemark") as a normal data character.  When it appears    */
+     /* as the first character of a line we treat it as a line by    */
+     /* itself.  Otherwise it is treated as a normal data character. */
+     /*--------------------------------------------------------------*/
+     if p->c = FF & pD=pData then do;  /* Formfeed, no LF/CRLF       */
+       pD->c = FF;
+       pF->FCB_pBuf = pF->FCB_pBuf+1;  /* Bump input pointer         */
+       lAvail = lAvail-1;
+       return(1);
+       end; /* Formfeed */
+
+     iLF = index( substr(p->buf,1,lAvail), LF );
+     iCR = index( substr(p->buf,1,lAvail), CR );
+     if iCR>0 | iLF>0 then CRLF='1'b;  /* Found terminator   20070403*/
+     if iLF=0 then iLF = lAvail+1;     /* LF not found               */
+     if iCR=0 then iCR = lAvail+1;     /* CR not found               */
+ 
+     /*---------------------------------------------------*/
+     /* Move only characters to fill the buffer.  If too  */
+     /* many, truncate and raise the RECORD condition.    */
+     /* Always scan until EOF or a terminator is found.   */
+     /*---------------------------------------------------*/
+     iByteCnt = MIN(iCR,iLF)-1;        /* Bytes to move      20070403*/
+     if iByteCnt>lD then do;           /* Byte count > requested     */
+       iByteCnt = lD;                  /* n=MIN(lD,n)                */
+       bRecord='1'b;                   /* Raise RECORD condition     */
+       leave mv;                                              /*0.9.5*/
+       end;
+     call plimove(pD,pF->FCB_pBuf,iByteCnt); /* Move the data20070403*/
+     pF->FCB_pBuf = pF->FCB_pBuf+iByteCnt;   /* Bump inp ptr 20070403*/
+     lAvail = lAvail-iByteCnt;                             /*20070403*/
+     pD = pD+iByteCnt;                 /* Bump output pointer20070403*/
+     lD = lD-iByteCnt;                 /* Account for data mo20070403*/
+     end mv; /* do while */                                   /*0.9.5*/
+
+     return( pD-pData );
+
+   end move_to_crlf;
+
+ /*------------------------------------------------------------------*/
+ /* Check for LF or CRLF terminator                                  */
+ /* If the file was created as PRINT ENV(VARLS), then a page-eject   */
+ /* will be a one-byte FORMFEED ('0C'x) without a terminator.        */
+ /* Either LF or CR/LF will be accepted as valid terminators.        */
+ /*------------------------------------------------------------------*/
+ check_for_crlf: proc;
+   dcl   n                   fixed bin(31);
+   dcl   i                   fixed bin(31);
+   dcl   terminator          char(1);
+
+   if pK->key_len = 5 &                /* FORMFEED, no CR/LF 20081117*/
+      pRecord->c = FF     /* NOTE: This needs checking, but not now. */
+   then return;
+   i = move( addr(terminator), 1 );    /* Get (1st char of) term.    */
+   if i=0 then return;                 /* Last record has no CR/LF   */
+   if terminator=LF  then return;
+   if terminatorª=CR then do;
+     bRecord='1'b;
+     return;
+     end;
+     
+   i = move( addr(terminator), 1 );    /* Get (2nd char of) term.    */
+   if i=0 then do;                     /* EOF not valid here         */
+     bRecord='1'b;
+     return;
+     end;
+   if terminator=LF then return;
+   bRecord='1'b;
+
+   end check_for_crlf;
+
+ /*------------------------------------------------------------------*/
+ /* Move data to record (source is pF->FCB_pBuf implied)             */
+ /*------------------------------------------------------------------*/
+ move: proc(pData,lData) returns( fixed bin(31) );
+   dcl   pData               ptr;
+   dcl   lData               fixed bin(31);
+   dcl   pD                  ptr;
+   dcl   lD                  fixed bin(31);
+   dcl   n                   fixed bin(31);
+
+   pD = pData;
+   lD = lData;
+   do while( lD>0 );
+     if lAvail=0                       /* No data in buffer          */
+     then call read_a_block(pF);
+     if lAvail=0 then do;              /* No more data at all        */
+       /* Return whatever's left for RECFM(U)                20070327*/
+       /* If any data returned, clear ENDFILE status.        20070327*/
+       /* Next read raises ENDFILE.                          20070327*/
+       if substr(pF->FCB_envflags,26,1)='1'b/* RECFM(U)      20070327*/
+       then do;                                            /*20070327*/
+         lD = pD-pData;                                    /*20070327*/
+         if ldª=0                           /* Clear ENDFILE 20070327*/
+         then pF->FCB_status = pF->FCB_status & ^FCB_endfile; /*0.9.3*/
+         return(lD);                                       /*20070327*/
+         end; /* U */                                      /*20070327*/
+       if pD=pData then goto ENDFILE;  /* Start of this record       */
+       /* Last record in file was partial record                     */
+       goto RECORD;                    /* not start of record        */
+       end;
+     n = lD;                           /* What fits in this record   */
+     if n>lAvail then n=lAvail;        /* n=MIN(lAvail,n)            */
+     call plimove(pD,pF->FCB_pBuf,n);  /* Move the data              */
+     pF->FCB_pBuf = pF->FCB_pBuf+n;    /* Bump input pointer         */
+     lAvail = lAvail-n;
+     pD = pD+n;                        /* Bump output pointer        */
+     lD = lD-n;                        /* Account for data moved     */
+     end; /* do while */
+
+   return(lData);                      /* Return read byte count     */
+
+   end move;
+
+ /*------------------------------------------------------------------*/
+ /* Read a block                                                     */
+ /*------------------------------------------------------------------*/
+ read_a_block: proc(pFCB);
+   dcl   pFCB                 ptr;      /* ->FCB                     */
+   dcl   pF                   ptr;
+   dcl   RC                   fixed bin(31);                  /*0.9.9*/
+
+   pF = pFCB;
+   pF->FCB_CurrPos = pF->FCB_CurrPos + /* Update file position       */
+                     pF->FCB_bufsize;
+   RC = OSRead(pF->FCB_HFILE,          /* Read a block               */
+               pF->FCB_aBuf,
+               pF->FCB_blksize );
+   if RC<0 then do;                    /* Error occurred             */
+    pF->FCB_LastSt = -RC;
+    if pF->FCB_LastSt=ERROR_INTERRUPT  /* Read Interrupted           */
+    then goto TRANSMIT;
+    error_code = 1;                                           /*0.9.2*/
+    goto ERROR; 
+    end;
+   lAvail,pF->FCB_bufsize = RC;        /* How much was read?         */
+   pF->FCB_pBuf = pF->FCB_aBuf;        /* Reset buffer pointer       */
+
+   end read_a_block;
+
+ %page;
+ %include FCB;
+ %include KEY;
+
+ end pli_BufI;
+

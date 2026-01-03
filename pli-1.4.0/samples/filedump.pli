@@ -1,0 +1,177 @@
+ /* filedump                                              */
+ /*********************************************************/
+ /*                                                       */
+ /* Module:   filedump                                    */
+ /*           Peter Flass -- Aug 2007                     */
+ /*                                                       */
+ /* Function: Dump a ENV(VARLS) file.                     */
+ /*                                                       */
+ /* Usage:    filedump <filename>                         */
+ /*             If <filename> does not exist,             */
+ /*             UNDEFINEDFILE will be raised.             */
+ /*                                                       */
+ /* Dependencies:                                         */
+ /*           PL/I record key format.                     */
+ /*                                                       */
+ /* To Do:    Allow starting and ending record numbers    */
+ /*           to be specified.                            */
+ /*                                                       */
+ /*********************************************************/
+ filedump: proc(parm) options(main);
+   dcl   parm                char(*)             varying;
+   dcl   sysprint            print;
+   dcl   input               input record keyed env(V recsize(32767) );
+   dcl   buf                 char(32767)         varying;
+   dcl   count               fixed bin(31)       init(0);
+   dcl   eof                 bit(1)              init( '0'b );
+   dcl   p                   ptr;
+   dcl   l                   fixed bin(31);
+   dcl   char4               char(4);
+
+   dcl   VarStr              char(0)             varying based;
+
+   dcl   key                 char(12);           /* 'record key'        */
+   dcl 1 keyx                based,
+         2 key_addr          fixed bin(31),      /* Record disk address */
+         2 fil               fixed bin(31),      /* Reserved            */
+         2 key_len           fixed bin(31),      /* Record length+4     */
+         2 key_end           char(0);            /* End of record key   */
+
+   on endfile(input) eof='1'b;
+
+   open file(input) title(parm);
+   read file(input) into(buf) keyto(key);
+
+   do while( ªeof );
+     count = count+1;
+     l = length(buf);
+     char4 = bsw( addr(l) );
+     put skip edit( 'Record ', count, ' length ', l,
+                    ' (''' || hex(addr(char4)+1,3) || '''x)' )
+                  (a,p'zzzz9',a,p'zzzz9',a);
+     p = addr(buf)+stg(null->varstr);
+     call hexdump( p, p+length(buf), addr(key)->key_addr, 0 );
+     read file(input) into(buf) keyto(key);
+     end; /* do while */
+   close file(input);
+   put skip edit( count, ' records read' )(p'zzzz9',a);
+
+ /*------------------------------------------------------------------*/
+ /*      Hex dump of a specified area                                */
+ /*------------------------------------------------------------------*/
+ hexdump: proc(from,to,disk_addr,offset);
+   dcl  (from,to)            ptr;
+   dcl  (disk_addr,offset)   fixed bin(31);
+   dcl  (p,q)                ptr;
+   dcl  (i,n,o,a,x)          fixed bin(31);
+   dcl   line                char(80) varying;
+   dcl   dmask               char(80)  static    var  init(
+        /*                   ........ ........ ........ ........  */
+       ( 'xxxxxxxx ( xxxxxx)                                     |'
+         || (17)' ') );
+   dcl   dword               ptr            based;
+   dcl   c4                  char(4)        based;
+
+   p = from;                           /* Starting memory address    */
+   a = disk_addr;                      /* Starting disk address      */
+   o = offset;                         /* Starting offset            */
+   q = addr(line) + 56 +               /* ->Char output area         */
+       stg(null()->VarStr);
+   n = 20;
+   do while( p<to );
+     if n=20 then do;                  /* Plug address info          */
+       line = dmask;                   /* Initialize dump line       */
+       char4 = bsw( addr(a) );         /* Address                    */
+       substr(line,1,8) = HEX(addr(char4),4);
+       i = o;                          /* Offset (+|-)               */
+       if i<0 then i=-i;
+       char4 = bsw( addr(i) );
+       substr(line,12,6)= HEX(addr(char4)+1,3);
+       if o<0 then substr(line,11,1)='-';
+       end;
+     if to-p<4 then x = to-p;
+     else x=4;
+     substr(line,n,8) = HEX(p,x);      /* Data, no byte swapping     */
+     q->c4 = xlt(substr(p->c4,1,x));   /* Four 4-byte dwords         */
+     n = n+9;
+     q = q+4;
+     if n>54 then do;
+       substr(q->c4,1,1)='|';
+       put skip edit(line)(a);
+       q = addr(line) + 56 +
+           stg(null()->VarStr);
+       substr(q->c4,1,17)='';
+       n = 20;
+       end; /* n */
+     a = a+stg(p->dword);
+     p = p+stg(p->dword);
+     o = o+stg(p->dword);
+     end; /* do while */
+   if n>20 then do;
+     substr(q->c4,1,1)='|';
+     put skip edit(line)(a);
+     end;
+   put skip;
+   end hexdump;
+
+ /*------------------------------------------------------------------*/
+ /*      Swap byte-order for display                                 */
+ /*------------------------------------------------------------------*/
+ bsw: proc(p) returns( char(4) );
+   dcl   p                   ptr;
+   dcl   cx               (4)char(1)   based(p);
+   dcl   cy               (4)char(1);
+   cy(4) = cx(1);            /* OR cy = reverse(cx)                  */
+   cy(1) = cx(4);
+   cy(3) = cx(2);
+   cy(2) = cx(3);
+   return( string(cy) );
+   end bsw;
+
+ /*------------------------------------------------------------------*/
+ /*      Translate characters to printable                           */
+ /*------------------------------------------------------------------*/
+ xlt: proc(c4) returns( char(4) );
+   dcl   c4                  char(4);
+   dcl   c4x                 char(4);
+   dcl   i                   fixed bin(7);
+   c4x = c4;
+   do i=1 to 4;
+     if substr(c4x,i,1)<' ' |
+        (substr(c4x,i,1)>byte(127) &
+         substr(c4x,i,1)ª=byte(172))
+     then substr(c4x,i,1)='.';
+     end;
+   return( c4x );
+   end xlt;
+
+ /********************************************************************/
+ /*   Hexadecimal to character conversion                            */
+ /********************************************************************/
+
+ HEX: proc(pChs,iFB15) returns( char(256) varying );
+   dcl   pChs                ptr;
+   dcl   iFB15               fixed bin(15);
+   dcl   s                   char(4096) based(pChs);
+   dcl   j                   fixed bin(15);
+   dcl   ret                 char(256) varying   init('');
+
+   do j=1 to iFB15;
+     ret=ret||hexone( substr(s,j,1) );
+     end;
+   return(ret);
+
+ hexone: proc(c) returns( char(2) );
+   dcl   c                   char;
+   dcl   hextabs             char(16) static     init
+                       ('0123456789ABCDEF'),
+         hextab        (0:15)char(1) defined hextabs;
+   dcl   p                   ptr,
+         x                   bit(8) based(p);
+   p = addr(c);
+   return( hextab( substr(x,1,4) ) || hextab( substr(x,5,4) ) );
+   end hexone;
+
+   end HEX;
+
+   end filedump;

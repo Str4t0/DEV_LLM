@@ -1,0 +1,289 @@
+ /* _pli_Read                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Read (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Read                                    */
+ /*                                                                  */
+ /*      Function:      Implementation of PL/I 'READ' statement.     */
+ /*                                                                  */
+ /*      Read is called by the I/O router (IOR) after                */
+ /*      IOR has created, chained, and locked the FCB.               */
+ /*                                                                  */
+ /*      GIO passes INTO, KEY, and KEYTO arguments as character      */
+ /*      strings the length of the actual argument.  If the original */
+ /*      argument is a VARYING string. the passed string will be     */
+ /*      VARYING, otherwise it will be NONVARYING.                   */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Control block formats:                       */
+ /*                       FILE, FCB, IORB, KEY, Locator/Descriptor   */
+ /*                       String descriptor.                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Address of FCB, Address of IORB.             */
+ /*      READ option data: (in the following order if present)       */
+ /*          Keyword   Bitmask    Index                              */
+ /*          INTO    '00000020'x     27 -> Buffer loc/desc           */
+ /*          KEY     '00000002'x     31 -> Key loc/desc              */
+ /*          KEYTO   '00000004'x     30 -> Key loc/desc              */
+ /*          SET     '00000080'x     25 -> POINTER                   */
+ /*          IGNORE  '00000200'x     23 -> FIXED BIN(31) count       */
+ /*          EVENT   '00000010'x     28 -> EVENT variable            */
+ /*          NOLOCK  '00000100'x     24  (no option data)            */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . The EVENT option is not really supported.    */
+ /*                     We need to kick off a thread to do the I/O.  */
+ /*                     Until this is done we should post the        */
+ /*                     event complete immediately.                  */
+ /*                                                                  */
+ /*                   . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2011-08-17: Fix problem with keyed read.           0.9.3*/
+ /*          2010-06-23: Changed to use new OSSeek.             0.9.1*/
+ /*          2009-09-22: Fix problems with ENDFILE.              0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Read: proc(pIORB,pFCB)
+               ext( '_pli_Read' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pIORB               ptr;
+ dcl     pFCB                ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pX                  ptr;
+ dcl     pF                  ptr;
+ dcl     pN                  ptr;
+ /* READ option data (bit values originally from 'keyword')          */
+ dcl   1 bOpt                unaligned,/* Option flags               */
+         5 fil1              bit(22),
+         5 O_IGNORE          bit(1),   /* '00000200'bx               */
+         5 O_NOLOCK          bit(1),   /* '00000100'bx               */
+         5 O_SET             bit(1),   /* '00000080'bx               */
+         5 fil2              bit(1),
+         5 O_INTO            bit(1),   /* '00000020'bx               */
+         5 O_EVENT           bit(1),   /* '00000010'bx               */
+         5 fil3              bit(1),
+         5 O_KEYTO           bit(1),   /* '00000004'bx               */
+         5 O_KEY             bit(1),   /* '00000002'bx               */
+         5 fil4              bit(1);
+ dcl     pDat                ptr;           /* INTO or SET value     */
+ dcl     pKey                ptr;           /* KEY or KEYTO value    */
+ dcl     pEvt                ptr;           /* EVENT value           */
+ dcl     lCnt                fixed bin(31); /* IGNORE value          */
+ dcl     pRec                ptr;
+ dcl     lRec                fixed bin(31);
+ dcl     i                   fixed bin(31);
+ dcl     bIntoVarying        bit(1)              init( '0'b );
+ dcl     RC                  fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /*      Prototypes         */
+ /*-------------------------*/
+ dcl     this_file           file                based;
+ dcl     pVoid               ptr                 based;
+ dcl     sVoid               char(0)  varying    based;
+ dcl     iVoid               fixed bin(15)       based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     OSSeek              entry( fixed bin(31), fixed bin(31),
+                                    fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSSeek' );
+ dcl     BufI                entry( ptr, ptr, fixed bin(31) )
+                             external( '_pli_BufI' );
+ dcl     BufF                entry( ptr )
+                             external( '_pli_BufF' );
+
+ dcl    (
+          addr,allocate,null,plimove,
+          stg,string,substr,sysnull
+         )                   builtin;
+
+ pF  = pIORB->IOR_pFile;               /* addr(FILE)                 */
+ pN  = pF->FC_pName;                   /* addr(File_Name)            */
+
+ /*-----------------------------------*/
+ /* Get READ option values            */
+ /*-----------------------------------*/
+ lCnt=1;
+ string(bOpt) = pIORB->IOR_bOpt;       /* Get option flags           */
+ pX  = pIORB->IOR_pOpt;                /* addr(Options)              */
+ if O_INTO then do;                    /* INTO specified             */
+   pDat = pX->pVoid;                   /* pDat->Record Loc/Desc      */
+   pX = pX + stg(NULL->IOR_optP);      /* Bump option pointer        */
+   end; /* INTO */
+ if O_KEY | O_KEYTO then do;           /* KEY or KEYTO specified     */
+   pKey = pX->pVoid;                   /* pKey->Key Loc/Desc         */
+   pX = pX + stg(NULL->IOR_optP);      /* Bump option pointer        */
+   /*----------------------------------------------------------- */
+   /* Cross-check the KEY and KEYTO options vs. an ENVIRONMENT   */
+   /* option of KEYED.  This can only be done here.              */
+   /* IBM PL/I returns ONCODE 1009 (ERROR).                      */
+   /*----------------------------------------------------------- */
+   if substr(pFCB->FCB_attrib,22,1)='0'b /* File KEYED?              */
+   then signal ERROR;                  /* No, error.                 */
+   end; /* KEY|KEYTO */
+ if O_SET then do;                     /* SET specified              */
+   pDat = pX->pVoid;                   /* pDat->ptr                  */
+   pX = pX + stg(NULL->IOR_optP);      /* Bump option pointer        */
+   end; /* SET  */
+ if O_IGNORE then do;                  /* IGNORE specified           */
+   lCnt  = pX->IOR_OptF;               /* lCnt = Value               */
+   pX = pX + stg(NULL->IOR_optF);      /* Bump option pointer        */
+   end; /* IGNORE */
+ if O_EVENT then do;                   /* EVENT specified            */
+   pEvt = pX->pVoid;                   /* pEvt->Event Loc/Desc       */
+   pX = pX + stg(NULL->IOR_optP);      /* Bump option pointer        */
+   end; /* EVENT */
+
+ /*-----------------------------------*/
+ /* Seek if KEYED read                */
+ /*-----------------------------------*/
+ if O_KEY then call set_file_pos(pKey);/* Set to KEY position        */
+ 
+ /*-----------------------------------*/
+ /* Set up arguments for BufI         */
+ /*-----------------------------------*/
+ if O_SET then do;                     /* READ SET(): Use record buf */
+   pRec = pFCB->FCB_aLine+stg(NULL->KEY);
+   lRec = pFCB->FCB_recsize;                                  /*0.9.5*/
+   end; /* SET */
+ if O_INTO then do;                    /* READ INTO(): Caller's buf  */
+   /* When reading INTO a nonvarying string, the IBM compiler will   */
+   /* only transmit the actual data read and leave the rest of the   */
+   /* buffer, if any, untouched.  I can't find where this is         */
+   /* documented, but it is the actual behavior.                     */
+   /* In particular, the buffer is not space-filled.                 */
+   pRec = pDat->pData;
+   lRec = pDat->pDesc->ST_len;         /* Get caller's buffer length */
+   if pDat->pDesc->ST_id='11'x then do;/* INTO(varying_string)       */
+     pRec = pRec + stg(NULL->sVoid);   /* Skip over prefix           */
+     bIntoVarying='1'b;                /* Flag for later             */
+     end; /* VARYING */
+   end; /* INTO */
+ if O_IGNORE then do;                  /* READ IGNORE(): wherever... */
+   /* No one cares where (or if) we store the data */
+   pRec = addr(pFCB->FCB_aLine)+stg(NULL->KEY);
+   lRec = pFCB->FCB_recsize;                                  /*0.9.5*/
+   end; /* IGNORE */
+
+ /*-----------------------------------*/
+ /* Get next record from buffer       */
+ /*-----------------------------------*/
+ /* Read lCnt records.  lCnt=1 unless IGNORE() was specified         */
+ /* In general IGNORE can't just seek forward some number of         */
+ /* records because we don't know how long a record is.              */
+ /* COMMENT:  If ENDFILE is detected, BufI will set a flag 2009-09-22*/
+ /*           in the FCB and return here to raise the condition.     */
+ do i=1 to lCnt;
+   call BufI( pFCB, pRec, lRec );
+   if (pFCB->FCB_status&FCB_endfile)^='00000000'bx            /*0.9.3*/
+   then do;                                                /*20090922*/
+     signal ENDFILE( pFCB->FCB_pFile->this_file );         /*20090922*/
+     /* Control returns here on normal return from the ENDFILE       */
+     /* ON-Unit.  There's nothing else we can do, I guess we         */
+     /* just want to return here.                                    */
+     return;                                               /*20090922*/
+     end; /* ENDFILE */                                    /*20090922*/
+   end; /* do i */
+
+ /*-----------------------------------*/
+ /* Return KEYTO() or SET()           */
+ /* Post EVENT()                      */ 
+ /*-----------------------------------*/
+ if O_SET                              /* SET(): Set caller's ptr    */
+ then pDat->pVoid = pFCB->FCB_aLine + stg(NULL->KEY);
+ if bIntoVarying then do;              /* INTO(): VARYING string?    */
+   pDat->pData->iVoid = pFCB->FCB_lnsize;                     /*0.9.5*/
+   end;
+ if O_KEYTO then do;                   /* KEYTO(): Set caller's key  */
+   pRec = pKey->pData;                 /* addr(caller's key)         */
+   i = pKey->pDesc->ST_len;            /* Caller's key length        */
+   if i>STG(NULL->KEY) then i=STG(NULL->KEY); /* Truncate if needed  */
+   if pKey->pDesc->ST_id='11'x then do;/* KEYTO(varying_string)      */
+     pRec->iVoid = stg(NULL->KEY);
+     pRec = pRec + stg(NULL->sVoid);   /* Skip over prefix           */
+     end;
+   call PLIMOVE( pRec, pFCB->FCB_aLine, i );
+   end; /* KEYTO */
+
+ /* NOTE: EVENT not implemented, just return */
+
+ return;
+
+ /*-----------------------------------*/
+ /* Set File position for keyed read  */
+ /*-----------------------------------*/
+ set_file_pos: proc(pKey);
+   dcl   pKey                ptr;
+   dcl   p                   ptr;
+   dcl   k                   char(12);
+   dcl   kl                  fixed bin(31);
+   dcl   isVar               bit(1);
+   dcl   j                   fixed bin(31);
+
+   /*---------------------------------*/
+   /* Get and Check key               */
+   /*---------------------------------*/
+   p = pKey->LocDesc.pDesc;
+   k = (12)'00'x;                      /* Zero out key               */
+   kl = p->ST_len;                     /* Get key (max) length       */
+   if p->ST_id = '11'x then isVar='1'b;/* Set 'VARYING' flag         */
+   else                     isVar='0'b;
+   p = pKey->LocDesc.pData;
+   if isVar then do;
+     kl = p->iVoid;                    /* VARYING: Get current length*/
+     p = p+stg(NULL->sVoid);
+     end;
+   if kl < stg(NULL->KEY)
+   then signal ERROR;                  /* NOTE: KEY?                 */
+   call plimove( addr(k), p, stg(NULL->KEY) ); /* Get key value      */
+   if (pFCB->FCB_status&FCB_buf_dirty)^='00000000'bx          /*0.9.3*/
+   then call BufF(pFCB);                 /* Yes write it now         */
+   /* BufF will zero FCB_blksize, so the next call to BufI           */
+   /* Will read data at the 'current' file position.                 */
+   pFCB->FCB_LastSt = 0;                 /* Clear error status       */
+   RC = OSSeek( pFCB->FCB_HFILE,         /* Seek from BOF            */
+                addr(k)->KEY_addr,
+                0 );
+   if RC<0 then do;                      /* Seek was unsuccessfu0.9.1*/
+     pFCB->FCB_LastSt = -RC;                                  /*0.9.1*/
+     signal ERROR;    
+     end;                                                     /*0.9.1*/
+   pFCB->FCB_CurrPos = RC;               /* Record new pos.          */
+   pFCB->FCB_pBuf = pFCB->FCB_aBuf;      /* Force buffer read   0.9.5*/
+   /* The next read will now read the requested block.               */
+   pFCB->FCB_status = pFCB->FCB_status & ^FCB_endfile;        /*0.9.3*/
+   end set_file_pos;
+ %page;
+
+ %include IORB;
+ %include FCB;
+ %include FILE;
+ %include KEY;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_Read;

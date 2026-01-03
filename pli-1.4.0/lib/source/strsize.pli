@@ -1,0 +1,124 @@
+ /* _pli_StrSize                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_StrSize (PL/I runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_StrSize                                 */
+ /*                                                                  */
+ /*      Function:      Compute the length in bits of an adjustable  */
+ /*                     structure of unaligned nonvarying            */
+ /*                     bit strings.                                 */
+ /*                                                                  */
+ /*                     There should be a simple way to do this via  */
+ /*                     compiled code, but the current SED format    */
+ /*                     doesn't really allow it if the unaligned     */
+ /*                     structure is immediately followed by an      */
+ /*                     aligned structure or the end of the major    */
+ /*                     structure.  There's no simple way to         */
+ /*                     get the actual number of bits in the last    */
+ /*                     byte.                                        */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Descriptor formats.                          */
+ /*                                                                  */
+ /*      Called by:     Compiled code for the STRING builtin when    */
+ /*                     the argument is a suitable structure.        */
+ /*                     The length is returned in eax.               */
+ /*                                                                  */
+ /*      Argument list:                                              */
+ /*              +--------------- -----------------+                 */
+ /*          +0  |  Address of 1st SED for struct. |                 */
+ /*              +---------------------------------+                 */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_StrSize: proc(pSED)        
+              returns( fixed bin(31) )
+              options( linkage(system) )
+              ext( '_pli_StrSize' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pSED                ptr;      /* addr(first_SED)            */
+ dcl     pDesc               ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pS                  ptr;      /* ->SED                      */
+ dcl     pD                  ptr;
+ dcl     level               fixed bin(7);
+ dcl     size                fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+
+ dcl    (addr,null,stg,sysnull)
+                             builtin;
+
+ dcl hex entry(ptr,fixed bin(31)) returns(char(256)var)
+         ext('_pli_HEX');
+
+ /*------------------------------------------------------------------*/
+ /*  Mainline                                                        */
+ /*------------------------------------------------------------------*/
+ pS = pSED;
+ level = pS->SE_lvl;                   /* Save starting level #      */
+ size = pS->SE_offset*8+pS->SE_bitoffset; /* Starting bit offset     */
+ scan:
+   do while( '1'b );
+     if pS->SE_last then leave scan;   /* This is last entry         */
+     pS = addr(pS->SE_end);            /* Otherwise point to next    */
+     if pS->SE_lvl <= level then do;   /* End of structure           */
+       pS = pS - stg( null()->pli_ded_SED ); /* Back up              */
+       leave scan;                           /*   and done           */
+       end;
+     end scan;
+
+ /* At this point, pS points to the last SED for this structure.     */
+ /* This should point to either a bit string descriptor or to an     */
+ /* array descriptor for an array of bit strings.                    */
+ 
+ /* Compute the size of this structure minus the last element.       */
+ size = (pS->SE_offset*8+pS->SE_bitoffset) - size;
+
+ pDesc = pS->SE_desc;                  /* ->Descriptor for last elem */
+ if pDesc = sysnull then signal ERROR; /* SNO (last elem is struct)  */
+ /* Last element should be nonvarying bit string or array of same.   */
+ if pDesc->XB_id='20'x then do;        /* Nonvarying bit string      */
+   size = size + pDesc->ST_len;
+   return(size);
+   end;
+ if pDesc->XB_id='30'x | pDesc->XB_id='31'x then do;
+   pD = addr(pDesc->AR_dims) + 
+        (pDesc->AR_dim-1) * stg( null->pli_ded_dim );
+   size = size + 
+         ( pD->DM_hbnd(1) - pD->DM_lbnd(1) + 1 ) * pD->DM_mult(1);
+   return(size);
+   end; /* array */
+
+ signal error;                         /* SNO                        */
+
+ %page;
+ %include desc;
+
+ end pli_StrSize;

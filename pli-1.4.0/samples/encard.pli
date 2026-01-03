@@ -1,0 +1,36 @@
+ /* ENCARD - Convert text to ENV(F RECSIZE(80) format                */
+
+ /********************************************************************/
+ /*                                                                  */
+ /*    Module ID: ENCARD                                             */
+ /*                                                                  */
+ /*    Author:    Peter Flass <peter_flass@yahoo.com>                */
+ /*               Sep, 2017                                          */
+ /*                                                                  */
+ /*    Function:  ENCARD converts a standard text file (ENV(V TEXT)  */
+ /*               to card images ENV(F RECSIZE(80).                  */
+ /*                                                                  */
+ /*                                                                  */
+ /*    Purpose:   This program formats card images so that           */
+ /*               existing mainframe PL/I programs that read SYSIN   */
+ /*               will not need changes.                             */
+ /*                                                                  */
+ /********************************************************************/
+
+ ENCARD: proc options(main);
+  dcl     sysin               stream input env(V TEXT);
+  dcl     sysout              stream output env(V TEXT RECSIZE(80));
+  dcl     card                char(80);
+  dcl     eof                 bit(1)              init( '0'b );
+
+  on endfile(sysin) eof='1'b;
+  open file(sysin) input,
+       file(sysout) output title('stdout:');
+  do while(^eof);                       /* Loops until endfile       */
+    get file(sysin)  edit(card)(a);     /* This reads entire card    */
+    put file(sysout) edit(card)(a(80)); /* Write out in new format   */
+    end; /* do while */
+
+  close file(sysin), file(sysout);
+  
+  end ENCARD;

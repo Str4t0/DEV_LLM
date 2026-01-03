@@ -1,0 +1,212 @@
+ /* pli_Trim                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.7         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Trim (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2015                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Ltrim                                   */
+ /*                     _pli_Rtrim                                   */
+ /*                     _pli_Trim                                    */
+ /*                                                                  */
+ /*      Function:      Builtins LTRIM, RTRIM, and TRIM              */
+ /*                                                                  */
+ /*          This package implements all the "TRIM" builtins.        */
+ /*          TRIM is the Enterprise and OS/2 PL/I builtin,           */
+ /*          LTRIM and RTRIM are the Multics builtins.               */
+ /*                                                                  */
+ /*          LTRIM and RTRIM adjust the argument list and call TRIM. */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*          result = TRIM(x[,y[,z]]);                               */
+ /*          result = LTRIM(x[,y]);                                  */
+ /*          result = RTRIM(x[,z]);                                  */
+ /*                                                                  */
+ /*          x,y, and z must be character strings or be capable of   */
+ /*          being converted to character string values.             */
+ /*                                                                  */
+ /*          result is a nonvarying string consisting of the value   */
+ /*          of x with all characters occurring in y trimmed from    */
+ /*          the left end and all characters in z trimmed from       */
+ /*          the right.                                              */
+ /*                                                                  */
+ /*          If y and/or z are omitted a character string consisting */
+ /*          of a single blank is used.  This is signified to        */
+ /*          the TRIM procedure by passing SYSNULL() as the          */
+ /*          argument address.                                       */
+ /*                                                                  */
+ /*          If y and/or z are the null string the corresponding     */
+ /*          truncation is not performed.                            */
+ /*                                                                  */
+ /*          LTRIM and RTRIM call TRIM with the y or z argument      */
+ /*          passed as the null string.                              */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ pli_TrimPkg: package exports(pli_TRIM,pli_LTRIM,pli_RTRIM);      
+ 
+ /*-------------------------*/
+ /* STATIC data             */
+ /*-------------------------*/
+ dcl      space_desc          char(8)   static
+              init( '1000000001000000'x );   /* String descriptor    */
+ dcl      null_desc           char(8)   static
+              init( '1000000000000000'x );   /* Null String descript */
+ dcl      space_char          char(1)   static    init( ' ' );
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      VarStr              char(0)   varying   based;
+ dcl      FixStr              char(100)           based;
+ 
+ /*------------------------------------------------------------------*/
+ /*       L T R I M                                                  */
+ /*------------------------------------------------------------------*/
+ pli_LTRIM: procedure(pX,pY,pRes)
+            options( linkage(system) )
+	    ext( '_pli_LTRIM' );
+ 
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl    pX                  ptr;      /* ->X loc/desc              */
+   dcl    pY                  ptr;      /* ->Y loc/desc or sysnull   */
+   dcl    pRes                ptr;      /* ->Result loc/desc         */
+    	      
+   dcl  1 null_loc_desc,              
+          5 addr_data         ptr       init( sysnull() ),
+	  5 addr_desc         ptr       init( addr(null_desc)  );
+	  
+   call pli_TRIM( pX, pY, addr(null_loc_desc), pRes ); 
+ 
+ end pli_LTRIM;
+ 
+ /*------------------------------------------------------------------*/
+ /*       R T R I M                                                  */
+ /*------------------------------------------------------------------*/
+ pli_RTRIM: procedure(pX,pZ,pRes)
+            options( linkage(system) )
+	    ext( '_pli_RTRIM' );
+ 
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl    pX                  ptr;      /* ->X loc/desc              */
+   dcl    pZ                  ptr;      /* ->Z loc/desc or sysnull   */
+   dcl    pRes                ptr;      /* ->Result loc/desc         */
+    	      
+   dcl  1 null_loc_desc,              
+          5 addr_data         ptr       init( sysnull() ),
+	  5 addr_desc         ptr       init( addr(null_desc)  );
+   
+   call pli_TRIM( pX, addr(null_loc_desc), pZ, pRes ); 
+ 
+ end pli_RTRIM;
+ 
+ /*------------------------------------------------------------------*/
+ /*         T R I M                                                  */
+ /*------------------------------------------------------------------*/
+ pli_TRIM: procedure(pX,pY,pZ,pRes)
+            options( linkage(system) )
+	    ext( '_pli_TRIM' );
+ 
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl    pX                  ptr;      /* ->X loc/desc              */
+   dcl   (pY,pZ)              ptr;      /* ->Y,Z loc/desc or sysnull */
+   dcl    pRes                ptr;      /* ->Result loc/desc         */
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl  (aX,aY,aZ,aRes)       ptr;
+   dcl  (lX,lY,lZ)            fixed bin(31);
+   dcl  (i,j)                 fixed bin(31);
+   dcl   p                    ptr;
+    	      
+   dcl  1 space_loc_desc,              
+          5 addr_data         ptr       init( addr(space_char) ),
+	  5 addr_desc         ptr       init( addr(space_desc) );
+   
+   if pY = sysnull() then pY = addr(space_loc_desc);
+   if pZ = sysnull() then pZ = addr(space_loc_desc);
+   pRes->pDesc->ST_len = 0;             /* Initialize output         */
+   aX = pX->pData;                      /* Get X string data         */
+   lx = pX->pDesc->ST_len;
+   if pX->pDesc->ST_ID = '11'x          /* Source varying?           */
+   then do;
+     lX = length(aX->VarStr);
+     aX = ax + stg( null()->VarStr );
+     end;
+   if lX=0 then return;                 /* X is the null string      */
+   aY = pY->pData;                      /* Get Y string data         */
+   lY = pY->pDesc->ST_len;
+   if pY->pDesc->ST_ID = '11'x          /* Y varying?                */
+   then do;
+     lY = length(aY->VarStr);
+     aY = aY + stg( null()->VarStr );
+     end;  
+   aZ = pZ->pData;                      /* Get Z string data         */
+   lZ = pZ->pDesc->ST_len;
+   if pZ->pDesc->ST_ID = '11'x          /* Z varying?                */
+   then do;
+     lZ = length(aZ->VarStr);
+     aZ = aZ + stg( null()->VarStr );
+     end; 
+     
+   /*-----------------------*/
+   /* Trim left             */
+   /*-----------------------*/
+   if lY>0 then do;
+l:   do j=1 to lX;
+       i = index( substr(aY->FixStr,1,lY), substr(aX->FixStr,1,1) );
+       if i>0 then do;                  /* This character to strip   */
+         aX = aX+1;
+	 lX = lX-1;
+	 end;
+       else leave l;	 
+       end; /* do j */
+     end; /* lY>0 */
+
+   /*-----------------------*/
+   /* Trim right            */
+   /*-----------------------*/
+   p = aX + lX - 1;                     /* ->last character          */
+   if lZ>0 then do;
+r:   do j=1 to lX;
+       if lX=0 then return;             /* Everything stripped       */
+       i = index( substr(aZ->FixStr,1,lZ), substr(p->FixStr,1,1) );
+       if i>0 then do;                  /* This character to strip   */
+         p = p-1;   
+	 lX = lX-1;
+	 end;
+       else leave r;	 
+       end; /* do j */
+     end; /* lZ>0 */
+
+   /*-----------------------*/
+   /* Move result           */
+   /*-----------------------*/
+   pRes->pDesc->ST_len = lX;            /* Set length                */
+   p = pRes->pData;                     /* ->Result                  */
+   call plimove(p,aX,lX);               /* Move result               */
+     
+ end pli_TRIM;
+ 
+ %include locdesc;
+ %include desc;
+ 
+ end pli_TrimPkg;

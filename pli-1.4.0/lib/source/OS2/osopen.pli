@@ -1,0 +1,239 @@
+ /* _pli_OSOpen                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSOpen (PL/I runtime)  [OS/2]           */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSOpen                                  */
+ /*                                                                  */
+ /*      Function:      Operating system dependent open logic.       */
+ /*                                                                  */
+ /*      This is a revised version of 'OSOpen' that uses a more      */
+ /*      C-like interface.  OS/2's DosOpen provides a similar level  */
+ /*      of abstraction that's missing on bare-metal Linux.          */
+ /*      This routine will either call DosOpen or the Linux system   */
+ /*      service.                                                    */
+ /*                                                                  */
+ /*      OSOpen is called by the open mainline (_pli_Open) to        */
+ /*      perform an operating system open after the FCB has          */
+ /*      been constructed.                                           */
+ /*      If the open is successful, the positive file descriptor     */
+ /*      is returned.                                                */
+ /*      If the open is not successful, an error code (currently     */
+ /*      OS-dependent) is returned.                                  */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Linux: SYSCALL                               */
+ /*                     OS/2:  DosOpen                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = _pli_OSOpen( pTitle,                    */
+ /*                                       bFileMode,                 */
+ /*                                       bPerm )                    */
+ /*                     pTitle    = The address of the 'title'       */
+ /*                                 string (filename).               */
+ /*                       Note that 'pTitle' must point to a         */
+ /*                       PL/I VARYING string.  The library 'OPEN'   */
+ /*                       routine ensures this.  If OSOpen is called */
+ /*                       directly by a user program, it is the      */
+ /*                       programmer's responsibility to handle.     */
+ /*                     bFileMode = The mode flags (like fcntl).     */
+ /*                     bPerm     = The file's permission bits       */
+ /*                                 (currently unused).              */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ %replace Path_Max by 260;                                     /*OS/2*/
+
+ pli_OSOpen: proc(pTitle,bFileMode,bPerm)
+               returns( fixed bin(31) )
+	       options( linkage(system) )
+               ext( '_pli_OSOpen' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pTitle              ptr;       /* ->Varying string           */
+ dcl     bFileMode           bit(32);   /* Like fcntl                 */
+ dcl     bPerm               bit(32);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     dummy_string        char(0)   varying   static;
+ dcl     sSTDIN              char(6)   static    init( 'stdin:' );
+ dcl     sSTDOUT             char(7)   static    init( 'stdout:' );
+ dcl     sSTDERR             char(7)   static    init( 'stderr:' );
+ dcl     lowercase           char(26)  static
+                   init( 'abcdefghijklmnopqrstuvwxyz' );
+ dcl     uppercase           char(26)  static
+                   init( 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS Return code   */
+ dcl     pT                  ptr;
+ dcl     p                   ptr;
+ dcl    (ulAttribute,fsOpenFlags,fsOpenMode)
+                             bit(32);
+ dcl    (ulAction,cbFile)    fixed bin(31);
+ dcl     title_len           fixed bin(31);
+ dcl     hFile               fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     File_Name           char(1024)     varying    based;
+ dcl     zStr                char(2048)                based;
+ dcl     VarStr              char(0)        varying    based;
+ dcl     C1                  char(1)                   based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosOpen             entry( ptr,              /* pszFileName */
+                                    ptr,              /* pHf         */
+                                    ptr,              /* pulAction   */
+                                    fixed bin(31),    /* cbFile      */
+                                    bit(32),          /* ulAttribute */
+                                    bit(32),          /* fsOpenFlags */
+                                    bit(32),          /* fsOpenMode  */
+                                    ptr )             /* peaop2      */
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DosOpen' );
+
+ /* Values for 'fsOpenFlags'     */
+ dcl OPEN_ACTION_FAIL_IF_EXISTS     bit(32) static init('00000000'bx);
+ dcl OPEN_ACTION_OPEN_IF_EXISTS     bit(32) static init('01000000'bx);
+ dcl OPEN_ACTION_REPLACE_IF_EXISTS  bit(32) static init('02000000'bx);
+ dcl OPEN_ACTION_FAIL_IF_NEW        bit(32) static init('00000000'bx);
+ dcl OPEN_ACTION_CREATE_IF_NEW      bit(32) static init('10000000'bx);
+
+ /* Values for 'ulAttribute'     */
+ dcl FILE_ARCHIVED                  bit(32) static init('20000000'bx);
+ dcl FILE_DIRECTORY                 bit(32) static init('10000000'bx);
+ dcl FILE_SYSTEM                    bit(32) static init('04000000'bx);
+ dcl FILE_HIDDEN                    bit(32) static init('02000000'bx);
+ dcl FILE_READONLY                  bit(32) static init('01000000'bx);
+ dcl FILE_NORMAL                    bit(32) static init('00000000'bx);
+
+ /* Values for 'fsOpenMode'      */
+ dcl OPEN_ACCESS_READONLY           bit(32) static init('00000000'bx);
+ dcl OPEN_ACCESS_WRITEONLY          bit(32) static init('01000000'bx);
+ dcl OPEN_ACCESS_READWRITE          bit(32) static init('02000000'bx);
+ dcl OPEN_SHARE_DENYREADWRITE       bit(32) static init('10000000'bx);
+ dcl OPEN_SHARE_DENYWRITE           bit(32) static init('20000000'bx);
+ dcl OPEN_SHARE_DENYREAD            bit(32) static init('30000000'bx);
+ dcl OPEN_SHARE_DENYNONE            bit(32) static init('40000000'bx);
+ dcl OPEN_FLAGS_NOINHERIT           bit(32) static init('80000000'bx);
+ dcl OPEN_FLAGS_NO_LOCALITY         bit(32) static init('00000000'bx);
+ dcl OPEN_FLAGS_SEQUENTIAL          bit(32) static init('00010000'bx);
+ dcl OPEN_FLAGS_RANDOM              bit(32) static init('00020000'bx);
+ dcl OPEN_FLAGS_RANDOMSEQUENTIAL    bit(32) static init('00030000'bx);
+ dcl OPEN_FLAGS_NO_CACHE            bit(32) static init('00100000'bx);
+ dcl OPEN_FLAGS_FAIL_ON_ERROR       bit(32) static init('00200000'bx);
+ dcl OPEN_FLAGS_WRITE_THROUGH       bit(32) static init('00400000'bx);
+ dcl OPEN_FLAGS_DASD                bit(32) static init('00800000'bx);
+
+ dcl     DosQuerySysInfo     entry( fixed bin(31),    /* ulStartIndex*/
+                                    fixed bin(31),    /* ulLastIndex */
+                                    ptr,              /* pDataBuf    */
+                                    fixed bin(31) )   /* ulDataBufLen*/
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DosQuerySysInfo' );
+ dcl     QSV_MAX_PATH_LENGTH fixed bin(31)  static    init( 1);
+ dcl     QSV_MAX_COMP_LENGTH fixed bin(31)  static    init(23);
+			     
+ dcl    ( addr,allocate,length,null,plimove,plifree,
+          stg,substr,sysnull,translate
+        )                    builtin;
+
+
+ title_len = length(pTitle->File_Name);
+ pT = pTitle + stg(null()->VarStr);
+ /* Path_Max includes the terminating '00'x byte    */
+ if title_len>=Path_Max then return(-1);
+ /* Coincidentally, -1 is ' EPERM - operation not permitted.'         */
+
+ /*-------------------------------------------------------*/
+ /* Recognize 'stdin' and 'stdout', and 'stderr'          */
+ /*  and bypass open.                                     */
+ /*-------------------------------------------------------*/
+ if title_len=length(sSTDIN)
+ then if translate(
+                    substr(pT->zStr,1,6), lowercase, uppercase
+                   ) = sSTDIN
+      then return(0);                   /* fd for stdin               */
+ if title_len=length(sSTDOUT)
+ then if translate(
+                    substr(pT->zStr,1,7), lowercase, uppercase
+                   ) = sSTDOUT
+      then return(1);                   /* fd for stdout              */
+ if title_len=length(sSTDERR)
+ then if translate(
+                    substr(pT->zStr,1,7), lowercase, uppercase
+                   ) = sSTDERR
+        then return(2);                 /* fd for stderr               */
+	
+ cbFile=0;                             /* Dummy file size            */
+
+ /*-------------------------------------------------------*/
+ /* Convert 'file mode' to OS/2 fsOpenFlags and fsOpenMode*/
+ /*-------------------------------------------------------*/
+ ulAttribute,fsOpenFlags,fsOpenMode = '00000000'bx;
+ if (bFileMode&'03000000'bx)='00000000'bx        /* INPUT            */
+ then do;
+   fsOpenFlags = OPEN_ACTION_OPEN_IF_EXISTS |
+                 OPEN_ACTION_FAIL_IF_NEW;
+   fsOpenMode  = OPEN_ACCESS_READONLY;
+   end;
+ else if (bFileMode&'03000000'bx)='01000000'bx   /* O_WRONLY         */
+ then do;
+   if (bFileMode&'00040000'bx)ª='00000000'bx     /* O_APPEND         */
+   /* Open Flags for OUTPUT ENV(APPEND) are the same as for UPDATE.  */
+   then fsOpenFlags = OPEN_ACTION_OPEN_IF_EXISTS |
+                      OPEN_ACTION_CREATE_IF_NEW;
+   else fsOpenFlags = OPEN_ACTION_REPLACE_IF_EXISTS |
+                      OPEN_ACTION_CREATE_IF_NEW;
+   fsOpenMode  = OPEN_ACCESS_READWRITE;
+   end;
+ else do;                                         /* O_RDWR          */
+   fsOpenFlags = OPEN_ACTION_OPEN_IF_EXISTS |
+                 OPEN_ACTION_CREATE_IF_NEW;
+   fsOpenMode  = OPEN_ACCESS_READWRITE;
+   end;
+ if (bFileMode&'80000000'bx)ª='00000000'bx       /* O_EXCL           */
+ then fsOpenMode  = fsOpenMode | OPEN_SHARE_DENYREADWRITE;
+ else fsOpenMode  = fsOpenMode | OPEN_SHARE_DENYWRITE;
+ if (bFileMode&'00000800'bx)ª='00000000'bx       /* O_RANDOM          */
+ then fsOpenMode  = fsOpenMode | OPEN_FLAGS_RANDOM;
+ else fsOpenMode  = fsOpenMode | OPEN_FLAGS_SEQUENTIAL;
+ ulAttribute = FILE_NORMAL;                 /* Default, doc only     */
+ /* display( 'fsOpenMode=' || heximage(addr(fsOpenMode),4) ||        */
+ /*          ', fsOpenFlags=' || heximage(addr(fsOpenFlags),4) );    */
+
+ p = allocate(title_len+1);            /* Get storage for title      */
+ call plimove(p,pt,title_len);         /* Copy title                 */
+ ptradd(p,title_len)->C1 = '00'x;      /*Add null terminator         */
+ RC = DosOpen( p, addr(hFile),
+               addr(ulAction), cbFile,
+               ulAttribute, fsOpenFlags, fsOpenMode,
+               SYSNULL );              /* peaop2 not used            */
+ call plifree(p);                      /* Free temporary storage     */
+
+ if RC=0 then return(hFile);           /* Successful open            */  
+ return(-RC);                          /* RC indicates error         */
+ 
+ end pli_OSOpen;

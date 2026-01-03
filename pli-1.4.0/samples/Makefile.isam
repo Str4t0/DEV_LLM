@@ -1,0 +1,55 @@
+# makefile.isam
+# Sample programs for Iron Spring PL/I [Linux]
+# By default this makefile will compile the two isam
+# sample programs and run the tests.
+# The programs are linked with routines from libpbl.a,
+# and with libc, using C's malloc and free for heap 
+# storage storage management.
+#
+# It does not require that the compiler be installed; rather it uses
+# the compiler and libraries in the distribution directory tree.  This
+# allows testing without system privileges.  It does require that gcc
+# and a 32-bit version of libc are installed on your system.
+
+# The ld flag '-z muldefs' is required to prevent
+# link errors caused by possible multiple definitions
+# of initialized PL/I EXTERNAL data.
+
+# When linked without libc, the entry point should be
+# 'main' or '_pli_Main', defined by the ld option '-e main'.
+
+# 'INC' provides a list of directories to search for include files.
+# Each entry should be preceded by '-i'
+# 'LIBDIR' is the directory to be searched for the runtlime library.
+
+# The files ${ALTDIR}/fhs.o and ${ALTDIR}/ghs.o are alternate heap    
+# storage management procedures that call C's malloc() and free().
+# Change 'ALTDIR' to point to your alternate objects.
+#
+# The output of the tests are isam index and data files
+# DIREC.I and DIREC.D in the current directory
+
+PLI	= ../plic
+PLIFLGS	= -lixg -ew -N "-cn(^) -co(|)"
+LIBDIR	= ../lib
+INC     = -i.
+ALTDIR  = ../lib/alt
+
+ALL: loadsamp updtsamp tests
+
+tests: loadsamp updtsamp loadsamp.dat updtsamp.dat
+	rm -f DIREC.[ID]
+	./loadsamp<loadsamp.dat
+	./updtsamp<updtsamp.dat
+
+clean:
+	rm -f loadsamp loadsamp.lst loadsammp.map		\
+	updtsamp updtsamp.lst updsamp.map DIREC.[ID]		 		
+
+%.o:	%.pli 
+	${PLI} -C ${PLIFLGS}  $^ -o $*.o
+	
+%:	%.o
+	gcc -o $@ $^  -static -m32 ${ALTDIR}/fhs.o ${ALTDIR}/ghs.o \
+	-L ${LIBDIR} -lprf -lpbl -Wl,-zmuldefs -Wl,-M  >$@.map
+

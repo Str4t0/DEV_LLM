@@ -1,0 +1,35 @@
+ /* LIBVER - Print Library Version Information                       */
+
+ /********************************************************************/
+ /*                                                                  */
+ /*    Module ID: LIBVER                                             */
+ /*                                                                  */
+ /*    Author:    Peter Flass <peter_flass@yahoo.com>                */
+ /*               May, 2008                                          */
+ /*                                                                  */
+ /*    Function:  Use the _pli_Version library procedure to display  */
+ /*               the library version information.                   */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ LIBVER: proc options(main);
+
+ dcl     sysprint            print;
+ dcl     pVer                ptr;
+ dcl     pVx                 ptr                 based;
+ dcl     num_ver             fixed dec(5,2)      based;
+ dcl     str_ver             char(120) varying   based;
+ 
+ dcl     ver                 entry returns( ptr )
+                             ext( '_pli_Version' );
+  
+ pVer = ver();
+ put skip edit( 'PL/I Library version ', pVer->pVx->num_ver )(a,p'zz9v.99');
+ pVer = pVer + stg(pVer->pVx);
+ do while( pVer->pVxª=sysnull() );
+   put skip edit( pVer->pVx->str_ver )(a);
+   pVer = pVer + stg(pVer->pVx);
+   end; /* do while */
+ 
+ end LIBVER;
+

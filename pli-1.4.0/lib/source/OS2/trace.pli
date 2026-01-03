@@ -1,0 +1,222 @@
+ /* _pli_Trace                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        Trace   (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2002                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Trace                                   */
+ /*                                                                  */
+ /*      Function:      SNAP option of ON statement.                 */
+ /*                                                                  */
+ /*      Dependencices: Stack Frame format.                          */
+ /*                     Requires the standard data of EBP and EIP    */
+ /*                     at 0[EBP] and 4[EBP] respectively.  A PL/I   */
+ /*                     stack frame is recognized by -4[EBP]         */
+ /*                     containing the address of the PGT.  If found */
+ /*                     the entry-point address is assumed to be     */
+ /*                     at -10'x[EBP].                               */
+ /*                                                                  */
+ /*      Called From:   ON statement with SNAP option.               */
+ /*                                                                  */
+ /*      Calling sequence: (not user-callable)                       */
+ /*                     CALL _pli_Trace;                             */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                     The statement-number table will, when imp-   */
+ /*                     and the statement number.  In the meantime   */
+ /*                     these will be blank.                         */
+ /*                                                                  */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2010-03-11: Replace WriteLn with display.          0.9.0*/
+ /*          2007-06-09: Fix for OS/2 DosGetInfoBlocks problem       */
+ /*                      (APAR JR10561)                              */
+ /*          2006-11-01: Start trace from EBP passed by caller.      */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Trace: proc(Where)                                    /*20061101*/
+            external( '_pli_Trace' )                       /*20061101*/
+            options( linkage(system) );                    /*20061101*/
+
+ /*-----------------------------------*/                   /*20061101*/
+ /* Parameters                        */                   /*20061101*/
+ /*-----------------------------------*/                   /*20061101*/
+ dcl     Where               ptr;                          /*20061101*/
+
+ /*-----------------------------------*/
+ /* Automatic Data                    */
+ /*-----------------------------------*/
+ dcl     EBP                 ptr;
+ dcl     pDSA                ptr;
+ dcl     my_edi              ptr;
+ dcl     epp                 ptr;
+ dcl     pTIB                ptr;
+ dcl     pPIB                ptr;                          /*20070609*/
+ dcl     RC                  fixed bin(31);
+ dcl     PrevDSA             ptr;
+ dcl     l                   fixed bin(7);
+ dcl     line                char(80) varying;
+ dcl    (ent_off,ent_addr,ret_addr)
+                             char(8);
+ dcl     ent_name            char(64) varying;
+ dcl     char4               char(4);
+ dcl     is16bit             bit(1);
+
+ /*-----------------------------------*/
+ /* Prototypes                        */
+ /*-----------------------------------*/
+ dcl     ep_len              fixed bin(7)   based(epp);
+ dcl     ep_name             char(64)       based(epp);
+
+ /*-----------------------------------*/
+ /* External Entries                  */
+ /*-----------------------------------*/
+ dcl     GetDSA              entry
+                             external( '_pli_GetDSA' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+ dcl     DosGetInfoBlocks    entry(ptr,ptr)
+                             external( 'DosGetInfoBlocks' )
+                             returns( fixed bin(31) ) /* unsigned */
+                             options( asm linkage(system) );
+
+ dcl    (addr,binvalue,heximage,null,ptrvalue,stg,            /*0.9.0*/
+         string,substr,sysnull)
+                             builtin;
+
+ /*------------------------------------------------------------------*/
+ /*      Print Headings, Initialize DSA Chain Info                   */
+ /*------------------------------------------------------------------*/
+ RC = DosGetInfoBlocks( addr(pTIB), addr(pPIB) );          /*20070609*/
+ display( 'Traceback of user routines:' );
+ display( 'address  caller   entry name' );
+ EBP = GetDSA();                                 /* Get my EBP       */
+ pDSA = EBP - stg( null()->dsa_below_ebp );      /* -> Stack frame   */
+ my_edi = pDSA->dsa_edi;                         /* A(PGT)           */
+ EBP = Where;                                    /* Starting DSA21101*/
+
+ /*------------------------------------------------------------------*/
+ /*      Print DSA Chain not including this procedure                */
+ /*------------------------------------------------------------------*/
+ loop: do while( '1'b );
+   PrevDSA = EBP;                                /* Save DSA address */
+   EBP = check_stack(EBP);                       /* Back up in stack */
+   if EBP=SYSNULL then do;                       /* All done         */
+     display( 'End of Stack Backchain' );
+     leave loop;
+     end;
+   pDSA = EBP - stg( null()->dsa_below_ebp );    /* -> Stack frame   */
+   ent_addr = (8)' ';
+   /*-------------------------------------------*/
+   /* Identify type of Stack Frame              */
+   /*-------------------------------------------*/
+   if is16bit
+   then ent_name = '16-bit procedure';           /* 16-bit routine   */
+   else if pDSA->dsa_edi ª= my_edi               /* Non-PL/I routine */
+   then do;
+     ent_name = 'Non-PL/I procedure';
+     /*-----------------------------------------*/
+     /* Asynchronous Exception Stack Frame      */
+     /*-----------------------------------------*/
+     if pDSA->dsa_eip=SYSNULL then do;           /* Return address=0 */
+       ent_name = 'Exception Handler';
+       end;
+     end; /* Non-PL/I */
+   else do;                                      /* PL/I routine     */
+     /* We *COULD* verify that the instruction at the EP is          */
+     /* 'CALL DWORD PTR 0[EDI]'.  This is 'FF17'x, but would best    */
+     /* be checked by comparing to the two bytes at my EP.           */
+     /* We *SHOULD* verify that the length is greater than zero      */
+     /* and less than some reasonable value:                         */
+     /* max_length_ext_label = 64.                                   */
+     epp = pDSA->dsa_epa;                        /* Entry point addr */
+     char4 = bsw( addr(epp) );
+     ent_addr = heximage( addr(char4), 4 );
+     epp = epp-1;                                /* -> Length of name*/
+     l = ep_len;                                 /* Save length      */
+     epp = epp-l;                                /* -> Text of name  */
+     ent_name = substr(ep_name,1,l);
+     end;
+   char4 = bsw( addr(pDSA->dsa_eip) );           /* Return address   */
+   ret_addr = heximage( addr(char4), 4 );
+   line = ent_addr || ' ' || ret_addr || ' ' || ent_name;
+   display( line );
+   if pDSA->dsa_eip=SYSNULL                      /* Return address=0 */
+   then leave loop;                              /* Abnormal exit    */
+   if ent_name ='_pli_Init'                      /* End of chain     */
+   then return;                                  /* Normal exit      */
+   /* COMMENT: Thread initializer will also terminate                */
+   EBP = pDSA->dsa_ebp;                          /* Back up  20061101*/
+   end loop;
+ /* If the trace does not terminate with _pli_Init, issue error msg. */
+ display( '*** Trace Terminated ***' );
+ return;
+
+ /*------------------------------------------------------------------*/
+ /*      Check Stack Format                                          */
+ /*     (This is dependent on the 16:16 address format)              */
+ /*------------------------------------------------------------------*/
+ check_stack: proc(ebp) returns( ptr );
+   dcl   ebp                 ptr;
+   dcl   tmp                 ptr;
+   dcl   c41                 char(4);
+   dcl   c42                 char(4);
+   dcl   h2               (2)fixed bin(15)  based;
+   dcl   f1                  fixed bin(31)  based;
+
+   is16bit = '0'b;                     /* Assume 32-bit stack frame  */
+   if ebp >= pTIB->tib_pstack &        /* Is address on stack?       */
+      ebp <  pTIB->tib_pstacklimit
+   then return(ebp);                   /* Yes, okay                  */
+   is16bit = '1'b;                     /* Assume 16-bit stack frame  */
+   tmp = ebp;                          /* Check for 16-bit stack frm */
+   /* COMMENT: The following code assumes that 16-bit stack frames   */
+   /*          will not be greater than 64K.                         */
+   /*          If the low-order word of the address is greater than  */
+   /*          the low-order word of the previous stack frame,       */
+   /*          then we assume the address in sin the current 64K,    */
+   /*          otherwise we assume the next-higher 64K.  The whole   */
+   /*          address is then re-checked.                           */
+   /* NOTE: The following compare is performed as character in       */
+   /*       order to get an unsigned compare.                        */
+   c41   = bsw( addr(tmp) );           /* Set up for compare         */
+   c42   = bsw( addr(PrevDSA) );
+   if substr(c41,3,2) >=               /* Valid 16-bit address?      */
+      substr(c42,3,2)
+   then substr(c41,1,2) = substr(c42,1,2);
+   else do;
+        substr(c41,1,2) = substr(c42,1,2);
+        addr(c41)->h2(1) =
+          addr(c41)->h2(1)+1;
+        end;
+   c41 = bsw( addr(c41) );             /* Re-swap bytes              */
+   tmp = ptrvalue( addr(c41)->f1 );
+   if tmp >= pTIB->tib_pstack &        /* Is address NOW on stack?   */
+      tmp <  pTIB->tib_pstacklimit
+   then return(tmp);                   /* Yes, okay                  */
+   return( SYSNULL );                  /* No, bad stack format       */
+   end check_stack;
+
+ /*------------------------------------------------------------------*/
+ /*      Swap byte-order for display                                 */
+ /*------------------------------------------------------------------*/
+ bsw: proc(p) returns( char(4) );
+   dcl   p                   ptr;
+   dcl   cx               (4)char(1)   based(p);
+   dcl   cy               (4)char(1);
+   cy(4) = cx(1);            /* OR cy = reverse(cx)                  */
+   cy(1) = cx(4);
+   cy(3) = cx(2);
+   cy(2) = cx(3);
+   return( string(cy) );
+   end bsw;
+
+ %include DSA;
+ %include TIB;
+
+ end pli_Trace;

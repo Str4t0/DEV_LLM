@@ -1,0 +1,234 @@
+ /* _pli_CLC                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.7           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CLC (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Feb, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CLC                                     */
+ /*                                                                  */
+ /*      Function:      Convert FLOAT numbers to character string.   */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Intel BCD format.                            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Output area (28 or 54 bytes)      |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Descriptor for FLOAT input        |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> FLOAT input                       |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Converted character value as ???             */
+ /*                                                                  */
+ /*                     Conversion is described in SC26-3114-01, p.91*/
+ /*                     The PL/I standard has a useful and           */
+ /*                     interesting description in terms of          */
+ /*                     PICTURE editing.                             */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      Errors:        None.                                        */
+ /*                     Cannot raise SIZE because large-enough       */
+ /*                     result area is always reserved by caller.    */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2009-11-05: Converting one too many digits for prec.0.8c*/
+ /*          2009-09-03: F2I converts complex values, change to  0.8c*/
+ /*                      only call it once.                      0.8c*/
+ /*          2009-09-01: Change output to VARYING string to      0.8c*/
+ /*                      match CAC.                              0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CLC: proc(pFlt,pDesc,pRet)
+                             external( '_pli_CLC' )
+                             options( LINKAGE(SYSTEM) );
+
+ 
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFlt                ptr;                     /* -> Input    */
+ dcl     pDesc               ptr;                     /* -> Descript.*/
+ dcl     pRet                ptr;                     /* -> Output   */
+
+ dcl     result              char(1)             based( pRet );
+ 
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl     prec                fixed bin(31);
+ dcl     ovf                 fixed bin(31); /* Rounding overflow     */
+ dcl     bComplex            bit(1);
+ dcl     Sign                char(1)                  init( ' ' );
+ dcl     pR                  ptr;                              /*0.8c*/
+ 
+ /*-------------------------*/
+ /* Internal Float Format   */
+ /*-------------------------*/
+ dcl   1 IntFlt           (2),         /* Internal FP format 20090903*/
+         5 IF_frac           fixed dec(18),      /* Fraction         */
+         /* High-order digit is most significant                     */
+         5 IF_exp            fixed bin(15);      /* Power of 10 exp. */
+ 
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+ /* Digit positions for digits 0:17 within BCD number                */
+ dcl     d             (0:17)fixed bin(7)   static    init(
+          1, 0, 3, 2, 5, 4, 7, 6, 9, 8,11,10,13,12,15,14,17,16 );
+
+ /* Decimal digits 0:9                                               */
+ dcl     digit          (0:9)char(1)        static    init(
+          '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' );
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     PIC4                pic 'S9999'         based;
+ dcl     VarStr              char(0)   varying   based;        /*0.8c*/
+ dcl     FB15                fixed bin(15)       based;        /*0.8c*/
+
+ %include CONDMASK;
+
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     F2I                 entry( ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_F2I' );
+ dcl     RND                 entry( ptr, ptr, fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_RND' );
+
+ dcl    (addr,string)        builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ prec  = pDesc->LD_prec;
+ if pDesc->LD_id='43'x                 /* Float Binary?              */
+ then prec = B2D(prec);                /* Yes, convert precision     */
+ if prec>19 then prec=19;                                     /*0.9.4*/ 
+ bComplex = (pDesc->LD_cplx&'80'bx)ª='00'bx;
+ pR = pRet;                            /* Save result addr       0.8c*/
+ pRet->FB15 = 0;                       /* Init result length     0.8c*/
+ pRet = pRet + stg( null()->VarStr );                          /*0.8c*/
+
+ /*---------------------------------------------*/
+ /* Convert real part                           */
+ /*---------------------------------------------*/
+ call F2I( pFlt, pDesc, addr(IntFlt) );/* Convert real part          */
+ /* NOTE: F2I Will convert complex numbers, so there's no need       */
+ /*       to call it twice.                                          */
+ if IF_frac(1)<0                       /* Get sign '-' or ' '20090903*/
+ then Sign = '-';                      /* Force sign for imaginary   */
+ call convert(1);                      /* Convert real comp  20090903*/
+
+ /*---------------------------------------------*/
+ /* Convert imaginary part                      */
+ /*---------------------------------------------*/
+ if bComplex then do;
+   if prec<=7 then pFlt=pFlt+4;      /* Advance to imag input   0.9.3*/
+   else if prec<=15 then pFlt=pFlt+8;                         /*0.9.3*/
+   else pFlt=pFlt+10;
+   /* NOTE: F2I has already converted the imaginary value.   20090903*/
+   if IF_frac(2)<0                     /* Get sign '-' or '+'20090903*/
+   then Sign = '-';                    /* Force sign for imaginary   */
+   else Sign = '+';
+   call convert(2);                    /* Convert imag comp  20090903*/
+   end; /* bComplex */
+
+ pR->FB15 = pRet-pR-stg(null()->VarStr); /* Set result length    0.8c*/
+
+ return;
+
+ /*---------------------------------------------*/
+ /* Convert Real or Imaginary Part of Source    */
+ /*---------------------------------------------*/
+ convert: proc(n);                                         /*20090903*/
+ dcl     n                   fixed bin(7);                 /*20090903*/
+
+ dcl    (i,j)                fixed bin(31);
+ dcl     bSig                bit(1)                   init( '0'b );
+ dcl     c                   char(1);
+
+ /* NOTE: The following deleted 20090903                             */
+ /* call F2I( pFlt, pDesc, addr(IntFlt) );/* Convert input data      */
+ if prec<17 then do;
+   ovf = RND( addr(IntFlt(n)),                             /*20090903*/
+              addr(IntFlt(n)), 17-prec );/* Round data at p+1  090903*/
+   if ovf=1 then do;                   /* Adjust for overflow        */
+     IF_frac(n) = IF_frac(n) / 10;                         /*20090903*/
+     IF_frac(n) = IF_frac(n) + 100000000000000000;         /*20090903*/
+     IF_exp(n)  = IF_exp(n)  + 1;                          /*20090903*/
+     end; /* ovf */
+   end; /* prec<17 */
+
+ pRet->result = sign;                  /* Store sign                  */
+ pRet = pRet+1;
+
+ /*-----------------------------------*/
+ /* Store digits                      */
+ /*-----------------------------------*/
+ do i=17 to 18-prec by -1;                                    /*0.9.3*/
+   j = addr(IF_frac(n))->BCD_dig( d(i) ); /* Get next digit  20090903*/
+   pRet->result = digit(j);            /* Convert it to ASCII        */
+   pRet = pRet+1;
+   if i=17 & prec>1 then do;                                  /*0.9.3*/
+     pRet->result = '.';               /* Insert decimal point       */
+     pRet = pRet+1;
+     end;
+   end; 
+
+ /*-----------------------------------*/
+ /* Store exponent                    */
+ /*-----------------------------------*/
+ pRet->result = 'E';
+ pRet = pRet+1;
+ pRet->PIC4 = IF_exp(n);                                   /*20090903*/
+ pRet = pRet+5;
+
+ end convert;
+
+ /*------------------------------------------------------------------*/
+ /* B2D: Convert number of binary digits to number of decimal digits */
+ /*------------------------------------------------------------------*/
+ B2D: proc(n) returns( fixed bin(7) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   do i=1 to 33;
+     if w<n_3dot32(i) then leave;                             /*0.9.3*/
+     end;
+   if neg then i=-i;
+   return(i);
+   end B2D;
+ %page;
+
+ %include BCDINC;
+ %include DESC;
+ %include N3DOT32;
+
+ end pli_CLC;

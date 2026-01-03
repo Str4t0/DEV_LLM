@@ -1,0 +1,131 @@
+ /* _pli_OSGetProcInfo                                               */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSGetProcInfo (PL/I Runtime)            */
+ /*      Version:       1.0                                          */
+ /*      Date:          Feb, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSGetProcInfo                           */
+ /*                                                                  */
+ /*      Function:      Retrieve various process information about   */
+ /*                     the current process and thread.              */
+ /*                                                                  */
+ /*                     This procedure is passed the address of a    */
+ /*                     pliprocinfo structure.  The first dword in   */
+ /*                     the structure is the area length.  As much   */
+ /*                     information is returned as will fit, and     */
+ /*                     the length field is set to the size of the   */
+ /*                     data returned.                               */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Linux System Call interface.                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | ->pliprocinfo                        |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Returns the positive size of the returned    */
+ /*                     data.                                        */
+ /*                                                                  */
+ /*      Called from:   anywhere                                     */
+ /*                                                                  */
+ /*      Errors:        none                                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ getprocinfo: proc (pProcInfo)  
+              returns( fixed bin(31) )                                   
+              external( '_pli_OSGetProcInfo' )
+              options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pProcInfo            ptr;      /* ->caller's pliprocinfo     */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl    (p,q)                ptr;
+ dcl    (len,max_len)        fixed bin(31);
+ dcl     i                   fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ 
+ /* This is a description of the pliprocinfo structure.               */
+ /* It contains one entry for each defined field, the first value     */
+ /* for each entry is the syscall number which retrieves the data,    */
+ /* and the second value is the offset in the structure where the     */
+ /* data is to be stored.  The last entry describes the updated       */
+ /* length field.  All entries are assumed to be four bytes, if not   */
+ /* a third entry for length will have to be added.                   */
+ dcl    1 ProcInfoData        static,
+          2 pid_pid        (2)fixed bin(31)  init(  20,  4 ),
+	  2 pid_tid        (2)fixed bin(31)  init( 224,  8 ),
+	  2 pid_uid        (2)fixed bin(31)  init(  24, 32 ),
+	  2 pid_gid        (2)fixed bin(31)  init(  47, 36 ),
+	  2 pid_len        (2)fixed bin(31)  init(   0,  0 );
+ dcl    1 ProcInfoDataEntry   based,
+          2 pid_info       (2)fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl    1 PLIProcInfo         based,
+          5 pi_len            fixed bin(31),      /* Size of area    00*/
+	  5 pi_pid            fixed bin(31),      /* Process id      04*/
+	  5 pi_tid            fixed bin(31),      /* Thread id       08*/
+	  5 fil1              char(20),           /* Reserved        0C*/
+	  5 pi_uid            fixed bin(31),      /* User id         20*/
+	  5 pl_gid            fixed bin(31);      /* Group id        24*/
+	  
+ dcl      FB31                fixed bin(31) based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ 
+ dcl      syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+
+ dcl      addr                builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ len = pProcInfo->pi_len;               /* Initialize pliprocinfo    */
+ call plifill( pProcInfo, '00'x, len );
+ p = addr(ProcInfoData);
+ max_len=0;                             /* length of data returned   */
+ do while( '1'b );   
+   i = p->pid_info(2)+4;                /* Ending offset of data     */
+   if i<=len then do;                   /* Storage for this entry    */
+     if i>max_len then max_len=i;       /* Update returned length    */
+     q = pProcInfo+p->pid_info(2);      /* ->Where info goes         */
+     if p->pid_info(1)=0 then do;       /* Update the length         */
+       q->fb31 = max_len;
+       return( max_len );               /* Exit                      */
+       end;
+     else do;  
+       RC = syscall( p->pid_info(1) );  /* Retrieve the value        */
+       q->fb31 = RC;                    /* and stash it away         */
+       end;
+     end;
+   p = p + stg( p->ProcInfoDataEntry );
+   end; /* do while */
+
+ end getprocinfo;  

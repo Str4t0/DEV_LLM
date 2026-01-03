@@ -1,0 +1,156 @@
+ /* _pli_Offtime                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Offtime  (PL/I runtime)                 */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Offtime                                 */
+ /*                                                                  */
+ /*      Function:      This is a PL/I version of the libc function  */
+ /*                     __offtime.  It converts a Linux time_t       */
+ /*                     value to a tm structure.                     */
+ /*                                                                  */
+ /*      Dependencices: None                                         */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DECLARE t      FIXED BINARY(31);             */
+ /*                     DECLARE tp     POINTER;                      */
+ /*                     Declare offset FIXED BINARY(31);             */
+ /*                     DECLARE offtime ENTRY( FIXED BIN(31),        */
+ /*                                     FIXED BIN(31), PTR )         */
+ /*                                     EXT( '_pli_Offtime' );       */
+ /*                     CALL offtime(t,offset,tp);                   */
+ /*                                                                  */
+ /*                     t is a 'time_t' value to convert.            */
+ /*                     offset is the number of seconds east of UTC. */
+ /*                     pTM is a pointer to a 'tm' structure.        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ %replace SECS_PER_DAY  by 86400;
+ %replace SECS_PER_HOUR by  3600;
+
+ pli_Offtime:  proc( t, offset, tp ) 
+               ext( '_pli_Offtime' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      t                   fixed bin(31); /* Input: 'time_t'        */
+ dcl      offset              fixed bin(31); /* Input: Timezone offset */
+ dcl      tp                  ptr;           /* Input: -> 'struct tm'  */
+
+ /*-------------------------*/
+ /* AUTOMATIC data          */
+ /*-------------------------*/
+ dcl     (days,rem,y,yg)      fixed bin(31);
+ dcl      i                   fixed bin(7);
+ 
+ /*-------------------------*/
+ /* STATIC data             */
+ /*-------------------------*/
+ dcl      days_in_year   (0:1)fixed bin(31)  static    init(365,366);
+ dcl      mon_yday  (0:1,0:12)fixed bin(15)  static    init(
+          /* Normal years.  */
+          0,31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365,
+           /* Leap years.  */
+          0,31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366 );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl    1 tm                  based,  
+          5 tm_sec            fixed bin(31),/* Seconds.	[0-60] (1 leap sec) */	  
+          5 tm_min            fixed bin(31),/* Minutes.	[0-59]          */
+          5 tm_hour           fixed bin(31),/* Hours.	[0-23]          */
+          5 tm_mday           fixed bin(31),/* Day.	[1-31]          */
+          5 tm_mon            fixed bin(31),/* Month.	[0-11]          */
+          5 tm_year           fixed bin(31),/* Year - 1900.             */
+          5 tm_wday           fixed bin(31),/* Day of week. [0-6]       */
+          5 tm_yday           fixed bin(31),/* Days in year.[0-365]	*/
+          5 tm_isdst          fixed bin(31);/* DST.	[-1/0/1]        */
+
+ /*-------------------------*/
+ /* Start of procedure      */
+ /*-------------------------*/
+ days = t/SECS_PER_DAY;
+ rem  = mod(t,SECS_PER_DAY) + offset;
+ do while( rem<0 );
+   rem  = rem + SECS_PER_DAY;
+   days = days-1;
+   end;
+ do while( rem>=SECS_PER_DAY );
+   rem  = rem - SECS_PER_DAY;
+   days = days+1;
+   end;
+ tp->tm_hour = rem / SECS_PER_HOUR;
+ rem = mod(rem,SECS_PER_HOUR);
+ tp->tm_min = rem/60;
+ tp->tm_sec = mod(rem,60);
+ /* Sez here: "January 1, 1970 was a Thursday" */
+ tp->tm_wday = mod(days+4,7);
+ if tp->tm_wday<0
+ then tp->tm_wday = tp->tm_wday+7;
+ y = 1970;
+ do while( days<0 | days>= days_in_year(isleap(y)) );
+   /* "Guess a corrected year assuming 365 days per year."            */
+   yg = y + days/365 - ( mod(abs(days),365)*sign(days) < 0 ); /*100104*/
+   /* "Adjust days and y to match the guessed year."                  */
+   days = days - ( (yg-y) * 365 +
+                   LEAPS_THRU_END_OF(yg-1) -
+		   LEAPS_THRU_END_OF(y-1) );
+   y = yg;		  
+   end; /* do while */
+ (size): tp->tm_year = y-1900;
+ /* The C code checks for year overflow*/
+ /* Since long and int are both        */
+ /* 32 bits, this can never occur,     */
+ /* but if it did PL/I would raise     */
+ /* SIZE.                              */
+ tp->tm_yday = days;
+ i = isleap(y);
+ do y=11 by -1 while(days<mon_yday(i,y) ); end;
+ days = days - mon_yday(i,y);
+ tp->tm_mon = y;
+ tp->tm_mday = days+1;
+ tp->tm_isdst = 0;                      /* Clear DST setting          */
+
+/*--------------------------------------------------------------------*/
+/* GLIBC -__isleap' is a macro as follows:                            */
+/* #define	__isleap(year)	\                                     */
+/* ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))      */
+/* Until we get the preprocessor working, let's make it a proc.       */
+isleap: proc(year) returns( fixed bin(7) );
+  dcl     year                fixed bin(31);
+  if mod(year,4)=0 & ( mod(year,100)^=0 | mod(year,400)=0 )
+  then return( 1 );                     /* A leap year                */
+  else return( 0 );                     /* Non leap year              */
+  end isleap;
+  
+/* LEAPS THRU_END_OF is a macro as follows:                           */
+/* #define DIV(a,b) ((a)/(b) - ((a)%(b)<0))                           */
+/* #define LEAPS_THRU_END_OF(y) (DIV(y,4) - DIV(y,100) + DIV(y,400))  */
+/* Until we get the preprocessor working, let's make 'em procs.       */
+LEAPS_THRU_END_OF: proc(y) returns( fixed bin(31) );
+  dcl     y                   fixed bin(31);
+  return( DIV(y,4) - DIV(y,100) + DIV(y,400) );
+  
+  DIV: proc(a,b) returns( fixed bin(31) );
+    dcl  (a,b,quo,rem)        fixed bin(31);
+    quo = a/b;
+    rem = a - quo*b;
+    if rem<0 then quo = quo-1;          /* Round down if negative     */  
+    return( quo );
+    end DIV;
+    
+  end LEAPS_THRU_END_OF;
+  
+end pli_Offtime;

@@ -1,0 +1,135 @@
+ /* _pli_PutS                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_PutS (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jun, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_PutS                                    */
+ /*                                                                  */
+ /*      Function:      PUT STRING driver.                           */
+ /*                                                                  */
+ /*      PutS is called once per data element to be written.         */
+ /*      It is passed the addresses of the caller's GET/PUT STRING   */
+ /*      Block (GPSB).                                               */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I descriptor formats.                     */
+ /*                     ENTRY VARIABLE format.                       */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_PutS: proc( pGPSB )
+               options( linkage(system) )
+               ext( '_pli_PutS' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pGPSB               ptr;      /* -> GPSB                    */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     p                   ptr;
+ dcl     pData               ptr;      /* -> Data element            */
+ dcl     pDesc               ptr;      /* -> Data descriptor         */
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FB15                fixed bin(15) based;
+ dcl     NullStr             char(0)       varying;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     PutX                entry( ptr )
+                             external( '_pli_PutX' );
+
+ dcl    (
+         addr,length,
+         plifill,plimove,ptrvalue,
+         stg,string,substr,
+         sysnull
+        )                    builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry                                                  */
+ /*------------------------------------------------------------------*/
+ p = pGPSB->GPSB_pString;              /* addr(string locator/descr) */
+ pData = p->LocDesc.pData;             /* addr(string data)          */
+ pDesc = p->LocDesc.pDesc;             /* addr(string descriptor)    */
+
+ /*---------------------------------------------*/
+ /* First Use of this GPSB                      */
+ /*---------------------------------------------*/
+ if (pGPSB->GPSB_bOpt&'80000000'bx)ª='00000000'bx /* First time?     */
+ then do;
+   substr(pGPSB->GPSB_bOpt,1,1)='0'b;    /* Reset 'first time' flag  */
+   pGPSB->GPSB_aLine,                    /* -> String data           */
+       pGPSB->GPSB_pLine = pData;
+   if pDesc->ST_id = '11'x               /* VARYING String?          */
+   then pGPSB->GPSB_pLine =              /* Yes, skip over prefix    */
+          pGPSB->GPSB_pline + stg(NullStr);
+   else do;                              /* NONVARYING String        */
+     call PLIFILL( pData, ' ', pDesc->ST_len );    /* Blank it       */
+     end;
+   pGPSB->GPSB_lnsize = pDesc->ST_len;   /* Set max length           */
+   pGPSB->GPSB_col    = 0;               /* Initial 'column pos'.    */
+   end; /* first time */
+
+ /*---------------------------------------------*/
+ /* Build Parameter List and call PutX          */
+ /*---------------------------------------------*/
+ SPL_pSRB    = addr(pGPSB->GPSB_SRB);  /* addr(SRB)                  */
+ SPL_pSBB    = addr(pGPSB->GPSB_SBB);  /* addr(SBB)                  */
+ SPL_bFlg    = '00000000'bx;           /* Flag                   0.5e*/
+ SPL_LineEnd = LineEnd;                /* addr(callback_proc)        */
+ call PutX( addr(SPL) );               /* PUT this data element      */
+
+ /*---------------------------------------------*/
+ /* Update Varing String Length                 */
+ /*---------------------------------------------*/
+ if pDesc->ST_id = '11'x               /* VARYING String?            */
+ then pData->FB15 = pGPSB->GPSB_pLine - pGPSB->GPSB_aline -
+                    stg(NullStr);
+
+ return;
+
+ /*------------------------------------------------------------------*/
+ /* Callback proc: Called when line is full.                         */
+ /*                                                                  */
+ /* COMMENT: The IBM compiler raises the ERROR condition             */
+ /*          (ONCODE=1004)  if ... any control format item is used   */
+ /*          with GET/PUT STRING.                                    */
+ /*          "If the string is not long enough to accommodate the    */
+ /*           data, the ERROR condition is raised."                  */
+ /*                   - SC26-3114-01, p.258                          */
+ /*------------------------------------------------------------------*/
+ LineEnd: proc( code, count );
+   dcl  (code,count)         fixed bin(15);
+   signal ERROR;                       /* This is easy               */
+   end LineEnd;
+
+ %page;
+
+ %include GPSB;
+ %include SRB;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_PutS;

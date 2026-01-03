@@ -1,0 +1,176 @@
+ /* _pli_Xlat                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Xlat (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Oct, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Xlat  [TRANSLATE() BIF]                 */
+ /*                                                                  */
+ /*      Function:      Implement TRANSALTE                          */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL Translate entry(pSrc,pTabO,pTabI,pRet)   */
+ /*                                   options( LINKAGE(SYSTEM) );    */
+ /*                     CALL Translate( addr(src_loc_desc),          */
+ /*                                     addr(trans_to_loc_desc),     */
+ /*                                     addr(trans_from_loc_desc),   */
+ /*                                     addr(result_loc_desc) );     */
+ /*                                                                  */
+ /*                     All data must be character strings.          */
+ /*                                                                  */
+ /*                     This is actually a standard PL/I calling     */
+ /*                     sequence that we treat as LINKAGE(SYSTEM)    */
+ /*                     to gain access to the descriptors.           */
+ /*                     Each address points to a character-string    */
+ /*                     Locator/Descriptor.                          */
+ /*                     The manual calls the source, translation     */
+ /*                     values, and translation chars x, y, and z.   */
+ /*                     If 'z' is omitted the third argument must    */
+ /*                     be sysnull().                                */
+ /*                                                                  */
+ /*                     The source string and the result string      */
+ /*                     must have identical attributes (VAR/NONVAR,  */
+ /*                     Max Length).                                 */
+ /*                                                                  */
+ /*                     This code will still work if the source and  */
+ /*                     result strings are the same string           */
+ /*                     (addresses equal).                           */
+ /*                                                                  */
+ /*      To Do:       . Since FIXED BINARY UNSIGNED is not yet       */
+ /*                     implemented this procedure is written for    */
+ /*                     signed.  This is a relatively small hit.     */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ Translate: proc( pSrc, pTabO, pTabI, pRet )
+            options( LINKAGE(SYSTEM) )
+            ext( '_pli_Xlat' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    (pSrc,pTabO,pTabI,pRet)   ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pI,pO)              ptr;
+ dcl     TTab         (0:255)char(1);
+ dcl    (i,j,k)              fixed bin(31);
+ dcl     cP                  fixed bin(31);
+ dcl     cV                  char(1);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     OneC                char(1)             based;
+ dcl     Varying_String_Pfx  fixed bin(15)       based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     collate         (16)char(16)  static    init(
+              '000102030405060708090A0B0C0D0E0F'x,
+              '101112131415161718191A1B1C1D1E1F'x,
+              '202122232425262728292A2B2C2D2E2F'x,
+              '303132333435363738393A3B3C3D3E3F'x,
+              '404142434445464748494A4B4C4D4E4F'x,
+              '505152535455565758595A5B5C5D5E5F'x,
+              '606162636465666768696A6B6C6D6E6F'x,
+              '707172737475767778797A7B7C7D7E7F'x,
+              '808182838485868788898A8B8C8D8E8F'x,
+              '909192939495969798999A9B9C9D9E9F'x,
+              'A0A1A2A3A4A5A6A7A8A9AAABACADAEAF'x,
+              'B0B1B2B3B4B5B6B7B8B9BABBBCBDBEBF'x,
+              'C0C1C2C3C4C5C6C7C8C9CACBCCCDCECF'x,
+              'D0D1D2D3D4D5D6D7D8D9DADBDCDDDEDF'x,
+              'E0E1E2E3E4E5E6E7E8E9EAEBECEDEEEF'x,
+              'F0F1F2F3F4F5F6F7F8F9FAFBFCFDFEFF'x );
+
+ dcl    (addr,byte,length,rank,stg,string,sysnull)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Build Translate Table             */
+ /*-----------------------------------*/
+ pO = pTabO->pData;                    /* Address of TabO            */
+ if pTabO->pDesc->ST_id='10'x          /* Is TabO fixed-length?      */
+ then j=pTabO->pDesc->ST_len;          /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   j = length(pO->Varying_String);
+   pO = pO + stg( sysnull()->Varying_String );
+   end; /* TabO */
+ if pTabIª=sysnull() then do;          /* Was TabI provided?         */
+   pI = pTabI->pData;                  /* Address of TabI            */
+   if pTabI->pDesc->ST_id='10'x        /* Is TabI fixed-length?      */
+   then i=pTabI->pDesc->ST_len;        /* .. Yes, length from descr  */
+   else do;                            /* .. No, length from prefix  */
+     i = length(pI->Varying_String);
+     pI = pI + stg( sysnull()->Varying_String );
+     end;
+   end; /* TabI */
+ else i=256;
+
+ string(TTab) = string(collate);       /* Initialize translate table */
+ /* COMMENT: IBM PL/I builds the translate table from back to front. */
+ /*          In the interest of being bug-for-bug compatible,        */
+ /*          we do the same.                                         */
+ pI = pI+i-1;                                              /*20070328*/
+ pO = pO+j-1;                                              /*20070328*/
+ do k=i-1 to 0 by -1;                  /* Build the table    20070328*/
+   if pTabIª=sysnull() then do;        /* Get next char from 'z'     */
+     cP = rank(pI->OneC);              /* .. Either from table       */
+     pI = pI-1;                                            /*20070328*/
+     end;
+   else cP = k;                        /* .. or ASCII value          */
+   if j>0 then do;                     /* Get translation value      */
+     cV = pO->OneC;                    /* .. Either from 'y'         */
+     pO = pO-1;                                            /*20070328*/
+     j  = j-1;
+     end;
+   else cV = ' ';                      /* .. or space                */
+   TTab(cP)=cV;                        /* Move translation value     */
+   end; /* do k */
+
+ /*-----------------------------------*/
+ /* Initialize Result field           */
+ /*-----------------------------------*/
+ pI = pSrc->pData;                     /* Address of source string   */
+ pO = pRet->pData;                     /* Address of result string   */
+ if pSrc->pDesc->ST_id='10'x           /* Is Src fixed-length?       */
+ then i=pSrc->pDesc->ST_len;           /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   i = length(pI->Varying_String);
+   pI = pI + stg( sysnull()->Varying_String );
+   end;
+ if pRet->pDesc->ST_idª='10'x          /* Is Result VARYING?         */
+ then do;                              /* ..Yes. set length from Src */
+   pO->Varying_String_pfx = i;
+   pO = pO + stg( sysnull()->Varying_String );
+   end;
+ if i=0 then return;                   /* Source is null string      */
+
+ /*-----------------------------------*/
+ /* Do the Translation                */
+ /*-----------------------------------*/
+ do k=1 to i;
+   pO->OneC = TTab( rank(pI->OneC) );
+   pI = pI+1;
+   pO = pO+1;
+   end; /* do k */
+ return;
+
+ %page;
+ %include LOCDESC;
+ %include DESC;
+
+ end Translate;

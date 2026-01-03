@@ -1,0 +1,204 @@
+ /* _pli_Refer                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 1.0.0         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Refer  (PL/I runtime)                   */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2022                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _Refer                                       */
+ /*                                                                  */
+ /*      Function:      Setup structure descriptor for "REFER"       */
+ /*                     reference. This is a runtime version of      */
+ /*                     the structure mapping performed by DCL2.     */
+ /*                     If they don't match, bad things may happen.  */
+ /*                                                                  */
+ /*      Operation:                                                  */
+ /*                     Refer is called for some references to       */
+ /*                     adjustable structures declared with the      */
+ /*                     REFER option. Structure descriptors are      */
+ /*                     set to the values from the refer objects,    */
+ /*                     and lengths and offsets are recalculated.    */
+ /*                                                                  */
+ /*                     This procedure is only called for references */
+ /*                     to REFER elements and anything following.    */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*                     ROB_in_storage: A static control block built */
+ /*                     when the structure declaration is completed  */
+ /*                     by DCL2 in PASS2.                            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     CALL REFER( addr(structure),                 */
+ /*                                 addr(rob_in_storage),            */
+ /*                                 addr(SDD),                       */
+ /*                                 addr(DSA) );                     */
+ /*                                                                  */
+ /*                     Structure: addr of BASED structure.          */
+ /*                     rob_in_storage: mapping between refer objects*/
+ /*                                     in the structure and fields  */
+ /*                                     in the descriptor.           */
+ /*                     SDD: Address of structure descriptor.        */
+ /*                     DSA: Base address of dynamic save area of    */
+ /*                          block where structure is declared. [EBP]*/
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ Refer: proc( pDSA, pSDD, pRob, pStruc )   
+       options( linkage(system) )
+       ext( '_pli_Refer' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      pDSA                ptr;     /* -> Declaring DSA           */
+ dcl      pStruc              ptr;     /* -> Structure               */
+ dcl      pRob                ptr;     /* -> ROB_in_storage          */
+ dcl      pSDD                ptr;     /* -> Structure descriptor    */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl      sed_base            ptr;
+ dcl      i                   fixed bin(31);
+ dcl      pSED                ptr;
+ dcl      pDesc               ptr;
+ dcl      SED_num             fixed bin(31);                  /*DEBUG*/
+ dcl    1 curr_offset,
+          5 byte_offset       fixed bin(31),
+          5 bit_offset        fixed bin(7);
+ dcl    1 curr_length,                    
+          5 ByteLength        fixed bin(31),
+          5 BitLength         fixed bin(7);
+     
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ /*  'static rob' is used in the library procedure 'refer', and the  */
+ /*  compiler procedure 'gref'. It describes a static control block  */
+ /*  associated with this based variable.                            */
+ dcl    1 static_rob          based(pRob),   /* ROB_in_storage       */
+          5 srob_cnt          fixed bin(31), /* Number of entries    */
+          5 srob_entry     (1),
+            10 srob_obj_off   fixed bin(31), /* Offset of REFER obj  */
+            10 srob_SED_off   fixed bin(31), /* Offset of SED        */
+            10 srob_desc_off  fixed bin(31); /* Offset in descriptor */ 
+
+ dcl      FB31                fixed bin(31) based;            
+
+ /*-------------------------*/
+ /* External entries        */
+ /*-------------------------*/
+ dcl      analyze             entry( ptr, ptr )
+                              returns( fixed bin(31) )   
+                              options( linkage(system) ) 
+                              ext( '_pli_Analyze' );                   
+
+%page; 
+ sed_base = pSDD->SDD_pSED;             /* ->SED base addr from SDD   */
+ pSED = sed_base + srob_SED_off(1);     /* ->First SED with REFER     */
+ /* Starting position of first element declared with REFER            */
+ byte_offset = pSED->SE_offset;
+ bit_offset  = pSED->SE_bitoffset;
+ i = 1;
+ SED_num = srob_SED_off(1)/stg(pli_ded_SED);                   /*DEBUG*/
+ do forever;  
+   SED_num = SED_num+1;                                        /*DEBUG*/
+   pDesc = pSED->SE_desc;               /* ->Current Descriptor       */
+   if pSED->SE_adj                      /* Adjustable element?        */
+   then call update_desc;               /* (maybe) update from ref el */
+   /* Now analyze this descriptor to get updated length */
+   call analyze( pDesc, addr(curr_length) );
+   /* Call analyze and update base address */
+   call update_offset;                  /* Set current offset         */
+   /*-----------------------------------*/
+   /* The current descriptor is now     */
+   /* completely updated                */
+   /*-----------------------------------*/
+   if pSED->se_last                      /* Last element processed    */
+   then leave; /* forever */             /* All done                  */
+   pSED = addr(pSED->se_end);            /* ->Next SED                */
+   end; /* forever */
+
+   /* Update structure length in the last+1 SED */
+   pSED = addr(pSED->se_end);            /* ->Last+1 SED              */
+   if bit_offset^=0 
+   then byte_offset = byte_offset+1;
+   pSED->SE_offset  = byte_offset;
+   return;
+
+/*------------------------------------*/
+/* Update adjustable descriptor with  */
+/* current info from REFER objects    */
+/* and recompute length of element    */
+/*------------------------------------*/
+update_desc: proc;
+   dcl    p                   ptr;
+   /* There may be more than one ROB entry for an element,           */
+   /* for example, bounds and lengths for an array of strings        */
+   /* We need to get them all before proceeding                      */
+   if i>pROB->srob_cnt then return;     /* No more updates           */
+   do forever;                          /* For ever and ever         */ 
+     p = sed_base + srob_SED_off(i);    /* ->SED with REFER          */
+     if p^=pSED then leave;             /* Not current SED           */
+     /* Update descriptor fields from refer objects */
+     ptradd(pDesc,srob_desc_off(i))->FB31 =/* field in descriptor    */
+       ptradd(pStruc,srob_obj_off(i))->FB31;  /* Refer object        */
+     i = i+1;
+     if i>pROB->srob_cnt then leave;    /* No more updates           */
+     end; /* forever */
+    end update_desc;
+
+/*------------------------------------*/
+/* Update current element offset,     */
+/* accounting for bit offset changes  */
+/* and updated alignment requirements */
+/*------------------------------------*/
+update_offset: proc;
+  dcl     a                   fixed bin(31);
+    /* If the current element is anything but an unaligned           */
+    /* nonvarying bit string we need to be on a byte boundary.       */
+    /* Hopefully SE_alignd represents a merge between the structure  */
+    /* alignment and the declared element alignment.                 */
+    /* If the current element is not an unaligned bit string,        */
+    /* ensure offset is at byte boundary.                            */
+    if pDesc->ST_id ^= '20'bx |  
+       pSED->SE_alignd then do;
+      if bit_offset^=0 then do;
+        bit_offset = 0;
+        byte_offset = byte_offset+1;
+        end;
+      end;
+    if pSED->SE_alignd & byte_offset>0  /* Do required alignment     */
+    then do;
+      a = pSED->SE_align - mod(byte_offset,pSED->se_align);
+      if a=pSED->SE_align then a=0;
+      byte_offset = byte_offset + a;
+      end;
+    pSED->SE_offset    = byte_offset;   /* Update offset in SED      */
+    pSED->SE_bitoffset = bit_offset;
+    /* Update offset to reflect current element */
+    bit_offset = bit_offset + bitLength;
+    if bit_offset>7 then do;
+      byte_offset = byte_offset + bit_offset/8;
+      bit_offset = mod(bit_offset,8);
+      end;
+    byte_offset = byte_offset + byteLength;
+    end update_offset;
+
+ %include desc;
+
+  end Refer;
+

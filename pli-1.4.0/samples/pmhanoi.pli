@@ -1,0 +1,703 @@
+ /* PMHanoi: Towers of Hanoi                                         */
+ /********************************************************************/
+ /*                                                                  */
+ /* Module:        PMHanoi                                           */
+ /*                                                                  */
+ /* Function:      Iron Spring PL/I sample program                   */
+ /*                'Towers of Hanoi' problem                         */
+ /*                OS/2 Presentation Manager Version                 */
+ /*                                                                  */
+ /*                This program is intended as an example of using   */
+ /*                Iron Spring PL/I to create a Presentation Manager */
+ /*                program.  It is not necessarily an example of     */
+ /*                efficiency or good PM programming techniques.     */
+ /*                                                                  */
+ /*                The original solution is recursive, which doesn't */
+ /*                fit well with the PM model.  One way to do this   */
+ /*                would be to have a thread which would return      */
+ /*                one move and then wait each time it was called.   */
+ /*                Since we don't currently support threads,         */
+ /*                we precalculate the moves and then play them      */
+ /*                back at timed intervals of two seconds.           */
+ /*                                                                  */
+ /* Dependencies:  This program requires at least 0.9.1 of           */
+ /*                Iron Spring PL/I to compile the PACKAGE statement.*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pmhanoi: package
+         exports(hanoi,client);
+
+   %replace NUMBER_OF_DISKS by 5;
+
+   %replace NULLHANDLE     by 0;
+
+   /*--------------------------------*/
+   /* Package Static data            */
+   /*--------------------------------*/
+   dcl   hab                 fixed bin(31)  static;
+   dcl   hmq                 fixed bin(31)  static;
+   dcl   hwndFrame           fixed bin(31)  static;
+   dcl   qmsg                like qmsg_type static;
+   dcl   pMove               ptr            static;
+
+   dcl 1 scrn_resolution     static,
+         2 horz_resolution   fixed bin(31),
+         2 vert_resolution   fixed bin(31);
+
+   dcl   WindowText          char(32)       static    varying
+             init( 'Iron Spring Software, 2010' );
+   dcl   WindowTextbox  (0:3)like pointl_type static;
+   %replace TXTBOX_TOPLEFT      by 0;
+   %replace TXTBOX_BOTTOMLEFT   by 1;
+   %replace TXTBOX_TOPRIGHT     by 2;
+   %replace TXTBOX_BOTTOMRIGHT  by 3;
+   %replace TXTBOX_CONCAT       by 4;
+
+   /*--------------------------------*/
+   /* Standard Window handles        */
+   /*--------------------------------*/
+   %replace HWND_DESKTOP        by 1;
+   %replace HWND_OBJECT         by 2;
+   %replace HWND_TOP            by 3;
+   %replace HWND_BOTTOM         by 4;
+   %replace HWND_THREADCAPTURE  by 5;
+
+   /*--------------------------------*/
+   /* Window Messages                */
+   /*--------------------------------*/
+   %replace WM_NULL             by  0;
+   %replace WM_CREATE           by  1;
+   %replace WM_DESTROY          by  2;
+   %replace WM_ENABLE           by  4;
+   %replace WM_SHOW             by  5;
+   %replace WM_MOVE             by  6;
+   %replace WM_SIZE             by  7;
+   %replace WM_SYSCOMMAND       by 33;
+   %replace WM_PAINT            by 35;
+   %replace WM_TIMER            by 36;
+   %replace WM_CLOSE            by 41;
+   %replace WM_QUIT             by 42;
+   %replace WM_ERASEBACKGROUND  by 79;
+
+   /*--------------------------------*/
+   /* Frame Creation Flags           */
+   /*--------------------------------*/
+   %replace FCF_HORZSCROLL           by '80000000'bx;
+   %replace FCF_VERTSCROLL           by '40000000'bx;
+   %replace FCF_MINMAX               by '30000000'bx;
+   %replace FCF_MAXBUTTON            by '20000000'bx;
+   %replace FCF_MINBUTTON            by '10000000'bx;
+   %replace FCF_SIZEBORDER           by '08000000'bx;
+   %replace FCF_MENU                 by '04000000'bx;
+   %replace FCF_SYSMENU              by '02000000'bx;
+   %replace FCF_TITLEBAR             by '01000000'bx;
+   %replace FCF_ACCELTABLE           by '00800000'bx;
+   %replace FCF_ICON                 by '00400000'bx;
+   %replace FCF_NOMOVEWITHOWNER      by '00200000'bx;
+   %replace FCF_NOBYTEALIGN          by '00100000'bx;
+   %replace FCF_TASKLIST             by '00080000'bx;
+   %replace FCF_SHELLPOSITION        by '00040000'bx;
+   %replace FCF_BORDER               by '00020000'bx;
+   %replace FCF_DLGBORDER            by '00010000'bx;
+   %replace FCF_PALLETTE_POPUPEVEN   by '00004000'bx;
+   %replace FCF_PALLETTE_POPUPODD    by '00002000'bx;
+   %replace FCF_PALLETTE_HELP        by '00001000'bx;
+   %replace FCF_PALLETTE_NORMAL      by '00000800'bx;
+   %replace FCF_PALLETTE_MOUSEALIGN  by '00000400'bx;
+   %replace FCF_PALLETTE_SCREENALIGN by '00000200'bx;
+   %replace FCF_SYSMODAL             by '00000100'bx;
+   %replace FCF_DBE_APPSTAT          by '00000080'bx;
+   %replace FCF_AUTOICON             by '00000040'bx;
+   %replace FCF_HIDEBUTTON           by '00000001'bx;
+   %replace FCF_HIDEMAX              by '20000001'bx;
+   %replace FCF_STANDARD             by '3FCC0000'bx;
+
+   /*--------------------------------*/
+   /* Window Styles                  */
+   /*--------------------------------*/
+   %replace WS_VISIBLE        by '00000080'bx;
+   %replace WS_DISABLED       by '00000040'bx;
+   %replace WS_CLIPCHILDREN   by '00000020'bx;
+   %replace WS_CLIPSIBLINGS   by '00000010'bx;
+   %replace WS_PARENTCLIP     by '00000008'bx;
+   %replace WS_SAVEBITS       by '00000004'bx;
+   %replace WS_SYNCPAINT      by '00000002'bx;
+   %replace WS_MINIMIZED      by '00000001'bx;
+   %replace WS_MAXIMIZED      by '00008000'bx;
+   %replace WS_ANIMATE        by '00004000'bx;
+   %replace WS_GROUP          by '00010000'bx;
+   %replace WS_TABSTOP        by '00020000'bx;
+   %replace WS_MULTISELECT    by '00040000'bx;
+
+   /*--------------------------------*/
+   /* Colors                         */
+   /*--------------------------------*/
+   %replace CLR_ERROR           by -255;
+   %replace CLR_NOINDEX         by -254;
+   %replace CLR_FALSE           by   -5;
+   %replace CLR_TRUE            by   -4;
+   %replace CLR_DEFAULT         by   -3;
+   %replace CLR_WHITE           by   -2;
+   %replace CLR_BLACK           by   -1;
+   %replace CLR_BACKGROUND      by    0;
+   %replace CLR_BLUE            by    1;
+   %replace CLR_RED             by    2;
+   %replace CLR_PINK            by    3;
+   %replace CLR_GREEN           by    4;
+   %replace CLR_CYAN            by    5;
+   %replace CLR_YELLOW          by    6;
+   %replace CLR_NEUTRAL         by    7;
+   %replace CLR_DARKGRAY        by    8;
+   %replace CLR_DARKBLUE        by    9;
+   %replace CLR_DARKRED         by   10;
+   %replace CLR_DARKPINK        by   11;
+   %replace CLR_DARKGREEN       by   12;
+   %replace CLR_DARKCYAN        by   13;
+   %replace CLR_BROWN           by   14;
+   %replace CLR_PALEGRAY        by   15;
+
+   /*--------------------------------*/
+   /* Prototypes                     */
+   /*--------------------------------*/
+   dcl   VarStr              char(0)   varying   based;
+   
+   dcl 1 qmsg_type           unaligned based,
+         2 hwnd              fixed bin(31),
+         2 msg               fixed bin(15),
+         2 mp1               ptr,
+         2 mp2               ptr,
+         2 time              fixed bin(31),
+         2 ptl,
+           3 x               fixed bin(31),
+           3 y               fixed bin(31),
+         2 reserved          fixed bin(31);
+
+   dcl 1 rectl_type          unaligned based,
+         2 xLeft             fixed bin(31),
+         2 yBottom           fixed bin(31),
+         2 xRight            fixed bin(31),
+         2 yTop              fixed bin(31);
+
+   dcl 1 pointl_type         unaligned based,
+         2 x                 fixed bin(31),
+         2 y                 fixed bin(31);
+
+   dcl 1 move_table     (1)based,
+         2 from            fixed bin(7),
+         2 to              fixed bin(7);
+
+   /*--------------------------------*/
+   /* GPI Functions                  */
+   /*--------------------------------*/
+   dcl GpiCharStringAt       entry( fixed bin(31), ptr, 
+                                    fixed bin(31), ptr )
+                             ext( 'GpiCharStringAt' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl GpiQueryTextBox       entry( fixed bin(31), fixed bin(31), ptr,
+                                    fixed bin(31), ptr )
+                             ext( 'GpiQueryTextBox' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+
+   /*--------------------------------*/
+   /* Device Functions               */
+   /*--------------------------------*/
+   dcl DevQueryCaps          entry( fixed bin(31), fixed bin(31), 
+                                    fixed bin(31), ptr )
+                             ext( 'DevQueryCaps' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+
+   /*--------------------------------*/
+   /* PM Functions                   */
+   /*--------------------------------*/
+   dcl WinBeginPaint         entry( fixed bin(31), ptr, ptr )
+                             ext( 'WinBeginPaint' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinCalcFrameRect      entry( fixed bin(31), ptr, fixed bin(31) )
+                             ext( 'WinCalcFrameRect' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinCreateMsgQueue     entry( fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinCreateMsgQueue' )
+                             options( asm byvalue linkage(system) );
+   dcl WinCreateStdWindow    entry( fixed bin(31),/* hwndParent      */
+                                    bit(32),      /* flStyle         */
+                                    ptr,          /* pflCreateFlags  */
+                                    ptr,          /* pszClassClient  */
+                                    ptr,          /* pszTitle        */
+                                    bit(32),      /* flStyleClient   */
+                                    fixed bin(31),/* Resource        */
+                                    fixed bin(31),/* ulId            */
+                                    ptr )         /* phwndClient     */
+                             returns( fixed bin(31) )
+                             ext( 'WinCreateStdWindow' )
+                             options( asm byvalue linkage(system) );
+   dcl WinDefWindowProc      entry( fixed bin(31),/* HWND            */
+                                    fixed bin(31),/* MSG             */
+                                    ptr,          /* MP1             */
+                                    ptr )         /* MP2             */
+                             returns( ptr )
+                             ext( 'WinDefWindowProc' )
+                             options( asm byvalue linkage(system) );
+   dcl WinDestroyMsgQueue    entry( fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinDestroyMsgQueue' )
+                             options( asm byvalue linkage(system) );
+   dcl WinDestroyWindow      entry( fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinDestroyWindow' )
+                             options( asm byvalue linkage(system) );
+   dcl WinDispatchMsg        entry( fixed bin(31),/* HAB             */
+                                    ptr )         /* &qmsg           */
+                             returns( fixed bin(31) )
+                             ext( 'WinDispatchMsg' )
+                             options( asm byvalue linkage(system) );
+   dcl WinDrawText           entry( fixed bin(31), fixed bin(31), ptr, ptr, 
+                                    fixed bin(31), fixed bin(31), bit(32) )
+                             ext( 'WinDrawText' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinEndPaint           entry( fixed bin(31) )
+                             ext( 'WinEndPaint' )
+                             options( asm byvalue linkage(system) );
+   dcl WinFillRect           entry( fixed bin(31), ptr, fixed bin(31) )
+                             ext( 'WinFillRect' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinGetLastError       entry( fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinGetLastError' )
+                             options( asm byvalue linkage(system) );
+   dcl WinGetMsg             entry( fixed bin(31),/* HAB             */
+                                    ptr,          /* &qmsg           */
+                                    fixed bin(31),/* HWND            */
+                                    fixed bin(31),/* ulFirst         */
+                                    fixed bin(31) )/* ulLast         */
+                             returns( fixed bin(31) )
+                             ext( 'WinGetMsg' )
+                             options( asm byvalue linkage(system) );
+   dcl WinGetScreenPS        entry( fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinGetScreenPS' )
+                             options( asm byvalue linkage(system) );
+   dcl WinInitialize         entry( fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinInitialize' )
+                             options( asm byvalue linkage(system) );
+   dcl WinInvalidateRegion   entry( fixed bin(31), fixed bin(31), 
+                                    fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinInvalidateRegion' )
+                             options( asm byvalue linkage(system) );
+   dcl WinMapWindowPoints    entry( fixed bin(31), fixed bin(31), ptr,
+                                    fixed bin(31) )
+                             ext( 'WinMapWindowPoints' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinOpenWindowDC       entry( fixed bin(31) )
+                             ext( 'WinOpenWindowDC' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinQueryWindowDC      entry( fixed bin(31) )
+                             ext( 'WinQueryWindowDC' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinPostMsg            entry( fixed bin(31), fixed bin(31), 
+                                    fixed bin(31), 
+                                    fixed bin(31) )
+                             ext( 'WinPostMsg' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinQueryClassInfo     entry( fixed bin(31), /* HAB */
+                                    ptr,           /* pszClassName */
+                                    ptr )          /* pClsiClassInfo */
+                             returns( fixed bin(31) )
+                             ext( 'WinqueryClassInfo' )
+                             options( asm byvalue linkage(system) );
+   dcl WinQueryWindowRect    entry( fixed bin(31), ptr )
+                             ext( 'WinQueryWindowRect' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinRegisterClass      entry( fixed bin(31),/* HAB             */
+                                    ptr,          /* pszClassName    */
+                                    entry,        /* pfnWindowProc   */
+                                    bit(32),      /* flStyle         */
+                                    fixed bin(31) )/* cbWindowData   */
+                             returns( fixed bin(31) )
+                             ext( 'WinRegisterClass' )
+                             options( asm byvalue linkage(system) );
+   dcl WinSetWindowPos       entry( fixed bin(31), fixed bin(31),
+                                    fixed bin(31), fixed bin(31),
+                                    fixed bin(31), fixed bin(31),
+                                    bit(32) )
+                             ext( 'WinSetWindowPos' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinShowWindow         entry( fixed bin(31), fixed bin(31) )
+                             ext( 'WinShowWindow' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinStartTimer         entry( fixed bin(31), fixed bin(31),
+                                    fixed bin(31), fixed bin(31)  )
+                             ext( 'WinStartTimer' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinStopTimer          entry( fixed bin(31), fixed bin(31),
+                                    fixed bin(31)  )
+                             ext( 'WinStopTimer' )
+                             returns( fixed bin(31) )
+                             options( asm byvalue linkage(system) );
+   dcl WinTerminate          entry( fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinTerminate' )
+                             options( asm byvalue linkage(system) );
+   dcl WinWindowFromID       entry( fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) )
+                             ext( 'WinWindowFromID' )
+                             options( asm byvalue linkage(system) );
+
+   dcl  ( addr, 
+          allocate, 
+          ceil, 
+          heximage, 
+          length, 
+          null, 
+          stg, 
+          sysnull
+        )                    builtin;
+
+ /********************************************************************/
+ /* Main Procedure                                                   */
+ /********************************************************************/
+
+ hanoi: proc options(main);
+
+   /*--------------------------------*/
+   /* Automatic Data                 */
+   /*--------------------------------*/
+   dcl   RC                  fixed bin(31);
+   dcl   hwndClient          fixed bin(31);
+   dcl  (tbl_cur,tbl_size)   fixed bin(31);
+   dcl   rectlClient         like rectl_type;
+   dcl   rectlFrame          like rectl_type;
+   dcl   window_title        char(64);
+   dcl   window_class        char(64);
+
+   dcl   flFrameFlags        bit(32) init(
+             FCF_MINBUTTON     | FCF_SYSMENU   | 
+             FCF_TITLEBAR      | FCF_TASKLIST  | 
+             FCF_SHELLPOSITION | FCF_BORDER );
+
+   dcl   wsWindowStyle       bit(32)  init( '00000000'bx );
+
+   /*----------------------------------------------------*/
+   /* Pre-calculate the required moves for the solution  */
+   /* The syntax is hanoi( # of disks, from, to, temp)   */
+   /* The solution to this problem requires 2**h-1       */
+   /* steps, where 'h' is the number of disks.           */
+   /*----------------------------------------------------*/
+   tbl_cur = 0;
+   tbl_size = 2**NUMBER_OF_DISKS;
+   pMove = ALLOCATE( stg(null()->move_table) * tbl_size );
+   call hanoi(NUMBER_OF_DISKS, 1, 3, 2);
+   if tbl_cur = tbl_size then do;
+     display( 'Too many moves' );
+     signal error;
+     end;
+   /* Indicate last move completed */
+   tbl_cur = tbl_cur+1;
+   pMove->from(tbl_cur) = 0;
+   pMove->to(tbl_cur)   = 0;
+
+  hanoi:proc(n, f, t, u) recursive;
+    dcl(n, f, t, u) fixed bin(31);
+    if n > 0 then
+    do;
+      call hanoi(n-1, f, u, t);
+      call movedisk(f, t);
+      call hanoi(n-1, u, t, f);
+    end;
+  end hanoi;
+
+  movedisk:proc(f, t);
+    dcl (f, t) fixed bin(31);
+    tbl_cur = tbl_cur+1;
+    if tbl_cur>tbl_size then do;
+      display( 'Too many moves' );
+      signal error;
+      end;
+    pMove->from(tbl_cur) = f;
+    pMove->to(tbl_cur)   = t;
+  end movedisk;
+
+   /*---------------------------------*/
+   /* Initialize PM control blocks    */
+   /*---------------------------------*/
+   hab = Wininitialize(0);
+   hmq = WinCreateMsgQueue(hab,0);
+   scrn_resolution=0;
+   call get_screen_resolution;
+
+   RC = GpiQueryTextBox( WinGetScreenPS(HWND_DESKTOP),
+                         length(WindowText), 
+                         addr(WindowText)+stg(null()->VarStr),
+                         4,
+                         addr(WindowTextbox) );
+   if RC=0 then do;
+     RC = WinGetLastError(hab);
+     display( 'GpiQueryTextBox returned ' || heximage(addr(RC),2) );
+     return;
+     end;
+
+   window_title = 'Towers of Hanoi' || '00'x;
+   window_class = 'HANOICLASS' || '00'x;
+
+   RC = WinRegisterClass( hab, addr(window_class),
+                          client, 
+                          '00000000'bx, 0 );
+
+   if RC=0 then do;
+     RC = WinGetLastError(hab);
+     display( 'WinRegisterClass returned ' || heximage(addr(RC),2) );
+     return;
+     end;
+
+   hwndFrame = WinCreateStdWindow( HWND_DESKTOP,       /* hwndParent     */
+                                   wsWindowStyle,      /* flStyle        */
+                                   addr(flFrameFlags), /* pflCreateFlags */
+                                   addr(window_class), /* pszClassClient */
+                                   addr(window_title), /* pszTitle       */
+                                   '00000000'bx,       /* flStyleClient  */
+                                   0,                  /* Resource       */
+                                   0,                  /* ulId           */
+                                   addr(hwndClient) ); /* phwndClient    */
+ 
+  if hwndFrame=0 then do;
+    RC = WinGetLastError(hab);
+    display( 'WinCreateStdWindow returned ' || heximage(addr(RC),2) );
+    return;
+    end;
+
+  /*-----------------*/
+  /* Size the window */
+  /*-----------------*/
+  rectlClient.xleft   = 0;
+  rectlClient.ybottom = 0;
+  rectlClient.xright  = 22*horz_resolution;
+  rectlClient.ytop    = ceil( NUMBER_OF_DISKS*vert_resolution ) + 
+                        4*vert_resolution;
+  rectlClient.ytop    = rectlClient.ytop + WindowTextbox(2).y -
+                        WindowTextbox(1).y;
+  rectlFrame = rectlClient;
+  RC = WinMapWindowPoints( hwndClient, HWND_DESKTOP, addr(rectlFrame), 2 ); 
+  if RC=0 
+  then display( 'WinMapWindowPoints RC=' || heximage(addr(RC),4) );
+  RC = WinCalcFrameRect( hwndFrame, addr(rectlFrame), 0 );
+  if RC=0 
+  then display( 'WinCalcFrameRect RC=' || heximage(addr(RC),4) );
+  /* Window Positioning Options */
+  %replace SWP_SIZE   by '01000000'bx;
+  %replace SWP_MOVE   by '02000000'bx;
+  %replace SWP_ZORDER by '04000000'bx;
+  %replace SWP_SHOW   by '08000000'bx;
+  RC = WinSetWindowPos( hwndFrame, 0, 0, 0, 
+                        rectlFrame.xright, rectlFrame.ytop,
+                        SWP_SIZE|SWP_SHOW );
+  if RC=0 
+  then display( 'WinSetWindowPos RC=' || heximage(addr(RC),4) );
+  RC = WinShowWindow( hwndFrame, 1 );
+
+  /*------------------------*/
+  /* Message Loop           */
+  /*------------------------*/
+  do while( '1'b );
+     RC = WinGetMsg(hab,addr(qmsg),0,0,0);
+     if rc=0 then leave;
+     RC = WinDispatchMsg(hab,addr(qmsg));
+     end; /* do while */ 
+
+   RC = WinDestroyWindow(hwndFrame);
+   RC = WinDestroyMsgQueue(hmq);
+   RC = Winterminate(hab);
+   return;
+
+   end hanoi;
+
+ /*------------------------------------------------------------------*/ 
+ /* Client window procedure                                          */ 
+ /*------------------------------------------------------------------*/
+ client: proc(hwnd,msg,mp1,mp2) 
+         returns( ptr )
+         options(fromalien linkage(system) );
+
+   dcl   hwnd                fixed bin(31);
+   dcl   msg                 fixed bin(15);
+   dcl  (mp1,mp2)            ptr;
+
+   dcl   RC                  fixed bin(31);
+   dcl   hps                 fixed bin(31);
+   dcl   text_height         fixed bin(31);
+   dcl 1 rectlPaint          like rectl_type;
+
+   dcl 1 disks       (NUMBER_OF_DISKS)           static,
+         2 size              fixed bin(31),
+         2 color             fixed bin(31);
+   dcl 1 peg              (3)                    static,
+         2 pos               like pointl_type,
+         2 n                 fixed bin(31),
+         2 disk           (5)fixed bin(31);
+
+   dcl   idTimer             fixed bin(31)       static;
+
+   select ( msg );
+
+    when( WM_CREATE ) do;
+      text_height = WindowTextbox(2).y - WindowTextbox(1).y;
+      disks(1).color = CLR_RED;
+      disks(2).color = CLR_YELLOW;
+      disks(3).color = CLR_GREEN;
+      disks(4).color = CLR_BLUE;  
+      disks(5).color = CLR_PINK;
+      disks(1).size  = 2;      
+      disks(2).size  = 3;         
+      disks(3).size  = 4;       
+      disks(4).size  = 5;        
+      disks(5).size  = 6;        
+      /* disk(n) is on top */
+      peg(1).n       = 5;
+      peg(1).disk(1) = 5;
+      peg(1).disk(2) = 4;
+      peg(1).disk(3) = 3;
+      peg(1).disk(4) = 2;
+      peg(1).disk(5) = 1;
+      peg(2).n       = 0;
+      peg(3).n       = 0;
+      peg(1).x       = 4*horz_resolution;
+      peg(1).y       = vert_resolution + text_height-1;
+      peg(2).x       = 11*horz_resolution;
+      peg(2).y       = peg(1).y;
+      peg(3).x       = 18*horz_resolution;
+      peg(3).y       = peg(1).y;
+      return( sysnull() );
+      end; /* WM_CREATE */
+
+    when( WM_PAINT ) do;
+      text_height = WindowTextbox(2).y - WindowTextbox(1).y;
+      hps = WinBeginPaint( hwnd, sysnull(), sysnull() );
+       /* Background fill    */
+      call WinQueryWindowRect( hwnd, addr(rectlPaint) );
+      call WinFillRect( hps, addr(rectlPaint), CLR_WHITE );
+      /* Draw baseline       */
+      rectlPaint.xleft   = horz_resolution;
+      rectlPaint.ybottom = ceil(vert_resolution/2) + text_height;
+      rectlPaint.xright  = 21*horz_resolution;
+      rectlPaint.ytop    = peg(1).y;
+      call WinFillRect( hps, addr(rectlPaint), CLR_BLACK );
+      /* Draw pegs           */
+      rectlPaint.xleft   = 4*horz_resolution-ceil(horz_resolution/2);
+      rectlPaint.ybottom = peg(1).y;
+      rectlPaint.xright  = rectlPaint.xleft+horz_resolution;
+      rectlPaint.ytop    = rectlPaint.ytop +  
+                           (NUMBER_OF_DISKS+1)*vert_resolution;
+      call WinFillRect( hps, addr(rectlPaint), CLR_BLACK );
+      rectlPaint.xleft   = 11*horz_resolution-ceil(horz_resolution/2);
+      rectlPaint.xright  = rectlPaint.xleft+horz_resolution;
+      call WinFillRect( hps, addr(rectlPaint), CLR_BLACK );
+      rectlPaint.xleft   = 18*horz_resolution-ceil(horz_resolution/2);
+      rectlPaint.xright  = rectlPaint.xleft+horz_resolution;
+      call WinFillRect( hps, addr(rectlPaint), CLR_BLACK );
+      call display_disks;
+      /* Display the text - note that the textbox may not start at   */
+      /* (0,0) because textbox allows for descenders.                */
+      rectlPaint.xleft   = horz_resolution;
+      rectlPaint.ybottom = -WindowTextbox(1).y;
+      RC = GpiCharStringAt( hps,
+                            addr(rectlPaint), 
+                            length(WindowText), 
+                            addr(WindowText)+stg(null()->VarStr) );
+      call WinEndPaint( hps );
+      /* Set timer for two-second delay */
+      idTimer = WinStartTimer( hab, hwnd, 1, 2000 ); 
+      return( sysnull() );
+      end; /* WM_PAINT */
+
+    when( WM_TIMER ) do;
+      /* The problem is solved when the next move is zero.           */
+      /* Just do nothing at that point.                              */
+      if pMove->from(1)^=0 then do;
+        /* Move one disk */
+        call move_disk(pMove->from(1),pMove->to(1));
+        pMove = pMove + stg( null()->move_table );
+        /* Don't restart the timer after last move */
+        if pMove->from(1)^=0 then do;
+          idTimer = WinStartTimer( hab, hwnd, 1, 2000 );
+          end;
+        /* Repaint the window */
+        RC = WinInvalidateRegion( hwnd, NULLHANDLE, 0 );
+        end; 
+      return( sysnull() );
+      end; /* WM_TIMER */
+
+    when( WM_CLOSE ) do;
+      call WinPostMsg( hwnd, WM_QUIT, 0, 0 );
+      return( sysnull() );
+      end; /* WM_CLOSE */
+
+    otherwise do;
+      return( WinDefWindowProc( hwnd, msg, mp1, mp2 ) );
+      end;
+
+    end; /* select */
+
+  /* Display the disks */
+  display_disks: proc;
+    dcl (i,j,k)              fixed bin(31);
+    dcl  rectlDisk           like rectl_type;
+    do i=1 to 3;
+      do j=1 to peg(i).n;
+        k = peg(i).disk(j);
+        rectlDisk.xleft = peg(i).x - 
+                          ceil( (disks(k).size*horz_resolution)/2 );
+        rectlDisk.ybottom = peg(i).y + (j-1)*vert_resolution;
+        rectlDisk.xright = rectlDisk.xleft + 
+                           disks(k).size*horz_resolution;
+        rectlDisk.ytop   = rectlDisk.ybottom + horz_resolution;
+        call WinFillRect( hps, addr(rectlDisk), disks(k).color );
+        end; /* do j */
+      end; /* do i */
+    end display_disks;
+
+  /* Move one disk */
+  move_disk: proc(f,t);
+    dcl (f,t)                fixed bin(7);
+    dcl  d                   fixed bin(31);
+    dcl  i                   fixed bin(31);
+    d = peg(f).disk(peg(f).n);         /* Get top disk on 'from' peg */
+    peg(f).n = peg(f).n-1;             /* One less disk there        */
+    peg(t).n = peg(t).n+1;             /* One more on 'to' peg       */
+    peg(t).disk(peg(t).n) = d;         /* Move to 'to'               */
+    end move_disk;
+   
+  end client;
+
+  /* Get the screen resolution in pels per 500mm */
+  /* This is the drawing unit used throughout.   */
+  get_screen_resolution: proc;
+    dcl  screen_dc           fixed bin(31);
+    dcl  RC                  fixed bin(31);
+         
+    screen_dc = WinOpenWindowDC(HWND_DESKTOP);
+    %replace CAPS_HORIZONTAL_RESOLUTION by 8;
+    RC = DevQueryCaps( screen_dc, CAPS_HORIZONTAL_RESOLUTION, 
+                       2, addr(scrn_resolution) );
+    horz_resolution = horz_resolution / 200; /* pels/500mm          */
+    vert_resolution = vert_resolution / 200;
+    end get_screen_resolution;
+
+  end pmhanoi;
+

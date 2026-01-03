@@ -1,0 +1,79 @@
+ /* _pli_GHS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        GHS     (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GHS Allocate heap storage               */
+ /*                                                                  */
+ /*      Function:      Heap storage allocator for BASED and         */
+ /*                     CONTROLLED storage.                          */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*			Linux: This is the alternate version of ghs  */
+ /*			intended to be linked with programs that     */
+ /*			use libc and want to use C memory management.*/
+ /*                                                                  */
+ /*                     This version calls C malloc() to allocate    */
+ /*                     storage.                                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     The total size of storage to be allocated    */
+ /*                     is passed on the stack.  The storage         */
+ /*                     requested is allocated, and the address of   */
+ /*			the area is returned in EAX.   		     */
+ /*                                                                  */
+ /*                     If the requested storage could not be        */
+ /*                     allocated, the STORAGE condition is raised.  */
+ /*                                                                  */
+ /*                     Additional processing for CONTROLLED storage */
+ /*                     is done elsewhere.                           */
+ /*                                                                  */
+ /*      Called From:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . It would be nice if handling of AREAs was    */
+ /*                     integrated with handling the default heap.   */
+ /*                     On the other hand, AREAs have some require-  */
+ /*                     ments not found in the heap (Read/Write of   */
+ /*                     entire areas, e.g.) and OS/2 provides a nice */
+ /*                     simple, presumably fast API for handling     */
+ /*                     heaps that it's a shame not to use.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ GHS: proc(iSz)
+      returns( ptr )
+      external( '_pli_GHS' )
+      options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     iSz                 fixed bin(31);           /* Req size    */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pBlk                ptr;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      malloc	     entry( fixed bin(31) )
+ 			     options( asm linkage(system) )
+ 			     returns( ptr ) 
+			     ext( 'malloc' );
+
+ dcl    (addr,stg,sysnull)   builtin;
+
+ pBlk = malloc(iSz);		/* Allocate the block		     */
+ return( pBlk );
+
+ end GHS;

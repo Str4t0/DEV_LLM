@@ -1,0 +1,195 @@
+ /* _pli_Disp                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.7           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        Disp (PL/I runtime)                          */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Runtime support for PL/I DISPLAY statement.  */
+ /*                                                                  */
+ /*                     The display string is always required and    */
+ /*                     will be written to stderr.  If the reply     */
+ /*                     area is not supplied, the displayed string   */
+ /*                     will be followed by a CRLF.                  */
+ /*                                                                  */
+ /*                     EVENT not currently supported.               */
+ /*                                                                  */
+ /*                     If the reply area is specified, data will    */
+ /*                     be read from the keyboard until the user     */
+ /*                     presses ENTER.  If EVENT is not supplied,    */
+ /*                     this will be done synchronously, and control */
+ /*                     will not be returned to the caller until     */
+ /*                     the read completes.                          */
+ /*                                                                  */
+ /*                     If EVENT is supplied, a thread is created to */
+ /*                     read the reply, and control returns to the   */
+ /*                     caller immediately.  When the read completes */
+ /*                     the event variable will be posted.           */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I Descriptor formats.                     */
+ /*                                                                  */
+ /*      Argument list:                                              */
+ /*              +----------------------------------+                */
+ /*          +10 | addr(event) or 0                 |                */
+ /*              +----------------------------------+                */
+ /*          +0C | addr(reply descriptor) or 0      |                */
+ /*              +----------------------------------+                */
+ /*          +08 | addr(reply area) or 0            |                */
+ /*              +----------------------------------+                */
+ /*          +04 | addr(display descriptor)         |                */
+ /*              +----------------------------------+                */
+ /*          +00 | addr(display string)             |                */
+ /*              +----------------------------------+                */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2022-05-07: REPLY option.                        0.9.10e*/
+ /*          2017-06-23: Allow suppression of trailing CRLF    0.9.10*/
+ /*	     2010-11-13: Write message and CR/LF together to    0.9.2*/
+ /*			 fix problems with threading.	        0.9.2*/
+ /*          2010-06-25: OS independance - use OSWrite.         0.9.1*/
+ /*          2009-05-20: Allow picture as well as character arg. 0.8b*/
+ /*                                                                  */
+ /********************************************************************/
+
+ Disp: proc(pStr,pDStr,pRep,pDRep,pEvent)
+       options( linkage(system) )
+       external( '_pli_Disp' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pStr                ptr;
+ dcl     pDStr               ptr;
+ dcl     pRep                ptr;
+ dcl     pDRep               ptr;
+ dcl     pEvent              ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     lp                  ptr;
+ dcl     ll                  fixed bin(31);
+ dcl     p		     ptr;			      /*0.9.2*/
+
+ dcl     retcode             fixed bin(31);           /* unsigned    */
+ dcl     iWritten            fixed bin(31);
+ dcl     bNoCRLF             bit(1)     init( '0'b );        /*0.9.10*/
+ dcl     rep_addr            ptr;                           /*0.9.10e*/
+ dcl     rep_len             fixed bin(31);                 /*0.9.10e*/
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     sCRLF               char(2)             static
+                                                 init( '0D0A'x );
+ dcl     iStdOut             fixed bin(31)       static    init(1);
+ dcl     iStdErr             fixed bin(31)       static    init(2);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     VarStr              char(0)   varying   based;
+ dcl     C1                  char(1)             based;      /*0.9.10*/
+ dcl     H                   fixed bin(15)       based;     /*0.9.10e*/
+
+ /*-----------------------------------*/
+ /* External Entries                  */
+ /*-----------------------------------*/
+ dcl     OSWrite             entry( fixed bin(31), ptr, fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSWrite' );
+ dcl     OSRead              entry( fixed bin(31), ptr, fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSRead' );  
+
+ dcl   (
+         addr,
+	 auto,						      /*0.9.2*/
+         length,
+         null,
+	 plimove,					     /*0.9.2*/
+         stg,
+         sysnull
+       )                     builtin;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ lp = pStr;                            /* Get text address           */
+ ll = pDStr->pli_ded_STR.ST_len;       /*   and text length          */
+ if pDStr->XB_id = '11'x then do;      /* VARYING string?            */ 
+   ll = length(lp->VarStr);            /*   Yes, get current length  */
+   lp = lp+stg( null()->VarStr );      /*   ->Text                   */
+   end; /* varying */
+ if ptradd(lp,ll-1)->C1='$'            /* No ending CRLF       0.9.10*/
+ then do;                                                    /*0.9.10*/
+   ll = ll-1;                          /* Don't display $      0.9.10*/
+   bNoCRLF = '1'b;                                           /*0.9.10*/
+   end;                                                      /*0.9.10*/ 
+   
+ /* COMMENT: Adding threads pointed up the problem that the          */
+ /*          message text and the newline may not be output          */
+ /*	     together if written by separate writes.		     */
+ /* NOTE: Can't do auto in DO-group as it will be deleted at end     */
+ p = auto(ll+2);		       /* No, get stg to add CRL0.9.2*/
+ call plimove(p,lp,ll);	               /* Move message          0.9.2*/
+ lp = p;			       /* ->New message         0.9.2*/
+ if pRep=sysnull() & bNoCRLF='0'b      /* Reply()?	       0.9.10*/
+ then do;                                                    /*0.9.10*/
+   call plimove(lp+ll,addr(sCRLF),2);  /* Move CR/LF            0.9.2*/
+   ll = ll+2;			       /* Update length	        0.9.2*/
+   end;							      /*0.9.2*/
+   
+ retcode = OSWrite( iStdErr, lp, ll ); /* Returns -error or bytes wr.*/
+ /* NOTE: Error detection? */
+
+ /*-----------------------------------*/
+ /* REPLY option                      */
+ /* EVENT not currently supported,    */
+ /*   for EVENT call read w/TASK      */
+ /*-----------------------------------*/
+ if pRep=sysnull then return;           /* No reply requested 0.9.10e*/
+ rep_addr = pRep;
+ rep_len  = pDRep->ST_len;
+ if pDRep->ST_id = '10'x then do;       /* Nonvarying reply   0.9.10e*/
+   call plifill(rep_addr,' ',rep_len);
+   end; /* nonvarying */
+ else do;                               /* VARYING reply      0.9.10e*/
+   pRep->H = 0;           
+   rep_addr = rep_addr + stg(VarStr);
+   end; /* varying */
+ retcode = OSRead( iStdErr, rep_addr, rep_len );
+ ll = retcode;
+ if retcode<0 then do;                   /* Error                    */
+   /* NOTE: Error detection */
+   ll=0;         
+   end;
+ if ll=0 then return;
+ p = rep_addr + ll - 1;                  /* ->Last character         */
+ if p->C1='0A'x | p->C1='0D'x then do;
+   p->C1=' ';
+   ll = ll-1;
+   end;
+ if ll=0 then return;
+ p = rep_addr + ll - 1;                  /* ->Last character         */
+ if p->C1='0A'x | p->C1='0D'x then do;
+   p->C1=' ';
+   ll = ll-1;
+   end;
+ if pDRep->ST_id ^= '10'x then do;       /* Varying reply     0.9.10e*/
+   pRep->H = ll;                         /* Set reply length  0.9.10e*/
+   end; 
+
+ return;
+
+ %include desc;
+
+ end Disp;

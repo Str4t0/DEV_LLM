@@ -1,0 +1,91 @@
+ /* refsamp                                               */
+ /*********************************************************/
+ /*                                                       */
+ /* Module:   refsamp                                     */
+ /*           Peter Flass -- Jan 2023                     */
+ /*                                                       */
+ /* Function: Sample program for self-defining structures */
+ /*           with file I/O.                              */ 
+ /*                                                       */
+ /*           Program allocates a self-defining structure */
+ /*           and creates and writes records of different */
+ /*           lengths. The data is then read back and     */  
+ /*           printed.                                    */
+ /*                                                       */
+ /* Usage:    refsamp                                     */
+ /*                                                       */
+ /* Dependencies:                                         */
+ /*                                                       */
+ /*                                                       */
+ /*********************************************************/
+refsamp: proc options(main);
+  dcl    (p,q)                ptr;
+  dcl     n                   fixed bin(31);
+  dcl     i                   fixed bin(31);
+  dcl   1 struc               based(p),
+          5 char_occ          fixed bin(31),
+          5 char              char(64 refer(char_occ));
+  dcl     vfile               file env(varls recsize(80));
+  dcl     eof                 bit(1)              init('0'b);
+
+  /*-------------------------*/
+  /* Test Data               */
+  /*-------------------------*/
+  dcl     test_string     ( 8)char(16)  varying static   init(
+    'String One', 'Str 2', 'Three',        'String 4',
+    'St 5',       'Str 6', 'String SEVEN', 'Last' );  
+
+  on endfile(vfile) eof='1'b;
+  put skip list('refsamp: Test self-defining structures');
+  alloc struc set(p);                   /* Allocate the structure    */
+  q = p;                                /* Save addr for later       */
+  put skip edit('allocated size',stg(p->struc))(a,p'zz9');
+  open file(vfile) output title('ReferTest.dat');
+
+  put skip(2) edit('Writing',hbound(test_string),' records')
+                  (a,p'zz9',a);
+  /*-------------------------*/
+  /* Write records           */
+  /*-------------------------*/
+  do n=1 to hbound(test_string);
+    p->char_occ = length(test_string(n));
+    p->char     = test_string(n);
+    i = cstg(p->struc);
+    put skip edit('writing',i,heximage(p,i))(a,p'zz9',x(1),a);
+    write file(vfile) from(p->struc);
+    end; /* do n */
+  put skip list('all records written');
+  close file(vfile);
+
+  /*-------------------------*/
+  /* Reread and print records*/
+  /* using READ SET()        */
+  /*-------------------------*/
+  open file(vfile) input title('ReferTest.dat');
+  put skip(2) list('trying READ SET()');
+  read file(vfile) set(p);
+  do while(^eof);
+    put skip edit(length(p->char),': "',p->char,'"')(p'zzz9',a,a,a);
+    read file(vfile) set(p);
+    end; /* do while */
+  close file(vfile);
+
+  /*-------------------------*/
+  /* Reread and print records*/
+  /* using READ INTO()       */
+  /*-------------------------*/
+  p = q;                                /* Res addr after read(set)  */
+  eof='0'b;                             /* Reset EOF                 */
+  open file(vfile) input title('ReferTest.dat');
+  put skip(2) list('trying READ INTO()');
+  read file(vfile) into(struc);
+  do while(^eof);
+    put skip edit(length(p->char),': "',p->char,'"')(p'zzz9',a,a,a);
+    read file(vfile) into(struc);
+    end; /* do while */
+  close file(vfile);
+ 
+  put skip(2) list('refsamp test complete');
+
+  end refsamp;
+

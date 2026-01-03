@@ -1,0 +1,109 @@
+ /* _pli_OSStat                                                     */
+osstat: package exports(fstat);
+ /*******************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5          */
+ /*              Distributed under the Gnu LGPL License             */
+ /*                                                                 */
+ /*      Module:        _pli_OSFstat (PL/I runtime)  [OS/2]         */
+ /*      Version:       1.0                                         */
+ /*      Date:          Mar 2022                                    */
+ /*      Author:        Peter Flass                                 */
+ /*                                                                 */
+ /*      Entry Points:  _pli_OSStat                                 */
+ /*                                                                 */
+ /*      Function:      Operating system dependent stat             */
+ /*                                                                 */
+ /*                                                                 */
+ /*      OSFstat is called by applications to 'stat' a file, given  */
+ /*      the file handle of an open file.                           */
+ /*                                                                 */
+ /*      Dependencices:                                             */
+ /*                     Linux: SYSCALL                              */
+ /*                     OS/2:  DOSQueryPathInfo                     */
+ /*                                                                 */
+ /*      Calling sequence:                                          */
+ /*                     RC = _pli_OSFstat( fh,                      */
+ /*                                        bFileMode );             */
+ /*                     fh        = file handle                     */
+ /*                                 string (filename).              */
+ /*                     pBuf      = Address of a FILESTATUS3 buffer */
+ /*                                 to receive the result.          */
+ /*                                                                 */
+ /*      To Do:       . Change declarations to 'unsigned' as        */
+ /*                     indicated once this is implemented.         */
+ /*                                                                 */
+ /*      Modifications:                                             */
+ /*                                                                 */
+ /*******************************************************************/
+ 
+ %replace Path_Max by 260;
+
+ /* File info levels for all listed API's */
+ %replace FIL_STANDARD         by 1;   /* Level 1, std file info    */
+ %replace FIL_QUERYEASIZE      by 2;   /* Level 2, return Full EA   */
+ %replace FIL_QUERYEASFROMLIST by 3;   /* Level 3, return req EA's  */
+
+/*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DOSQueryPathInfo    entry( ptr,              /* pszPathName */
+                                    fixed bin(31),    /* ulInfoLevel */
+                                    ptr,              /* pInfoBuf    */
+                                    fixed bin(31)     /* cbInfoBuf   */
+                                  )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DOSQueryPathInfo' );
+ dcl     DosQueryFileInfo    entry( fixed bin(31),    /* File handle */
+                                    fixed bin(31),    /* Flag        */
+                                    ptr,              /* Buffer addr */
+                                    fixed bin(31) )   /* Buffer size */
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             ext( 'DosQueryFileInfo' );
+
+ %include filestatus4;
+ %include stat;
+                                    
+ fstat: proc(fh,pBuf)          
+            returns( fixed bin(31) )
+	    options(linkage(system) )
+            ext( '_pli_OSFstat' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     fh                  fixed bin(31); /* File handleg           */
+ dcl     pBuf                ptr;           /* ->Output buffer        */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS Return code   */
+ dcl     status              char( 64 );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+			     
+ /* stat the file */
+ RC = DosQueryFileInfo( fh, FIL_STANDARD, addr(status), stg(status) );
+
+ /* Convert OS/2 values to UNIX values in stat */
+ call plifill( pBuf, '00'x, stg(stat) );
+ pBuf->st_size = addr(status)->cbFile;
+
+ /*----------------------------------*/
+ /* Now need to add permissions      */
+ /* and date/timestamps              */
+ /*----------------------------------*/
+
+ return(RC);
+
+ end fstat;
+ 
+ end osstat;

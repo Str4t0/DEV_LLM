@@ -1,0 +1,396 @@
+ /* _pli_Sum                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 1.0.0         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Sum   (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jun, 2022                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _Sum                                         */
+ /*                                                                  */
+ /*      Function:      PL/I Array-Handling builtin functions:       */
+ /*                       PROD                                       */
+ /*                       SUM                                        */
+ /*                                                                  */
+ /*      Results:                                                    */
+ /*         PROD: If the source array is not integer or string,      */
+ /*               the result is FLOAT with the same precision        */
+ /*               as the argument, except that for integers the      */
+ /*               precision is (n,0)                                 */
+ /*               The base and mode match the converted argument.    */
+ /*         SUM:  If the source is FIXED, the result is FIXED(n,q)   */
+ /*               where n is the maximum size for the base, and q    */
+ /*               is the scale of the argument.                      */
+ /*               If the argument is float the result has the same   */
+ /*               precision as the argument.                         */
+ /*         The caller is responsible for determining the            */
+ /*         attributes of the result, and the descriptor is passed   */
+ /*         to us. If necessary, data is converted here,             */
+ /*         rather than by the caller.                               */
+ /*                                                                  */
+ /*         Since these procedures operate on arrays, the scale of   */
+ /*         FIXED operands will always be the same, and can be       */
+ /*         ignored here.                                            */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*         PL/I descriptor formats.                                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*         Convert string data.                                     */
+ /*         Condition handling if necessary.                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ Sum: proc( fun, pData, pDesc, pName, pdRes, pRes )               
+      options( linkage(system) )
+      ext( '_pli_Sum' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      fun                 fixed bin(31);/* Function code         */
+                                            /* 0=PROD                */
+                                            /* 1=SUM                 */
+ dcl      pData               ptr;     /* -> Array address           */
+ dcl      pDesc               ptr;     /* -> Source array descriptor */
+ dcl      pName               ptr;     /* -> Array name or sysnull() */
+ dcl      pdRes               ptr;     /* ->Result descriptor        */
+ dcl      pRes                ptr;     /* ->Result data              */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl      float_res          cplx float bin(64);  /* Choose one      */
+ dcl      fixed_res          cplx fixed bin(31);
+ dcl      decimal_res        cplx fixed dec(18);
+
+ dcl      res_size           fixed bin(7);        /* Size of float   */
+ dcl      arg_size           fixed bin(7);
+ dcl      complex_result     bit(1);
+ dcl      fixed_result       bit(1);
+ dcl      decimal_result     bit(1);              /* FIXED DEC only  */
+ dcl      first_time         bit(1);
+
+%include CONDMASK;
+     
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      UNIMPLEMENTED       condition;                      /*1.2.1*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      pVoid               ptr           based;
+ dcl      VarStr              char(0)       varying     based;
+
+ /* Data types for arithmetic data */
+ dcl      FB7                 fixed bin(7)   cplx based;
+ dcl      FB15                fixed bin(15)  cplx based;
+ dcl      FB31                fixed bin(31)  cplx based;
+ dcl      FD18                fixed dec(18)  cplx based;
+ dcl      LB23                float bin(23)  cplx based;
+ dcl      LB49                float bin(49)  cplx based;
+ dcl      LB64                float bin(64)  cplx based;
+ dcl      LD7                 float dec(7)   cplx based;
+ dcl      LD15                float dec(15)  cplx based;
+ dcl      LD20                float dec(20)  cplx based;
+   
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      Aggr                entry( ptr, ptr, ptr, entry )
+                              ext( '_pli_AggIO' );
+%page; 
+
+  /*-----------------------------------*/
+  /* Setup                             */
+  /*-----------------------------------*/
+  first_time = '1'b;
+  if fun=1 then do;                     /* Sum                       */
+    float_res   = 0.0;                  /* Init result accumulators  */
+    fixed_res   = 0;
+    decimal_res = 0;
+    end;
+  else do;                              /* Prod                      */
+    float_res   = 1.0;
+    fixed_res   = 1;
+    decimal_res = 1;
+    end;
+
+  fixed_result   ='0'b;
+  decimal_result ='0'b;  
+  complex_result ='0'b;     
+  if pdRes->XB_id = '48'x               /* FIXED DEC(OPTIONS(IBM))   */
+  then signal UNIMPLEMENTED;
+
+  if pdRes->XB_id = '41'x               /* FIXED BIN                 */
+  then fixed_result='1'b;
+  else if pdRes->XD_id = '42'x  
+  then decimal_result='1'b;
+  /* else float result */
+  if (pdRes->XB_flgs&'80'bx)^='00'bx    /* COMPLEX result            */
+  then complex_result='1'b;
+
+  /*-----------------------------------------------------------------*/
+  /* Aggr will call the processing routine once for each array elem  */
+  /*-----------------------------------------------------------------*/
+  call Aggr(pDesc,pData,pName,process); /* Do the thing              */
+
+  /* Derive length of float data from base/precision */
+  if pdRes->LB_id = '43'x then do;      /* FLOAT BINARY              */
+    if pdRes->LB_prec<=23 then res_size=4;
+    else if pdRes->LB_prec<=49 then res_size=8;
+    else res_size=10; 
+    end; /* float bin */
+  if pdRes->LB_id = '44'x then do;      /* FLOAT DECIMAL             */
+    if pdRes->LB_prec<=7 then res_size=4;
+    else if pdRes->LB_prec<=15 then res_size=8;
+    else res_size=10; 
+    end; /* float dec */
+
+  /*-----------------------------------*/
+  /* Move the results                  */
+  /* Size cannot be raised here        */
+  /*-----------------------------------*/
+  if decimal_result then do;
+    real(pRes->FD18) = real(addr(decimal_res)->FD18);
+    if complex_result
+    then imag(pRes->FD18) = imag(addr(decimal_res)->FD18);   
+    end; /* decimal_result */
+
+  else if fixed_result then do;
+    if pdRes->XB_prec<=7 then do;
+      real(pRes->FB7) = real(addr(fixed_res)->FB31);
+      if complex_result
+      then imag(pRes->FB7) = imag(addr(fixed_res)->FB31);
+      end;
+    else if pdRes->XB_prec<=15 then do;
+      real(pRes->FB15) = real(addr(fixed_res)->FB31);
+      if complex_result
+      then imag(pRes->FB15) = imag(addr(fixed_res)->FB31);
+      end;
+    else do;
+      real(pRes->FB31) = real(addr(fixed_res)->FB31);
+      if complex_result
+      then imag(pRes->FB31) = imag(addr(fixed_res)->FB31);
+      end; /* else */
+    end; /* fixed_result */
+
+  else do; /* float_result */
+    if res_size=4 then do;
+      real(pRes->LD7) = real(addr(float_res)->LD20);
+      if complex_result
+      then imag(pRes->LD7) = imag(addr(float_res)->LD20);
+      end;
+    else if res_size=8 then do;
+      real(pRes->LD15) = real(addr(float_res)->LD20);
+      if complex_result
+      then imag(pRes->LD15) = imag(addr(float_res)->LD20);
+      end;
+    else do;
+      real(pRes->LD20) = real(addr(float_res)->LD20);
+      if complex_result
+      then imag(pRes->LD20) = imag(addr(float_res)->LD20);
+      end;
+    end; /* float result */
+
+  return;
+
+ process: proc(pData,pDesc,pName);
+  dcl     pDesc               ptr;
+  dcl     pData               ptr;
+  dcl     pName               ptr;
+
+  /* Derive length of float data from base/precision                 */
+  /* We could extract this from the array descriptor above, but this */
+  /* is the first time we get the element descriptor from AGGR       */
+  if first_time then do;
+    if pdRes->LB_id = '43'x then do;    /* FLOAT BINARY              */
+      if pdRes->LB_prec<=23 then arg_size=4;
+      else if pdRes->LB_prec<=49 then arg_size=8;
+      else arg_size=10; 
+      end; /* float bin */
+    if pdRes->LB_id = '44'x then do;    /* FLOAT DECIMAL             */
+      if pdRes->LB_prec<=7 then arg_size=4;
+      else if pdRes->LB_prec<=15 then arg_size=8;
+      else arg_size=10; 
+      end; /* float dec */
+    end; /* first_time */
+
+  /* Convert data- except that for now we won't support pictured     */
+  /* data or strings, so no conversion is necessary. The caller      */
+  /* screens out program control or other data types.                */
+  /* NOTE that we don't have to worry about scaling factors for      */
+  /* SUM and PROD because the scale of the result is the same as     */
+  /* the scale of the argument array.                                */
+
+  select( fun );         
+    when( 0 ) call prod;                /* PROD                      */
+    when( 1 ) call sum;                 /* SUM                       */
+    otherwise signal ERROR;             /* Should not occur          */ 
+    end; /*select */
+
+  first_time = '0'b;
+
+  /*-----------------------------------------------------------------*/
+  /*  SUM builtin                                                    */
+  /* "If the elements of [the source] are fixed-point, the precision */
+  /*  of the result is (N,q), where N is the maximum number of       */
+  /*  digits allowed."    -SC26-3114-01, p.378                       */
+  /*-----------------------------------------------------------------*/
+  sum: proc;
+ 
+    if fixed_result then do;
+      if pDesc->XB_prec<=7 then do;
+        real(fixed_res) = real(fixed_res) + real(pData->FB7);
+        if complex_result
+        then imag(fixed_res) = imag(fixed_res) + imag(pData->FB7);
+        end;
+      else if pDesc->XB_prec<=15 then do;
+        real(fixed_res) = real(fixed_res) + real(pData->FB15);
+        if complex_result
+        then imag(fixed_res) = imag(fixed_res) + imag(pData->FB15);
+        end;
+      else do;
+       real(fixed_res) = real(fixed_res) + real(pData->FB31);
+        if complex_result
+        then imag(fixed_res) = imag(fixed_res) + imag(pData->FB31);
+        end;
+      end; /* fixed */
+    else if decimal_result then do;
+      real(decimal_res) = real(decimal_res) + real(pData->FD18);
+      if complex_result
+      then imag(decimal_res) = imag(decimal_res) + imag(pData->FD18);
+      end; /* decimal */
+
+    else do;                            /* FLOAT result              */
+      if arg_size = 4 then do;
+        real(float_res) = real(float_res) + real(pData->LB23);
+        if complex_result
+        then imag(float_res) = imag(float_res) + imag(pData->LB23);
+        end;
+      else if arg_size = 8 then do;
+        real(float_res) = real(float_res) + real(pData->LB49);
+        if complex_result
+        then imag(float_res) = imag(float_res) + imag(pData->LB49);
+        end;
+      else do;
+        real(float_res) = real(float_res) + real(pData->LB64);
+        if complex_result
+        then imag(float_res) = imag(float_res) + imag(pData->LB64);
+        end;  
+      end; /* float */
+
+   end sum;
+
+  /*-----------------------------------------------------------------*/
+  /*  PROD builtin                                                   */
+  /* "The result has the precision of [the source], except that the  */
+  /*  result for fixed-point integer values and strings is           */
+  /*  fixed-point with precision (n,0), where n is the maximum       */
+  /*  number of digits allowed."    -SC26-3114-01, p.371             */
+  /*-----------------------------------------------------------------*/
+  prod: proc;
+    /* Need temps, because REAL and IMAG are used more than once     */
+    dcl   tempx1              fixed bin(31)  cplx;
+    dcl   tempd1              fixed dec(18)  cplx;
+    dcl   templ1              float bin(64)  cplx;
+    dcl   tempx2              fixed bin(31)  cplx;
+    dcl   tempd2              fixed dec(18)  cplx;
+    dcl   templ2              float bin(64)  cplx;
+
+    if ^complex_result then do;         /* Real                      */
+
+      if fixed_result then do;
+        if pDesc->XB_prec<=7 then do;
+          real(fixed_res) = real(fixed_res) * real(pData->FB7);
+          end;
+        else if pDesc->XB_prec<=15 then do;
+          real(fixed_res) = real(fixed_res) * real(pData->FB15);
+          end;
+        else do;
+          real(fixed_res) = real(fixed_res) * real(pData->FB31);
+          end;
+        end; /* fixed_result */ 
+  
+      else if decimal_result then do;
+        real(decimal_res) = real(decimal_res) * real(pData->FD18);
+        end; /* decimal */
+  
+      else do;                          /* float result              */
+        if arg_size = 4 then do;
+          real(float_res) = real(float_res) * real(pData->LB23);
+          end;
+        else if arg_size = 8 then do;
+          real(float_res) = real(float_res) * real(pData->LB49);
+          end;
+        else do;
+          real(float_res) = real(float_res) * real(pData->LB64);
+          end;      
+        end; /* float */
+  
+      end; /* real result */
+
+    else do;                            /* Complex                   */
+
+      /*-------------------------------------------------------------*/
+      /* Let x, y, and z be complex. x=y*z is defined as:            */
+      /*     real(x) = real(y)*real(z) - imag(y)*imag(z)             */
+      /*     imag(x) = imag(y)*real(z) + real(y)*imag(z)             */
+      /*-------------------------------------------------------------*/
+      if fixed_result then do;
+        if pDesc->XB_prec<=7       then tempx1 = pData->FB7;
+        else if pDesc->XB_prec<=15 then tempx1 = pData->FB15;
+        else                            tempx1 = pData->FB31;
+        if first_time then tempx2 = tempx1;
+        else do;
+          real(tempx2) = real(fixed_res) * real(tempx1) -
+                         imag(fixed_res) * imag(tempx1);
+          imag(tempx2) = imag(fixed_res) * real(tempx1) +
+                         real(fixed_res) * imag(tempx1);
+          end; 
+        fixed_res = tempx2;
+        end; /* fixed */
+  
+      else if decimal_result then do;
+        if first_time then tempd2 = pData->FD18;
+        else do;
+          real(tempd2) = real(decimal_res) * real(decimal_res) -
+                         imag(decimal_res) * imag(decimal_res);
+          imag(tempd2) = imag(decimal_res) * real(decimal_res) +
+                         real(decimal_res) * imag(decimal_res);
+          end;
+        decimal_res = tempd2;
+        end; /* decimal */
+  
+      else do;                          /* float result              */
+        if arg_size = 4      then templ1 = pData->LB23;
+        else if arg_size = 8 then templ1 = pData->LB49;
+        else                      templ1 = pData->LB64;
+        if first_time then templ2 = templ1;
+        else do;
+          real(templ2) = real(float_res) * real(templ1) -
+                         imag(float_res) * imag(templ1);
+          imag(templ2) = imag(float_res) * real(templ1) +
+                         real(float_res) * imag(templ1);
+          end; 
+        float_res = templ2;
+        end; /* float */
+
+      end; /* complex result */
+   
+    end prod;
+
+  end process;
+
+  %include desc;
+
+  end Sum;  
+

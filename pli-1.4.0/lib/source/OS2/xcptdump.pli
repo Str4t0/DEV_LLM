@@ -1,0 +1,185 @@
+ /********************************************************************/
+ /*           Piping Rock PL/I Runtime Library Version 0.7           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        XCPTDump (PL/I Runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2008                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_XDump                                   */
+ /*                                                                  */
+ /*      Function:      This procedure is called from PLIDUMP to     */
+ /*                     dump the OS/2 Exception Report Record and    */
+ /*                     Context Record.  It is separate from PLIDUMP */
+ /*                     because the format of these control blocks   */
+ /*                     will be OS-dependent.                        */
+ /*                                                                  */
+ /*                     This procedure is required because the       */
+ /*                     standard trap information is not printed     */
+ /*                     when an ERROR ON-Unit is provided.           */
+ /*                                                                  */
+ /*                     XCPTDump is called when the DSA for          */
+ /*                     _pli_Trap is encountered while dumping       */
+ /*                     the stack.  The system passes the address    */
+ /*                     of the Exception Report Record and Context   */
+ /*                     Record to Trap (see comments in trap.asm).   */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     OS/2 Exception Report Record and Context     */
+ /*                     Record.                                      */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2010-03-11: Replace WriteLn with display.          0.9.0*/
+ /*                                                                  */
+ /********************************************************************/
+ XCPTDump: proc(xPtr)
+           ext( '_pli_XDump' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xPtr                ptr;      /* ->Trap parameter list      */
+
+ /*-------------------------*/
+ /* Automatic Storage       */
+ /*-------------------------*/
+ dcl     pX                  ptr;      /* ->Exception Report Record  */
+ dcl     pC                  ptr;      /* ->Context Record           */
+ dcl     err_code            char(4);
+ dcl    (swp_reg,swp_seg)    char(4);
+ dcl     line                char(80) varying;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ /* Values for 'ContextFlags'                                        */
+ dcl     CONTEXT_CONTROL        bit(32) static init( '01000000'bx );
+ dcl     CONTEXT_INTEGER        bit(32) static init( '02000000'bx );
+ dcl     CONTEXT_SEGMENTS       bit(32) static init( '04000000'bx );
+ dcl     CONTEXT_FLOATING_POINT bit(32) static init( '08000000'bx );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl   1 Trap_Parms          based,    /* Trap parameter list        */
+         5 pXcptRptRec       ptr,      /* ->Exception Report Record  */
+         5 pXcptRegRec       ptr,      /* ->Exception Registration Re*/
+         5 pCtxtRec          ptr,      /* ->Context Record           */
+         5 pDsptchCtxt       ptr;      /* ->Dispatcher Context       */
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+
+ dcl    (addr,hbound,string) builtin;
+
+ pX = xPtr->pXcptRptRec;               /* Get control block addresses*/
+ pC = xPtr->pCtxtRec;
+ err_code = bsw( addr( pX->ExceptionNum) );
+ display( 'OS/2 System Trap Information' );
+ line = '  System Code=' || heximage(addr(err_code),4) || ' ' ||
+        xcpt_name(err_code);
+ display( line );
+ swp_reg = bsw( addr(pX->ExceptionAddress) );
+ line = '  Exception Address=' || heximage(addr(swp_reg),4);
+ display( line );
+
+ if (pC->ctx_flags&CONTEXT_INTEGER)ª='00000000'bx then do;
+   line =         '  EAX ' || heximage(addr(pC->ctx_RegEax),4);
+   line = line || '  EBX ' || heximage(addr(pC->ctx_RegEbx),4);
+   line = line || '  ECX ' || heximage(addr(pC->ctx_RegEcx),4);
+   line = line || '  EDX ' || heximage(addr(pC->ctx_RegEdx),4);
+   display( line );
+   line =         '  ESI ' || heximage(addr(pC->ctx_RegEsi),4);
+   line = line || '  EDI ' || heximage(addr(pC->ctx_RegEdi),4);
+   display( line );
+   end; /* CONTEXT_INTEGER */
+
+ if (pC->ctx_flags&CONTEXT_SEGMENTS)ª='00000000'bx then do;
+   swp_seg = bsw( addr(pC->ctx_SegDs ));
+   line =         '  DS  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+   swp_seg = bsw( addr(pC->ctx_SegEs ));
+   line = line || '  ES  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+   swp_seg = bsw( addr(pC->ctx_SegFs ));
+   line = line || '  FS  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+   swp_seg = bsw( addr(pC->ctx_SegGs ));
+   line = line || '  GS  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+   display( line );
+   end; /* CONTEXT_SEGMENTS */
+
+ if (pC->ctx_flags&CONTEXT_CONTROL)ª='00000000'bx then do;
+   swp_reg = bsw( addr(pC->ctx_RegEip) );
+   swp_seg = bsw( addr(pC->ctx_SegCs ));
+   line =         '  CS:EIP ' || heximage(addr(swp_seg)+2,2) ||
+                            ':' || heximage(addr(swp_reg),4);   
+   swp_reg = bsw( addr(pC->ctx_RegEsp) );
+   swp_seg = bsw( addr(pC->ctx_SegSs ));
+   line = line || '  SS:ESP ' || heximage(addr(swp_seg)+2,2) ||
+                            ':' || heximage(addr(swp_reg),4);   
+   swp_reg = bsw( addr(pC->ctx_RegEbp) );
+   line = line || '  EBP ' || heximage(addr(swp_reg),4);
+   display( line );
+   /* NOTE: Should probably interpret EFLAGS register.               */
+   swp_reg = bsw( addr(pC->ctx_EFlags) );
+   line =          '  EFLAGS ' || heximage(addr(swp_reg),4);
+   display( line );
+   end; /* CONTEXT_CONTROL */
+
+ if (pC->ctx_flags&CONTEXT_FLOATING_POINT)ª='00000000'bx then do;
+   line =         '  FPCW ' || heximage(addr(pC->ctx_Env)+00,2) || (4)' ';
+   line = line || '  FPSW ' || heximage(addr(pC->ctx_Env)+04,2) || (4)' ';
+   line = line || '  TAG  ' || heximage(addr(pC->ctx_Env)+08,2) || (4)' ';
+   display( line );
+   swp_reg = bsw( addr(pC->ctx_Env)+12 );
+   line =         '  IP   ' || heximage(addr(pC->ctx_Env)+16,2) ||
+                        ':' || heximage(addr(swp_reg),4);   
+   line = line || '  OPC  ' || heximage(addr(pC->ctx_Env)+18,2) || (4)' ';
+   display( line );
+   swp_reg = bsw( addr(pC->ctx_Env)+20 );
+   line =         '  OP   ' || heximage(addr(pC->ctx_Env)+24,2) ||
+                        ':' || heximage(addr(swp_reg),4);   
+   display( line );
+   /* NOTE: Should also dump R0 thru R7 in hex, and indicate which   */
+   /*       is currently ST(0), etc.                                 */
+   end; /* CONTEXT_FLOATING_POINT */
+
+ display('');
+
+ return;
+
+
+ /*------------------------------------------------------------------*/
+ /*      Swap byte-order for display                                 */
+ /*------------------------------------------------------------------*/
+ bsw: proc(p) returns( char(4) );
+   dcl   p                   ptr;
+   dcl   cx               (4)char(1)   based(p);
+   dcl   cy               (4)char(1);
+   cy(4) = cx(1);            /* OR cy = reverse(cx)                  */
+   cy(1) = cx(4);
+   cy(3) = cx(2);
+   cy(2) = cx(3);
+   return( string(cy) );
+   end bsw;
+
+ /*------------------------------------------------------------------*/
+ /*      Look up OS/2 exception name                                 */
+ /*------------------------------------------------------------------*/
+ xcpt_name: proc(code) returns( char(30) varying );
+   dcl   code                char(4);
+   dcl   i                   fixed bin(7);
+   do i=1 to hbound(os2_xcpt_code,1);
+     if code = os2_xcpt_code(i) then leave;
+     if code = 'FFFFFFFF'x      then leave;
+     end; /* do i */
+   return( os2_xcpt_name(i) );
+   end xcpt_name;
+
+ %include exrptrec;
+ %include xcpt;
+
+ end XCPTDump;
+

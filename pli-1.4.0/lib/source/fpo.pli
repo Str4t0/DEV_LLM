@@ -1,0 +1,282 @@
+ /* _pli_FPO                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        FPO     (PL/I runtime)                       */
+ /*      Version:       0.9.1                                        */
+ /*      Date:          May, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_FPO                                     */
+ /*                                                                  */
+ /*      Function:      Convert internal float (decimal) to          */
+ /*                     numeric picture.                             */
+ /*                                                                  */
+ /*      Dependencies:  Intel BCD format                             */
+ /*                     Version 1.0 DED formats                      */
+ /*                                                                  */
+ /*                     This program assumes that all pictures are   */
+ /*                     correct (verified during compilation).       */
+ /*                     Unpredictable results may occur otherwise.   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Result field                      |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Picture Descriptor                |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Float Data                        |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Result stored at address passed as 3rd arg.  */
+ /*                                                                  */
+ /*      Operation:     FPO operates by splitting the float picture  */
+ /*                     into a mantissa and an exponent part, and    */
+ /*                     calling NPO to edit each part separately.    */
+ /*                                                                  */
+ /*      Called From:   Compiled code, Stream output.                */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*           . SIZE condition not being checked or handled.         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ FPO: proc(pFlt,dPIC,pPic)
+      external( '_pli_FPO' )
+      options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFlt                ptr;     /* ->Float data                */
+ dcl     dPIC                ptr;     /* ->Picture Descriptor        */
+ dcl     pPIC                ptr;     /* ->Picture data              */
+
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl   desc_work           char(8);    /* Should be stg(pli_ded_LD)  */
+ dcl   XD_work             char(4);    /* Should be stg(pli_ded_XD)  */
+ dcl   NP_work             char(520);  /* 512 + stg(pli_ded_NP)      */
+ dcl   1 float_workarea   (2)based(pFlt),
+         5 float_frac        fixed dec(18),
+         5 float_exp         fixed bin(15);
+ dcl   pic_integer_digits    fixed bin(31);
+ dcl   scale                 fixed bin(31);
+ dcl   s                     fixed bin(31);
+ dcl   pl                    fixed bin(31); /* Picture length        */       
+ dcl  (pIn,pWrk,pRes)        ptr;
+ dcl   bHaveK                bit(1)              init( '0'b );
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     PicStr              char(512)           based;
+ dcl     DecDesc             char(4)             based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     SetFlags            entry( bit(16) )
+                             ext( '_pli_SetFlags' )
+                             options( linkage(system) );
+ dcl     NPO                 entry( ptr, char(4), ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_NPO' );
+
+ /*------------------------------------------------------------------*/
+ /*      Program Begins Here                                         */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled cond           */
+ call SetFlags( string(cond_mask) );   /* Set for called rtns        */
+ pIn  = addr(dPic->NP_pic);
+ pWrk = addr(addr(NP_work)->NP_pic);
+
+ /*-------------------------*/
+ /* Normalize the mantissa  */
+ /*-------------------------*/
+ pic_integer_digits = dPic->NP_prec - dPic->NP_scale;
+ scale = 17;
+ if pic_integer_digits>1 then do;
+   scale = scale - pic_integer_digits + 1;
+   float_exp(1) = float_exp(1) - pic_integer_digits + 1;
+   end;
+
+ /*-------------------------*/
+ /* Set up descriptors      */
+ /*-------------------------*/
+ call plifill( addr(XD_work), '00'x, stg(XD_work) );
+ addr(XD_work)->XD_id = '42'x;
+ /* For the time being -- only REAL   */
+ addr(XD_work)->XD_prec  = 18;
+ addr(XD_work)->XD_scale = scale;
+ call plifill( addr(NP_work), '00'x, stg(NP_work) );
+ addr(NP_work)->NP_id = '45'x;         /* Fixed picture              */
+ addr(NP_work)->NP_prec  = dPic->NP_prec;
+ addr(NP_work)->NP_scale = dPic->NP_scale;
+ /* Extract the fixed portion of the picture                         */
+ do pl=1 to dPic->NP_piclen;
+   if substr(pIn->PicStr,pl,1)=pc_E |
+      substr(pIn->PicStr,pl,1)=pc_K
+   then leave;
+   end; /* do pl */
+ if pl<2 | pl>dPic->NP_piclen then signal ERROR;   /* SNO            */
+ /* pl -> 'E' or 'K'                  */
+
+ /*-------------------------*/
+ /* Edit the mantissa       */
+ /*-------------------------*/
+ s = pl-1;                             /* Output picture length      */
+ substr(pWrk->PicStr,1,s) = substr(pIn->PicStr,1,s);
+ addr(NP_work)->NP_piclen = s;
+ addr(NP_work)->NP_size   = s;
+ call NPO( addr(float_frac(1)), XD_work, addr(NP_work), pPic );
+
+ /* Add E if desired */ 
+ pPic = pPic+pl-1;                     /* Adjust output address      */
+ if substr(pIn->PicStr,pl,1)=pc_K
+ then bHaveK = '1'b;                   /* Indicate 'K' in picture    */
+ if substr(pIn->PicStr,pl,1)=pc_E then do;
+   substr(pPic->PicStr,1,1)='E';
+   pPic = pPic+1;
+   end;
+
+ /*-------------------------*/
+ /* Edit the exponent       */
+ /*-------------------------*/
+ float_frac(1) = float_exp(1);         /* Adjust exp for pic scale   */
+ s = dPic->NP_piclen-pl;               /* Length of exponent picture */
+ pl = pl+1;                            /* Skip over 'E' or 'K'       */
+ substr(pWrk->PicStr,1,s) = substr(pIn->PicStr,pl,s);
+ addr(NP_work)->NP_prec   = s;
+ addr(NP_work)->NP_scale  = 0;
+ addr(NP_work)->NP_piclen = s;
+ if substr(dPic->NP_flags,2,1)='1'b then do;
+   addr(NP_work)->NP_flags = '80'bx;   /* Signed Exponent            */
+   addr(NP_work)->NP_prec  = s-1;
+   end;
+ else addr(NP_work)->NP_flags = '00'bx;
+ addr(NP_work)->NP_size   = s;
+ addr(XD_work)->XD_prec  = 9;          /* (some large number)        */
+ addr(XD_work)->XD_scale = 0;
+ call NPO( addr(float_frac(1)), XD_work, addr(NP_work), pPic );
+ return;
+
+ /*------------------------------------------------------------------*/
+ /* Convert FLOAT BINARY to FLOAT DECIMAL                            */
+ /* (only the descriptor is converted)                               */
+ /*------------------------------------------------------------------*/
+ float_bin_to_dec: proc( pDesc, pData );
+   dcl   pDesc               ptr;
+   dcl   pData               ptr;
+   dcl   prec                fixed bin(7);                 /*20060919*/
+   dcl   desc_work           char(8);  /* Should be stg(pli_ded_LD)  */
+
+   call plifill( addr(desc_work), '00'x, stg(desc_work) ); /*20060919*/
+   prec  = B2D(pDesc->XB_prec);                            /*20060919*/
+   addr(desc_work)->LD_id   = '44'x;                       /*20060919*/
+   addr(desc_work)->LD_prec = prec;                        /*20060919*/
+   call plimove( addr(XD_work),                            /*20100624*/
+                 addr(desc_work),                          /*20060919*/
+                 stg(desc_work) );                         /*20060919*/
+
+   end float_bin_to_dec;
+
+ /*------------------------------------------------------------------*/
+ /* B2D: Convert number of binary digits to number of decimal digits */
+ /*------------------------------------------------------------------*/
+ B2D: proc(n) returns( fixed bin(7) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   do i=1 to 33;
+     if w<n_3dot32(i) then leave;                             /*0.9.3*/
+     end;
+   if neg then i=-i;
+   return(i);
+   end B2D;
+
+ %page;
+/********************************************************************/
+ /*                                                                  */
+ /*      Module:        Picture Character Definitions                */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2002                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Defines values of characters in internal     */
+ /*                     coded pictures.                              */
+ /*                                                                  */
+ /*                     There is supposed to be some logic to how    */
+ /*                     these are defined:                           */
+ /*                                                                  */
+ /*                     The picture characters 'V' and 'K' are       */
+ /*                     not stored.                                  */
+ /*                                                                  */
+ /*      Dependencies:  None.                                        */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2005-07-19 - Drifting vs. nondrifting renamed and       */
+ /*                       values changed to agree with compiler.     */
+ /*                                                                  */
+ /********************************************************************/
+
+ dcl   1 Picture_Chars       static,   /* Picture char definitions   */
+         5 pc_9              char(1)             init( '82'x ),
+         5 pc_Z              char(1)             init( '90'x ),
+         5 pc_Ast            char(1)             init( '91'x ),
+         5 pc_Com            char(1)             init( 'A0'x ),
+         5 pc_Per            char(1)             init( 'A1'x ),
+         5 pc_Sl             char(1)             init( 'A2'x ),
+         5 pc_B              char(1)             init( 'A3'x ),
+         5 pc_Sn             char(1)             init( '93'x ),
+         5 pc_Pls            char(1)             init( '94'x ),
+         5 pc_Min            char(1)             init( '95'x ),
+         5 pc_T              char(1)             init( 'B3'x ),
+         5 pc_I              char(1)             init( 'B4'x ),
+         5 pc_R              char(1)             init( 'B5'x ),
+         5 pc_CurNd          char(1)             init( 'A4'x ),
+         5 pc_CRC            char(1)             init( 'B6'x ),
+         5 pc_CRR            char(1)             init( 'B7'x ),
+         5 pc_DBD            char(1)             init( 'B8'x ),
+         5 pc_DBB            char(1)             init( 'B9'x ),
+         5 pc_Y              char(1)             init( '83'x ),
+         5 pc_A              char(1)             init( '80'x ),
+         5 pc_X              char(1)             init( '81'x ),
+         5 pc_E              char(1)             init( 'A6'x ),/*0609*/
+         5 pc_K              char(1)             init( 'A7'x ),/*1005*/
+         /* Drifting Characters                                      */
+         5 pc_SnDr           char(1)             init( 'B0'x ),
+         5 pc_PlsDr          char(1)             init( 'B1'x ),
+         5 pc_MinDr          char(1)             init( 'B2'x ),
+         5 pc_CurDr          char(1)             init( 'A5'x );
+
+ %include N3DOT32;
+ %include BCDINC;
+ %include DESC;
+
+ end FPO;

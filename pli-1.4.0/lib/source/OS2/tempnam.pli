@@ -1,0 +1,125 @@
+ /* _pli_Tempnam                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Tempnam (PL/I runtime)                  */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Tempnam                                 */
+ /*                                                                  */
+ /*      Function:      Tempnam is the rough equivalent of the C     */
+ /*                     _tempnam function.  It generates a unique    */
+ /*                     name for a temporary file.                   */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     OS/2 DosSearchPath                           */
+ /*                                                                  */
+ /*                     Requires a filesystem capable of supporting  */
+ /*                     long filenames (i.e. not FAT).               */
+ /*                                                                  */
+ /*      Restrictions:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     dcl tempnam entry( char(*) varying,          */
+ /*                                        char(*) varying,          */
+ /*                                        char(*) varying )         */
+ /*                                 returns( char(260) varying );    */
+ /*                     name = tempnam( dir, prefix, suffix );       */
+ /*                   . dir is the directory in which the file       */
+ /*                     is to be created.  If this is the null       */
+ /*                     string, the current working dir is used.     */
+ /*                   . prefix is the prefix to be used for the      */
+ /*                     generated name, or the null string.          */
+ /*                   . suffix is the suffix to be used for the      */
+ /*                     generated name, or the null string.          */
+ /*                                                                  */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2010-06-28: Change to use OSGetProcInfo.           0.9.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Tempnam: proc(sDir,sPfx,sSfx)
+              returns( char(260) varying )
+              ext( '_pli_Tempnam' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    (sDir,sPfx,sSfx)     char(*) varying;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl   1  procinfo,           /* like pliprocinfo               0.9.1*/
+          5 pi_len            fixed bin(31),                  /*0.9.1*/
+          5 pi_pid            fixed bin(31),                  /*0.9.1*/
+          5 pi_tid            fixed bin(31);                  /*0.9.1*/
+ dcl     RC                  fixed bin(31);
+ dcl     unique_id           fixed bin(31);
+ dcl     filename            char(260) varying;
+ dcl     flag                bit(32);
+         /* '01000000'bx (bit 8) SEARCH_CUR_DIRECTORY                */
+         /* '02000000'bx (bit 7) SEARCH_ENVIRONMENT                  */
+         /* '04000000'bx (bit 6) SEARCH_IGNORENETERRS                */
+ dcl    (szPathOrName,szFilename,Buf)
+                             char(260);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ /* This value is only incremented atomically by '_pli_INC'          */
+ dcl     accumulator         fixed bin(31)  static    init(0);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetProcInfo         entry( ptr )                     /*0.9.1*/
+                             returns( fixed bin(31) )         /*0.9.1*/
+                             external( '_pli_OSGetProcInfo' ) /*0.9.1*/
+                             options( LINKAGE(SYSTEM) );      /*0.9.1*/
+ dcl     DosSearchPath       entry( bit(32),       /* flag           */
+                                    ptr,           /* pszPathorName  */
+                                    ptr,           /* pszFilename    */
+                                    ptr,           /* pBuf           */
+                                    fixed bin(31) )  /* cbBuf        */
+                             external( 'DosSearchPath' )
+                             returns( fixed bin(31) ) /* unsigned */
+                             options( asm linkage(system) );
+ dcl     inc                 entry( ptr )
+                             external( '_pli_INC' )
+                             returns( fixed bin(31) )
+                             options( linkage(system) );
+
+ dcl    (addr,allocate,heximage,null,plifree,stg,string,substr,sysnull)
+                             builtin;
+
+ pi_len = stg(procinfo);               /* (short control blk)   0.9.1*/
+ RC = GetProcInfo( addr(procinfo) );   /* Get current proc info 0.9.1*/
+ if sDir='' then flag = '05000000'bx;
+ else            flag = '04000000'bx;
+ szPathOrName = sDir || '00'x;
+
+ /*-------------------------------------------------------*/
+ /* Build the filename as <pfx>pid-tid-uniqueid<sfx>      */
+ /*-------------------------------------------------------*/
+ do while( '1'b );                     /* Until unique name gen'd    */
+   unique_id = inc( addr(accumulator) ); /* Get unique value         */
+   filename = sPfx || heximage(addr(pi_pid),4) || '-'         /*0.9.1*/
+                   || heximage(addr(pi_tid),4) || '-'         /*0.9.1*/
+                   || heximage(addr(unique_id),4) || sSfx;
+   szFileName = filename || '00'x;
+   RC = DosSearchPath( flag, addr(szPathOrName), addr(szFileName),
+                       addr(Buf), stg(buf) );
+   if RC=2  then return(filename);     /* 2=ERROR_FILE_NOT_FOUND     */
+   if RCª=0 then return('');           /* Anything else is real error*/
+   end; /* do while */
+
+ %page;
+
+ end pli_Tempnam;

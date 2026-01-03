@@ -1,0 +1,132 @@
+/*********************************************************************/
+/* SORTTEST1: Test PLISRTD                                           */
+/*            This program gives an example of how the sort control  */
+/*            statements can be built dynamically instead of         */
+/*            statically.                                            */
+/*                                                                   */
+/*            This is a slightly more complex version of the sample  */
+/*            code from the sort documentation                       */
+/*            "Iron-SpringSortRoutine.pdf".                          */
+/*                                                                   */
+/* It should be called with one of the following parameters          */
+/* indicating the field to be sorted on:                             */
+/*            stock_number                                           */
+/*            sale_amount                                            */
+/*            customer_name                                          */
+/*********************************************************************/
+st1: procedure(field) options(main); 
+  dcl     field               char(16)  varying;
+
+  dcl     sortin              record input  
+                              env( F TEXT  RECSIZE(64) );
+  dcl     SYSPRINT            print;
+  dcl     rc                  fixed bin(31);
+			      
+  dcl   1 sales_detail_rec    unaligned based,
+          5 stock_number      fixed bin(15),
+	  5 sale_amount       fixed dec(7,2),
+	  5 customer_name,
+	    10 last           char(32),
+	    10 first          char(16),
+	  5 fil               char(4);
+	  
+  dcl     fn                  char(16)  varying;
+  dcl   1 sort_param       (3),
+          5 field_name        char(16)  varying   init(
+	        'STOCK_NUMBER', 'SALE_AMOUNT', 'CUSTOMER_NAME' ),
+          5 field_type        char(2)             init(
+	         'FI', 'PD', 'CH' ),		
+          5 field_pos         fixed bin(15),
+	  5 field_len         fixed bin(15);		
+  
+  dcl   sortmsg_dd            ptr       external;    
+  dcl   sortmsg_title  char(64) varying static init( 'sortmsg' );
+  dcl   i                     fixed bin(31);
+
+  dcl   PLISRTD               builtin;
+		    
+  dcl  (srt,rec)              char(64)   varying;
+     
+  sortmsg_dd = addr(sortmsg_title); 		    
+ 
+  put skip list( 'TEST PLISRTD' ); 
+
+  /* Get sort key parm and validate */
+  fn = translate(field,'ABCDEFGHIJKLMNOPQRSTUVWXYZ_',
+                       'abcdefghijklmnopqrstuvwxyz_' );
+  do i = 1 to hbound(field_name);
+    if fn = field_name(i) then leave;
+    end; /* do i */
+  if i>hbound(field_name) then do;
+    put skip list( 'Unknown sort key ' || field );
+    put skip list( 'Must be one of ' );
+    do i=1 to hbound(field_name);
+      put edit( field_name(i) )(a);
+      if i<hbound(field_name)
+      then put edit( ', ' )(a);
+      end;	
+    return;
+    end;
+			      
+  /* Set up field positions and lengths in table */
+  field_pos(1) = addr(null()->stock_number) - 
+                 addr(null()->sales_detail_rec) + 1;
+  field_pos(2) = addr(null()->sale_amount) - 
+                 addr(null()->sales_detail_rec) + 1;
+  field_pos(3) = addr(null()->customer_name) - 
+                 addr(null()->sales_detail_rec) + 1;
+		 
+  field_len(1) = stg(null()->stock_number);		 
+  field_len(2) = stg(null()->sale_amount);		 
+  field_len(3) = stg(null()->customer_name);
+  
+  /* Build SORT and RECORD statements */
+  put string(srt) edit( ' SORT FIELDS=(', field_pos(i), ',',
+                        field_len(i), ',', field_type(i),
+			',A) ' )
+		      (a,p'999',a,
+		       p'999',a,a,a,);
+  put string(rec) edit( ' RECORD TYPE=V,LENGTH=(',
+                        stg(null()->sales_detail_rec),') ' )
+		       (a,p'999',a);
+  put skip list( 'SORT statement: "'   || srt || '"' );
+  put skip list( 'RECORD statement: "' || rec || '"' );
+  put skip;
+   
+  /* Call the sort */
+  call PLISRTD( srt, rec, 0, rc, E15, E35 );
+  put skip edit( 'Sort completed, rc=', rc )(a,p'z9');
+   
+  E15: proc returns( char(256) varying );
+    dcl   input_rec           char(64)  varying;
+    dcl   first_time          bit(1)    static    init( '1'b );
+    on endfile(sortin) begin;
+      close file(sortin);
+      call pliretc(8);
+      return( ' ' );
+      end;
+    if first_time then do;
+      first_time = '0'b;
+      open file(sortin) title( 'sort.dat' );
+      end; /* first_time */
+    read file(sortin) into(input_rec);
+    call pliretc(12);
+    return( input_rec ); 
+  end E15; 
+    
+ E35: proc( inrec );
+   dcl    inrec               char(*);
+   dcl    p                   ptr;
+   dcl   first_time           bit(1)    static    init( '1'b );
+    if first_time then do;
+      first_time = '0'b;
+      put skip list( 'Sorted data:' );
+      end; /* first_time */
+   p = addr(inrec);               
+   put skip edit( p->stock_number, p->sale_amount, 
+                  p->customer_name.last, p->customer_name.first )
+		( p'zzz9B',p'$$$,$$$v.99B',a,x(1),a );
+   call pliretc(4); /* give me another record */ 
+   end E35;   
+	
+  end st1;

@@ -1,0 +1,110 @@
+ /* _pli_IOStat                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_IOStat (PL/I runtime)                   */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jan, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_IOStat                                  */
+ /*                                                                  */
+ /*      Function:      I/O Status function for ON-conditions.       */
+ /*                                                                  */
+ /*      The ON-condition handler for I/O conditions is entered      */
+ /*      with the FCB locked if the condition was raised from        */
+ /*      an I/O routine.  If raised from open code the status of     */
+ /*      the FCB is indeterminate.                                   */
+ /*                                                                  */
+ /*      IOStat is called from the ON-condition handler to           */
+ /*      retrieve status information and unlock the FCB.             */
+ /*                                                                  */
+ /*      This procedure is the poster child for calling PL/I         */
+ /*      "intrinsics" (address in the PGT) from outside of           */
+ /*      compiled code.                                              */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Format of I/O Request Block (IORB)           */
+ /*                     (coded her as 'mini_IORB').                  */
+ /*                     Format of PL/I ENTRY variable                */
+ /*                     IOR calling convention                       */
+ /*                     Layout of PGT                                */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = _pli_IOStat( addr(file) )               */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                   . Reference to PGT(30) should be changed to    */
+ /*                     use the 'intrin' include.                    */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_IOStat: proc(pFile)
+             returns( ptr )
+             options( linkage(system) )
+             ext( '_pli_IOStat' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pFile               ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     pDSA                ptr;
+ dcl     pPGT                ptr;
+ dcl     pStat               ptr;
+ dcl     pIOR                entry( ptr )
+                             returns( ptr )
+                             options( linkage(system) )
+                             variable;
+ dcl   1 mini_IORB,
+         5 IOR_Ver           fixed bin(15),
+         5 IOR_Func          fixed bin(15),
+         5 IOR_pFile         ptr;
+
+ dcl     PGT          (0:127)ptr based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+
+ dcl     GetDSA              entry
+                             returns( ptr )
+                             options( linkage(system) )
+                             ext( '_pli_GetDSA' );
+
+ dcl    (addr,low,stg,string,sysnull)
+                             builtin;
+
+ /*-----------------------------------*/
+ /* Program entry                     */
+ /*-----------------------------------*/
+ pDSA = GETDSA();                      /* Get my DSA address         */
+ pDSA = pDSA - stg( SYSNULL->dsa_below_ebp );
+ pPGT = pDSA->dsa_edi;                 /* -> PGT                     */
+ addr(pIOR)->ent_entry_point = pPGT->PGT(30);
+ /* PGT(30) is ic_ior                 */
+ addr(pIOR)->ent_static_DSA  = SYSNULL;
+ IOR_Ver   = 1;                        /* IORB Version               */
+ IOR_Func  = 35;                       /* 35 = retrieve status       */
+ IOR_pFile = pFile;                    /* -> File                    */
+ pStat = pIOR( addr(mini_IORB) );      /* Retrieve status, unlock FCB*/
+
+ return( pStat );                      /* Pass status addr to caller */
+
+ %page;
+ %include entry;
+ %include dsa;
+
+ end pli_IOStat;

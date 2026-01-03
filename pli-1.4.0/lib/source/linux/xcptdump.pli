@@ -1,0 +1,170 @@
+ /* XCPTDump - dump exception information                            */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.7           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                    Linux version of XcptDump                     */
+ /*                                                                  */
+ /*      Module:        XCPTDump (PL/I Runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2008                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_XDump                                   */
+ /*                                                                  */
+ /*      Function:      This procedure is called from PLIDUMP to     */
+ /*                     dump the Linux context record.  It is        */
+ /*                     separate from PLIDUMP because the format     */
+ /*                     of these control blocks is OS-dependent.     */
+ /*                                                                  */
+ /*                     This procedure is required because the       */
+ /*                     standard trap information is not printed     */
+ /*                     when an ERROR ON-Unit is provided.           */
+ /*                                                                  */
+ /*                     XCPTDump is called when the DSA for          */
+ /*                     _pli_Trap is encountered while dumping       */
+ /*                     the stack.  The system passes the address    */
+ /*                     of the Exception Report Record and Context   */
+ /*                     Record to Trap (see comments in trap.asm).   */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     OS/2 Exception Report Record and Context     */
+ /*                     Record.                                      */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*          Linux floating point information.                       */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2009-12-14: Replace WriteLn with display.           0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+ XCPTDump: proc(xPtr)
+           ext( '_pli_XDump' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     xPtr                ptr;      /* ->Trap parameter list      */
+
+ /*-------------------------*/
+ /* Automatic Storage       */
+ /*-------------------------*/
+ dcl     pX                  ptr;      /* ->Exception Report Record  */
+ dcl     pC                  ptr;      /* ->Context Record           */
+ dcl     err_code            pic 'zzz9';
+ dcl    (swp_reg,swp_seg)    char(4);
+ dcl     line                char(80) varying;
+ dcl     pVoid               ptr        based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl   1 Trap_Parms          based,    /* Trap parameter list        */
+         5 Signal            fixed bin(31), /*System Signal number   */
+	 5 aSigInfo          ptr,      /* addr(siginfo)      20100224*/
+         5 aContext          ptr;      /* addr(ucontext)     20100224*/                                                                       
+
+ dcl    (addr,hbound,heximage,string) builtin;                 /*0.8c*/
+
+ err_code = xPtr->Signal;
+ pC = xPtr->aContext;                  /* addr(ucontext)     20100224*/
+ pC = addr(pC->uc_mcontext);           /* addr(mcontext)     20100224*/
+ pX = pC->pfpstate;                    /* ->FPU state information    */
+ display( 'Linux System Trap Information' );
+ line = '  System Code=' || err_code || ' ' ||
+        sig_name(err_code);
+ display( line );
+ swp_reg = bsw( addr(pC->eip) );
+ line = '  Exception Address=' || heximage(addr(swp_reg),4);
+ display( line );
+
+ line =         '  EAX ' || heximage(addr(pC->eax),4);
+ line = line || '  EBX ' || heximage(addr(pC->ebx),4);
+ line = line || '  ECX ' || heximage(addr(pC->ecx),4);
+ line = line || '  EDX ' || heximage(addr(pC->edx),4);
+ display( line );
+ line =         '  ESI ' || heximage(addr(pC->esi),4);
+ line = line || '  EDI ' || heximage(addr(pC->edi),4);
+ display( line );
+
+ swp_seg = bsw( addr(pC->ds) );
+ line =         '  DS  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+ swp_seg = bsw( addr(pC->es) );
+ line = line || '  ES  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+ swp_seg = bsw( addr(pC->fs) );
+ line = line || '  FS  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+ swp_seg = bsw( addr(pC->gs ));
+ line = line || '  GS  ' || heximage(addr(swp_seg)+2,2) || (4)' ';
+ display( line );
+
+ swp_reg = bsw( addr(pC->eip) );
+ swp_seg = bsw( addr(pC->cs ));
+ line =         '  CS:EIP ' || heximage(addr(swp_seg)+2,2) ||
+                        ':' || heximage(addr(swp_reg),4);   
+ swp_reg = bsw( addr(pC->esp_at_signal) );
+ swp_seg = bsw( addr(pC->ss ));
+ line = line || '  SS:ESP ' || heximage(addr(swp_seg)+2,2) ||
+                        ':' || heximage(addr(swp_reg),4);   
+ swp_reg = bsw( addr(pC->ebp) );
+ line = line || '  EBP ' || heximage(addr(swp_reg),4);
+ display( line );
+ /* NOTE: Should probably interpret EFLAGS register.                 */
+ swp_reg = bsw( addr(pC->eflags) );
+ line =          '  EFLAGS ' || heximage(addr(swp_reg),4);
+ display( line );
+
+ if pX^=sysnull then do;
+   line =         '  FPCW ' || heximage(addr(pX->cw),2)  || (4)' ';
+   line = line || '  FPSW ' || heximage(addr(pX->sw),2)  || (4)' ';
+   line = line || '  TAG  ' || heximage(addr(pX->tag),2) || (4)' ';
+   display( line );
+   swp_reg = bsw( addr(pX->ipoff) );
+   line =         '  IP   ' || heximage(addr(pX->cssel),2) ||
+                        ':' || heximage(addr(swp_reg),4);   
+   line = line || '  OPC  ' || heximage(addr(pX->cssel)+2,2) || (4)' ';
+   display( line );
+   swp_reg = bsw( addr(pX->dataoff) );
+   line =         '  OP   ' || heximage(addr(pX->datasel),2) ||
+                        ':' || heximage(addr(swp_reg),4);   
+   display( line );
+   /* NOTE: Should also dump R0 thru R7 in hex, and indicate which   */
+   /*       is currently ST(0), etc.                                 */
+   end; /* CONTEXT_FLOATING_POINT */
+
+ display('');
+
+ return;
+
+
+ /*------------------------------------------------------------------*/
+ /*      Swap byte-order for display                                 */
+ /*------------------------------------------------------------------*/
+ bsw: proc(p) returns( char(4) );
+   dcl   p                   ptr;
+   dcl   cx               (4)char(1)   based(p);
+   dcl   cy               (4)char(1);
+   cy(4) = cx(1);            /* OR cy = reverse(cx)                  */
+   cy(1) = cx(4);
+   cy(3) = cx(2);
+   cy(2) = cx(3);
+   return( string(cy) );
+   end bsw;
+
+ /*------------------------------------------------------------------*/
+ /*      Look up Linux Signal Name                                   */
+ /*------------------------------------------------------------------*/
+ sig_name: proc(code) returns( char(30) varying );
+   dcl   code                fixed bin(31);
+   if code<1 | code>sig_max then code=sig_max;
+   return( sig_desc(code) );
+   end sig_name;
+
+ %include sigcontext;
+ %include ucontext;
+ %include sig_txt;
+
+ end XCPTDump;
+

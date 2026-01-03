@@ -1,0 +1,158 @@
+ /* _pli_OSOpen                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSOpen (PL/I runtime)  [OS/2]           */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSOpen                                  */
+ /*                                                                  */
+ /*      Function:      Operating system dependent open logic.       */
+ /*                                                                  */
+ /*      This is a revised version of 'OSOpen' that uses a more      */
+ /*      C-like interface.  OS/2's DosOpen provides a similar level  */
+ /*      of abstraction that's missing on bare-metal Linux.          */
+ /*      This routine will either call DosOpen or the Linux system   */
+ /*      service.                                                    */
+ /*                                                                  */
+ /*      OSOpen is called by the open mainline (_pli_Open) to        */
+ /*      perform an operating system open after the FCB has          */
+ /*      been constructed.                                           */
+ /*      If the open is successful, the positive file descriptor     */
+ /*      is returned.                                                */
+ /*      If the open is not successful, an error code (currently     */
+ /*      OS-dependent) is returned.                                  */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Linux: SYSCALL                               */
+ /*                     OS/2:  DosOpen                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = _pli_OSOpen( pTitle,                    */
+ /*                                       bFileMode,                 */
+ /*                                       bPerm )                    */
+ /*                     pTitle    = The address of the 'title'       */
+ /*                                 string (filename).               */
+ /*                       Note that 'pTitle' must point to a         */
+ /*                       PL/I VARYING string.  The library 'OPEN'   */
+ /*                       routine ensures this.  If OSOpen is called */
+ /*                       directly by a user program, it is the      */
+ /*                       programmer's responsibility to handle.     */
+ /*                     bFileMode = The mode flags (like fcntl).     */
+ /*                     bPerm     = The file's permission bits       */
+ /*                                 (currently unused).              */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2012-09-11: dup FD's for stdin, stdout, strderr.   0.9.4*/
+ /*                                                                  */
+ /********************************************************************/
+ 
+ %replace Path_Max by 1024;                                   /*Linux*/
+
+ pli_OSOpen: proc(pTitle,bFileMode,bPerm)
+               returns( fixed bin(31) )
+	       options( linkage(system) )
+               ext( '_pli_OSOpen' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pTitle              ptr;       /* ->Varying string           */
+ dcl     bFileMode           bit(32);   /* Like fcntl                 */
+ dcl     bPerm               bit(32);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     dummy_string        char(0)   varying   static;
+ dcl     sSTDIN              char(6)   static    init( 'stdin:' );
+ dcl     sSTDOUT             char(7)   static    init( 'stdout:' );
+ dcl     sSTDERR             char(7)   static    init( 'stderr:' );
+ dcl     lowercase           char(26)  static
+                   init( 'abcdefghijklmnopqrstuvwxyz' );
+ dcl     uppercase           char(26)  static
+                   init( 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' );
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS Return code   */
+ dcl     pT                  ptr;
+ dcl     p                   ptr;
+ dcl     title_len           fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     File_Name           char(1024)     varying    based;
+ dcl     zStr                char(2048)                based;
+ dcl     VarStr              char(0)        varying    based;
+ dcl     C1                  char(1)                   based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_OPEN by 5;
+ %replace SYS_DUP  by 41;
+ dcl      syscall	     entry
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( '_pli_Syscall' );
+			     
+ dcl    ( addr,allocate,length,null,plimove,plifree,
+          stg,substr,sysnull,translate
+        )                    builtin;
+
+ title_len = length(pTitle->File_Name);
+ pT = pTitle + stg(null()->VarStr);
+ /* Path_Max includes the terminating '00'x byte    */
+ if title_len>=Path_Max then return(-1);
+ /* Coincidentally, -1 is ' EPERM - operation not permitted.'         */
+
+ /*-------------------------------------------------------*/
+ /* Recognize 'stdin' and 'stdout', and 'stderr'          */
+ /*  and bypass open.                                     */
+ /*-------------------------------------------------------*/
+ if title_len=length(sSTDIN)
+ then if translate(
+                    substr(pT->zStr,1,6), lowercase, uppercase
+                   ) = sSTDIN      
+	then return( dup(0) );          /* fd for stdin         0.9.4*/
+ if title_len=length(sSTDOUT)
+ then if translate(
+                    substr(pT->zStr,1,7), lowercase, uppercase
+                   ) = sSTDOUT
+      then return( dup(1) );           /* fd for stdout         0.9.4*/
+ if title_len=length(sSTDERR)
+ then if translate(
+                    substr(pT->zStr,1,7), lowercase, uppercase
+                   ) = sSTDERR
+        then return( dup(2) );         /* fd for stderr         0.9.4*/
+
+ /*-------------------------------------------------------*/
+ /* Option bits are already in correct format.            */
+ /*-------------------------------------------------------*/
+ p = allocate(title_len+1);            /* Get storage for title      */
+ call plimove(p,pT,title_len);         /* Copy title                 */
+ ptradd(p,title_len)->C1 = '00'x;      /*Add null terminator         */
+
+ RC = syscall( SYS_OPEN, p, bFileMode, bPerm );
+ call plifree(p);                     /* Free the title workarea     */
+ 
+ return(RC);
+ 
+ dup: proc(desc) returns( fixed bin(31) );                    /*0.9.4*/
+   dcl    desc                fixed bin(31);                  /*0.9.4*/
+   dcl    RC                  fixed bin(31);                  /*0.9.4*/
+   RC = syscall( SYS_DUP, desc );                             /*0.9.4*/
+   if RC<0 then signal ERROR;                                 /*0.9.4*/
+   return( RC );                                              /*0.9.4*/
+   end dup;                                                   /*0.9.4*/
+
+ end pli_OSOpen;

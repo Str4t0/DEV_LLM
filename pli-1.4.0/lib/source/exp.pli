@@ -1,0 +1,368 @@
+ /* _pli_EXP                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_EXP (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2006                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_EXP                                     */
+ /*                                                                  */
+ /*      Function:      Exponentiation.                              */
+ /*                     This is not the 'EXP' builtin.               */
+ /*                     (bad choice of name)                         */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Descriptor format.                           */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                    +20 | -> Output descriptor                 |  */
+ /*                        +--------------------------------------+  */
+ /*                    +16 | -> Output area                       |  */
+ /*                        +--------------------------------------+  */
+ /*                    +12 | -> Exponent descriptor               |  */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Exponent value                    |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Base descriptor                   |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Base value                        |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Expression is evaluated and result is        */
+ /*                     returned in output area.                     */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      Restrictions:                                               */
+ /*                     COMPLEX arguments are not allowed.           */
+ /*                                                                  */
+ /*      Errors:        COND(UNIMPLEMENTED)                          */
+ /*                     ERROR                                        */
+ /*                     SIZE (to be implemented later)               */
+ /*      To Do:                                                      */
+ /*                   . This program should check to see whether     */
+ /*                     the caller has OVERFLOW and UNDERFLOW        */
+ /*                     enabled, and ignore or raise them accordingly*/
+ /*                   . There is basically *NO* error checking in    */
+ /*                     this procedure.                              */
+ /*                   . Do powers of two and powers of ten by        */
+ /*                     table lookup.                                */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2009-10-27: Non-integer exponents.                  0.8d*/
+ /*          2009-10-07: Fix exponent for powers of non-integers.0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+  
+ pli_EXP: proc(pBase,pDBase,pExp,pDExp,pRes,pDRes)
+                             external( '_pli_EXP' )
+                             options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pBase               ptr;                     /* -> Base     */
+ dcl     pDBase              ptr;                     /* -> Base Desc*/
+ dcl     pExp                ptr;                     /* -> Exp      */
+ dcl     pDExp               ptr;                     /* -> Exp Desc.*/
+ dcl     pRes                ptr;                     /* -> Result   */
+ dcl     pDRes               ptr;                     /* -> Res Desc.*/
+
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl     pData               ptr;
+ dcl     BaseL               float binary(64);
+ dcl     BaseX               fixed binary(31);
+ dcl     ExpL                float binary(64);             /*20091027*/
+ dcl     ExpX                fixed binary(31);
+ dcl     ResL                float binary(64);
+ dcl     ResX                fixed binary(31);
+ dcl    (Scale,ScaleR,ScaleE) fixed bin(31);               /*20091027*/
+ dcl     ScaleF              float binary(64);             /*20091006*/
+ dcl     base_type           fixed bin(7);
+ dcl     exp_sign            bit(1)              init( '0'b );
+ dcl     exp_type            fixed bin(7);
+ dcl     res_type            fixed bin(7);
+
+ dcl     UNIMPLEMENTED       condition;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18)       based;
+ dcl     FB07                fixed bin(7)        based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB31                fixed bin(31)       based;
+ dcl     LD07                float dec(7)        based;
+ dcl     LD15                float dec(15)       based;
+ dcl     LD20                float dec(20)       based;
+ dcl     LB23                float bin(23)       based;
+ dcl     LB49                float bin(49)       based;
+ dcl     LB64                float bin(64)       based;
+
+ %include CONDMASK;
+
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     pow                 entry( float bin(64), float bin(64) )
+                             returns( float bin(64) )      /*20091027*/
+                             external( '_pli_POW' )        /*20091027*/
+                             options( LINKAGE(SYSTEM) );   /*20091027*/
+                   
+ dcl    (addr,binary,mod,string)
+                             builtin;
+
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ on overflow begin;                                           /*0.9.8*/
+   revert OVERFLOW;                                           /*0.9.8*/
+   if M_overflow then signal OVERFLOW;                        /*0.9.8*/
+   /* Control returns to prior DSA if ofl enabled */
+   end; /* overflow */                                        /*0.9.8*/
+   
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ /*-------------------------*/
+ /* Prime Result            */
+ /*-------------------------*/
+ res_type  = get_type(pDRes);
+ if res_type<=4 then ResX=0;
+ else                ResL=0;
+ ScaleR = 0;                           /* Result scale       20091006*/
+
+ /*-------------------------*/
+ /* Get Exponent            */
+ /*-------------------------*/
+ exp_type  = get_type(pDExp);                              /*20091027*/
+ ScaleE    = Scale;                    /* Save scale         20091027*/
+ if exp_type<=4 then do;                                   /*20091027*/
+   ExpX = get_fixed(pExp,exp_type);                        /*20091027*/
+   end; /* FIXED */                                        /*20091027*/
+ else do;                                                  /*20091027*/
+   ExpL = get_float(pExp,exp_type);                        /*20091027*/
+   end; /* FLOAT */                                        /*20091027*/
+ /*-------------------------*/
+ /* Get Base                */
+ /*-------------------------*/
+ base_type = get_type(pDBase);
+ if base_type<=4 then do;
+   BaseX = get_fixed(pBase,base_type);
+   if BaseX = 0 then goto return_result;/* 0**n is zero              */
+   /* IBM: 0**0 raises ERROR with ONCODE=1550.                       */
+   end; /* FIXED */
+ else do;
+   BaseL = get_float(pBase,base_type);
+   if BaseL = 0 then goto return_result;/* 0**n is zero              */
+   end; /* FLOAT */
+
+ /*-------------------------*/
+ /* Special Cases           */
+ /*-------------------------*/
+ if base_type<=4 then do;    /* FIXED Base                           */
+   if BaseX=0 & ExpX>0
+   then goto return_result;  /* Return(0)                            */
+   if BaseX=0 & ExpX<=0 then SIGNAL ERROR;
+   if BaseX<0 then do;
+     if exp_type>4 |
+        pDExp->XB_scaleª=0
+     then signal ERROR;
+     end;
+   end; /* FIXED */
+ else do;                    /* FLOAT Base                           */
+   if BaseL=0 & ExpX>0
+   then goto return_result;  /* Return(0)                            */
+   if BaseL=0 & ExpX<=0 then SIGNAL ERROR;
+   if BaseL<0 then do;
+     if exp_type>4 |
+        pDExp->XB_scaleª=0
+     then signal ERROR;
+     end;
+   end; /* FLOAT */
+
+ /* If exponent is not FIXED(n,0), special case              20091027*/
+ if exp_type>4 | ScaleEª=0 then do;                        /*20091027*/
+   call non_integer_exp;                                   /*20091027*/
+   goto return_result;  
+   end;
+ /*if p->XB_flgs = '80'x then signal condition(UNIMPLEMENTED);       */
+
+ /*---------------------------------------------*/
+ /* Exponentiate by Repeated Multiplication     */
+ /* EXP returns a FLOAT result except in cases  */
+ /* 'A' or 'B' (See SC26-2114-0, p.66)          */
+ /*---------------------------------------------*/
+ if res_type<=4 then ResX=1;           /* Prime multiplier           */
+ else                ResL=1;
+ if ExpX<0 then do;                    /* Set exponent sign          */
+   exp_sign='1'b;
+   ExpX = -ExpX;
+   end;
+ do while( ExpX>0 );
+   if res_type<=4 then do;
+     if base_type<=4 then ResX = ResX * BaseX;
+     else                 ResX = ResX * BaseL;
+     end;
+   else do;
+     if base_type<=4 then ResL = ResL * BaseX;
+     else                 ResL = ResL * BaseL;
+     end;
+   ExpX = ExpX-1;
+   ScaleR = ScaleR + Scale;                                /*20091006*/
+   end; /* do while */
+
+ /*---------------------------------------------*/
+ /* Deal with negative exponent                 */
+ /*---------------------------------------------*/
+ if res_type<=4 then do;     /* FIXED result                         */
+   if exp_sign  = '1'b       /* Should not occur                     */
+   then signal ERROR;
+   end;
+ else do;                    /* FLOAT result                         */
+   if exp_sign  = '1'b then ResL = 1/ResL;
+   end;
+
+ /*---------------------------------------------*/
+ /* Return the Result                           */
+ /*---------------------------------------------*/
+ return_result:
+   /* If the input was a scaled fixed value (e.g .1), and the20091006*/
+   /* result is float, we now need to scale the result,      20091006*/
+   /* by a power of two if the input was binary, or ten if dec.091006*/
+   if ScaleRª=0 & res_type>=5 then do; /* Output to be scaled20091027*/
+     on UNDERFLOW ScaleF=0;                                /*20091007*/
+     if base_type<=3 then ScaleF = ResL/2**ScaleR;         /*20091006*/
+     else                 ScaleF = ResL/10**ScaleR;        /*20091006*/
+     revert UNDERFLOW;                                     /*20091007*/
+     /* This now works, except that denormal numbers are not being   */
+     /* converted correctly.                                         */
+     ResL = ScaleF;                                        /*20091006*/
+     end; /* ScaleR */                                     /*20091006*/
+   pData = pRes;
+   /* COMMENT: Apparently the following may also raise UNDERFLOW.    */
+   select( res_type );
+     when(  1 ) pData->FB07 = ResX;
+     when(  2 ) pData->FB15 = ResX;
+     when(  3 ) pData->FB31 = ResX;
+     when(  4 ) pData->FD18 = ResX;
+     when(  5 ) pData->LB23 = ResL;
+     when(  6 ) pData->LB49 = ResL;
+     when(  7 ) pData->LB64 = ResL;
+     when(  8 ) pData->LD07 = ResL;
+     when(  9 ) pData->LD15 = ResL;
+     when( 10 ) pData->LD20 = ResL;
+     end; /* select */
+      
+   return;
+   /* NOTE: We should do SIZE checking if enabled.                   */
+
+ /*---------------------------------------------*/         /*20091027*/
+ /* Non-integer exponents                       */         /*20091027*/
+ /*---------------------------------------------*/         /*20091027*/
+ non_integer_exp: proc;                                    /*20091027*/
+   /* Get both arguments as FLOAT BIN(64)                    20091027*/
+   if exp_type<=4 then do;             /* FIXED exponent     20091027*/
+     if ScaleEª=0 then do;                                 /*20091027*/
+       if exp_type<=3                                      /*20091027*/
+       then ExpL = ExpX / 2**ScaleE;                       /*20091027*/
+       else ExpL = ExpX / 10**ScaleE;                      /*20091027*/
+       end;                                                /*20091027*/
+     else ExpL = ExpX;                                     /*20091027*/
+     end; 
+   if base_type<=4 then do;            /* FIXED base         20091027*/
+     if Scaleª=0 then do;                                  /*20091027*/
+       if base_type<=3                                     /*20091027*/
+       then BaseL = BaseX / 2**Scale;                      /*20091027*/
+       else BaseL = BaseX / 10**Scale;                     /*20091027*/
+       end;                                                /*20091027*/
+     else BaseL = BaseX;                                   /*20091027*/
+     end;                                                  /*20091027*/
+   if ExpL<0 then do;                  /* Negative exponent  20091027*.
+     ExpL = -ExpL;                                         /*20091027*/
+     exp_sign = '1'b;                                      /*20091027*/
+     end;                                                  /*10091027*/
+   ResL = pow( BaseL, ExpL );                              /*20091027*/
+   if exp_sign  = '1'b then ResL = 1/ResL;                 /*20091027*/
+   end non_integer_exp;                                    /*20091027*/
+
+ /*---------------------------------------------*/
+ /* Encode type of argument/result              */
+ /*---------------------------------------------*/
+ get_type: proc(p) returns( fixed bin(7) );
+   dcl   p                   ptr;
+   dcl   code                fixed bin(7);
+   Scale=0;                                                /*20091006*/
+   select( p->XB_id );
+     when( '41'x ) do;        /* FIXED BINARY                        */
+       Scale = p->XB_scale;                                /*20091006*/
+       if p->XB_prec<=7       then code=1;
+       else if p->XB_prec<=15 then code=2;
+       else                        code=3;
+       end; /* FIXED BIN */
+     when( '42'x ) do;        /* FIXED DECIMAL               20091006*/
+       code=4;                                             /*20091006*/
+       Scale = p->XD_scale;                                /*20091006*/
+       end; /* FIXED DEC */                                /*20091006*/
+     when( '43'x ) do;        /* FLOAT BINARY                        */
+       if p->LB_prec<=23      then code=5;
+       else if p->LB_prec<=53 then code=6;
+       else                        code=7;
+       end; /* FLOAT BIN */
+     when( '44'x ) do;        /* FLOAT DECIMAL                       */
+       if p->LD_prec<=7       then code=8;                    /*0.9.3*/
+       else if p->LD_prec<=15 then code=9;                    /*0.9.3*/
+       else                        code=10;
+       end; /* FLOAT DEC */
+     end; /* select */
+   return( code );
+   end get_type;
+
+ /*---------------------------------------------*/
+ /* Get a FIXED argument as FIXED DEC(18)       */
+ /*---------------------------------------------*/
+ get_fixed: proc(p,t) returns( fixed decimal(18) );
+   dcl   p                   ptr;
+   dcl   t                   fixed bin(7);
+   dcl   r                   fixed dec(18);
+   select( t );
+     when(  1 ) r = p->FB07;
+     when(  2 ) r = p->FB15;
+     when(  3 ) r = p->FB31;
+     when(  4 ) r = p->FD18;
+     end; /* select */
+   return( r );
+   end get_fixed;
+
+ /*---------------------------------------------*/
+ /* Get a FLOAT argument as FLOAT BIN(64)       */
+ /*---------------------------------------------*/
+ get_float: proc(p,t) returns( float binary(64) );
+   dcl   p                   ptr;
+   dcl   t                   fixed bin(7);
+   dcl   r                   float bin(64);
+   select( t );
+     when(  5 ) r = p->LB23;
+     when(  6 ) r = p->LB49;
+     when(  7 ) r = p->LB64;
+     when(  8 ) r = p->LD07;
+     when(  9 ) r = p->LD15;
+     when( 10 ) r = p->LD20;
+     end; /* select */
+   return( r );
+   end get_float;
+
+ %page;
+
+ %include DESC;
+
+ end pli_EXP;

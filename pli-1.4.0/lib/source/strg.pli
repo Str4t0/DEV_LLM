@@ -1,0 +1,159 @@
+ /* _pli_STRG                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_STRG (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Mar, 2006                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_STRG Runtime STRINGRANGE check.         */
+ /*                                                                  */
+ /*      Function:      Perform a runtime STRINGRANGE check when     */
+ /*                     a compile-time check is impossible.          */
+ /*                                                                  */
+ /*                     Raise STRINGRANGE if the substring is        */
+ /*                     not within the source string bounds.         */
+ /*                     Upon return from the ON-Unit return the      */
+ /*                     recomputed position and length.              */
+ /*                                                                  */
+ /*                     Since LINKAGE(SYSTEM) passes the arguments   */
+ /*                     by value, the position and length are just   */
+ /*                     updated in place on the stack.               */
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ /*      COMMENT:       Position and length may be updated in the    */
+ /*                     argument list by this procedure.             */
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*      Dependencies:  PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL STRG entry( fixed bin(31),               */
+ /*                                     ptr, fixed bin(31),          */
+ /*                                     fixed bin(31) )              */
+ /*                                ext( '_pli_STRG' )                */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     call STRG( arg_count, addr(string_loc_desc), */
+ /*                                pos_value, length_value );        */
+ /*                     arg_count is 3 if length is specified        */
+ /*                     arg_count is 2 if length is not specified.   */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2011-09-02: convert pos from 1-offset to o-offset. 0.9.3*/
+ /*                                                                  */
+ /********************************************************************/
+
+ STRG: proc( iArgc, pStr, iPos, iLen )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_STRG' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     iArgc               fixed bin(31); /* Arg Count (2 or 3)    */
+ dcl     pStr                ptr;           /* ->String_Loc_Desc     */
+ dcl     iPos                fixed bin(31); /* Substr start pos      */
+ dcl     iLen                fixed bin(31); /* Substr length         */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pD,pS)              ptr;
+ dcl     StrLen              fixed bin(31);
+
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl    (length,max,min)      builtin;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     SetFlags            entry( bit(16) )
+                             ext( '_pli_SetFlags' )
+                             options( linkage(system) );
+ %page;
+ 
+ string(cond_mask) = GetFlags();       /* Get enabled conditions     */
+ call SetFlags( string(cond_mask) );   /* Set caller's conditions    */
+  
+ /*-----------------------------------*/
+ /* Get Parameter data                */
+ /*-----------------------------------*/
+ pD = pStr->pDesc;                     /* Address of string desc     */
+ pS = pStr->pData;                     /* Address of string data     */
+ if pD->ST_id='10'x |                  /* Is string fixed-length?    */
+    pD->ST_id='20'x
+ then StrLen=pD->ST_len;               /* .. Yes, length from descr  */
+ else StrLen = length(pS->Varying_String);
+ if iArgC=2 then iLen=0;               /* Length omitted, initialize */
+ /* IBM: "The STRINGRANGE condition ... is not raised when           */
+ /*       y=LENGTH(x)+1 and z=0 or z is omitted." -SC26-3114, p.377  */
+ 
+ if iPos=StrLen+1 & iLen=0 then return;
+
+ if iPos<=0 | iLen<0     then goto signal_strg;
+ if iPos>StrLen          then goto signal_strg;
+ if iArgC=2 then do;                   /* Length omitted             */
+   iLen = StrLen-iPos+1;               /*  Compute length            */
+   end; /* argcnt=2 */
+ if iPos+iLen-1 > StrLen then goto signal_strg;
+ iPos = iPos-1;                        /* Convert to 0-offset   0.9.3*/
+
+ return;
+
+ signal_strg:
+   signal STRINGRANGE;                 /* Raise the condition.       */
+   if pD->ST_id='10'x |                /* Re-access length           */
+      pD->ST_id='20'x
+   then StrLen=pD->ST_len;
+   else StrLen = length(pS->Varying_String);
+
+   /* Normal return from STRINGRANGE ON-Unit.                        */
+   /* IBM: "Assuming that the length of the source string ... is K,  */
+   /*       the starting point is I, and the length of the substring */
+   /*       is J:                                                    */
+   /*         . if I is greater than K, the value is the null string.*/
+   /*         . if I is less than or equal to K, the value is that   */
+   /*           substring beginning at the Mth character, bit, ...   */
+   /*           of the source string and extending N characters,     */
+   /*           bits, ... where M and N are defined by:              */
+   /*             M = max(I,1)                                       */
+   /*             N = max(0,min(J+min(I,1)-1,K-M+1)                  */
+   /*               - if J is specified -                            */
+   /*             N = K-M+1                                          */
+   /*               - if J is not specified - "                      */
+   /*                                           SC26-3114-01, p.321  */
+   if iPos>StrLen then do;             /* Null string                */
+     iLen=0;
+     return;
+     end;
+   iPos = max(iPos,1);
+   if iArgC=3 then do;                 /* 'J' is specified           */
+     iLen = min(iLen+min(iPos,1)-1,StrLen-iPos+1);
+     iLen = max(0,iLen);
+     end;
+   else do;                            /* 'J' not specified          */
+     iLen = StrLen-iPos+1;
+     end;
+
+ %page;
+ %include DESC;
+ %include LOCDESC;
+
+ end STRG;

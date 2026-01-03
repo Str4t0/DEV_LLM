@@ -1,0 +1,88 @@
+ /* _pli_OSSeek                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSSeek (PL/I runtime) [Linux]           */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSSeek                                  */
+ /*                                                                  */
+ /*      Function:      Operating system dependent seek logic.       */
+ /*                                                                  */
+ /*      OSSeek is called to set the current position in a file      */
+ /*      according to the specified signed distance and method.      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Linux: syscall                               */
+ /*                     OS/2:  DosSetFilePtr                         */
+ /*                                                                  */
+ /*      Limitations:   This procedure will only handle 32-bit       */
+ /*                     file pointers.                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = OSSeek(hFile,ib,method);                */
+ /*                                                                  */
+ /*                     hFile is the file handle                     */
+ /*                     ib is the offset.                            */
+ /*                     method is the method of moving:              */
+ /*                     0 (FILE_BEGIN)   (SEEK_SET) Move from BOF.   */
+ /*                     1 (FILE_CURRENT) (SEEK_CUR) Move from cur pos*/
+ /*                     2 (FILE_END)     (SEEK_END) Move from EOF.   */
+ /*                                                                  */
+ /*      If successful, the new file position is returned.           */
+ /*      If unsuccessful, the (negative) error code is returned.     */
+ /*      This is a fifference from C's fseek() function.             */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ %replace SEEK_SET  by 0;
+ %replace SEEK_CUR  by 1;
+ %replace SEEK_END  by 2;
+
+ pli_OSSeek: proc(hFile,ib,method)
+             returns( fixed bin(31) )
+             options( linkage(system) )
+             ext( '_pli_OSSeek' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     hFile               fixed bin(31);      /* -> FCB           */
+ dcl     ib                  fixed bin(31);      /* New file pos     */
+ dcl     method              fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pF                  ptr;
+ dcl     RC                  fixed bin(31);
+ 
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/ 
+ %replace SYS_LSEEK by 19;
+ dcl      syscall	     entry
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( '_pli_Syscall' );
+
+ /*-------------------------------------------------------*/
+ /* Seek to requested position                            */
+ /*-------------------------------------------------------*/
+ RC = syscall( SYS_LSEEK, hFile, ib, method );
+ if RC<0 then signal ERROR;           /* Seek error                 */
+ return(RC);                          /* Return new file position   */
+
+ end pli_OSSeek;

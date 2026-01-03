@@ -1,0 +1,345 @@
+ /* _pli_CondBif                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.7           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CondBif (PL/I Runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CondBif                                 */
+ /*                                                                  */
+ /*      Function:      Implement condition-handling builtin         */
+ /*                     functions and pseudovariables:               */
+ /*                 1. DATAFIELD, 2. ONCHAR, 3. ONCODE, 4. ONCOUNT,  */
+ /*                 5. ONFILE,    6. ONKEY,  7. ONLOC,  8. ONSOURCE. */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I Descriptor formats, DSA, IRCB.          */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*          This is slightly complex because I wanted to implement  */
+ /*          all condition-handling builtin functions and pseudo-    */
+ /*          variables in one procedure.                             */
+ /*                                                                  */
+ /*          The first argument in all cases is a FIXED BINARY(31)   */
+ /*          value indicating the function desired (as above).       */
+ /*          ONCODE and ONCOUNT have no other arguments and return   */
+ /*          their result as a FIXED BINARY(31) value in EAX.        */
+ /*          All other functions are passed the address of a 16-byte */
+ /*          return area as the second argument.  This will be       */
+ /*          formatted as indicated below and returned to the caller.*/
+ /*                                                                  */
+ /*      Input: (all but ONCODE and ONCOUNT)                         */
+ /*                        +-------------------------------+         */
+ /*                     +4 | -> Return area (shown below)  | ----+   */
+ /*                        +-------------------------------+     |   */
+ /*                     +0 | Function code                 |     |   */
+ /*        Parameters->    +-------------------------------+     |   */
+ /*                                                              |   */
+ /*      Returned information: (all but ONCODE and ONCOUNT)      |   */
+ /*                        +-------------------------------+     |   */
+ /*                     +C |   Standard PL/I               |     |   */
+ /*                        +-  string descriptor          -+     |   */
+ /*                     +8 |                               | <-+ |   */
+ /*                        +-------------------------------+   | |   */
+ /*                     +4 | -> Descriptor                 | --+ |   */
+ /*                        +-------------------------------+     |   */
+ /*                     +0 | -> Data                       | <---+   */
+ /*                        +-------------------------------+         */
+ /*      Notice that the first two addresses comprise a standard     */
+ /*      PL/I locator+descriptor pair.                               */
+ /*                                                                  */
+ /*      Function:                                                   */
+ /*          'SIG' traps all errors and creates an IRCB which is     */
+ /*          passed as a hidden argument to the ON-unit.             */
+ /*          Certain builtins are specific to particular error       */
+ /*          types, e.g. ONSOURCE to CONVERSION.  CondBif searches   */
+ /*          the IRCB chain for a condition for which the builtin    */
+ /*          is active.  If none is found, a null string is returned.*/
+ /*          If an appropriate IRCB is found the address of the      */
+ /*          value is extracted and returned to the caller.          */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*                                                                  */
+ /*      Called from:   Compiled code.                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*          DATAFIELD not currently implemented.              0.9.10*/
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2017-08-31: KEY                                     0.9.10*/
+ /*                                                                  */
+ /********************************************************************/
+
+ %replace BIF_DATAFIELD by 1;
+ %replace BIF_ONCHAR    by 2;
+ %replace BIF_ONCODE    by 3;
+ %replace BIF_ONCOUNT   by 4;
+ %replace BIF_ONFILE    by 5;
+ %replace BIF_ONKEY     by 6;
+ %replace BIF_ONLOC     by 7;
+ %replace BIF_ONSOURCE  by 8;
+
+ CondBif: proc(iFun,pRet)
+          returns( fixed bin(31) )
+          external( '_pli_CondBif' )
+          options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     iFun                fixed bin(31);
+ dcl     pRet                ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     p                   ptr;
+ dcl     RC                  fixed bin(31)       init(0);
+ dcl     i                   fixed bin(7);
+ dcl     NameLen             fixed bin(7);
+ dcl     isPV                bit(1)              init( '0'b );
+ dcl     EBP                 ptr;
+ dcl     pDSA                ptr;
+ dcl     pEnt                ptr;
+ dcl     pName               ptr;
+ dcl     pIRCB               ptr;
+ dcl    (pData,pDesc,ppDesc) ptr;
+ dcl     my_edi              ptr;
+ dcl     cond_index          bit(32);
+
+ dcl     applies             bit(32);
+         /* Conditions this builtin applies to                       */
+         /* Bits in same order as values in "oncode.inc".            */
+         /* applies( 1) = FINISH                 '80000000'bx        */
+         /* applies( 2) = ERROR                  '40000000'bx        */
+         /* applies( 3) = NAME                   '20000000'bx        */
+         /* applies( 4) = RECORD                 '10000000'bx        */
+         /* applies( 5) = TRANSMIT               '08000000'bx        */
+         /* applies( 6) = KEY                    '04000000'bx        */
+         /* applies( 7) = ENDFILE                '02000000'bx        */
+         /* applies( 8) = UNDEFINEDFILE          '01000000'bx        */
+         /* applies( 9) = ENDPAGE                '00800000'bx        */
+         /* applies(10) = PENDING                '00400000'bx        */
+         /* applies(11) = STRINGSIZE             '00200000'bx        */
+         /* applies(12) = OVERFLOW               '00100000'bx        */
+         /* applies(13) = FIXEDOVERFLOW          '00080000'bx        */
+         /* applies(14) = ZERODIVIDE             '00040000'bx        */
+         /* applies(15) = UNDERFLOW              '00020000'bx        */
+         /* applies(16) = SIZE                   '00010000'bx        */
+         /* applies(17) = STRINGRANGE            '00008000'bx        */
+         /* applies(18) = AREA                   '00004000'bx        */
+         /* applies(19) = ATTENTION              '00002000'bx        */
+         /* applies(20) = STORAGE                '00001000'bx        */
+         /* applies(21) = CONDITION              '00000800'bx        */
+         /* applies(22) = CHECK                  '00000400'bx        */
+         /* applies(23) = SUBSCRIPTRANGE         '00000200'bx        */
+         /* applies(24) = CONVERSION             '00000100'bx        */
+         /* applies(25) thru applies(32) unused                      */
+
+%include condmask;
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+
+ /* The subscripts for the following are the "iFun" argument.        */
+ /* the values represent the conditions to which this function       */
+ /* applies (as above)                                               */
+ dcl     bif_applies      (8)bit(32)   static    init(
+                   '20000000'bx,       /* 1. DATAFIELD: NAME         */
+                   '00000100'bx,       /* 2. ONCHAR:    CONVERSION   */
+                   'FFFFFFFF'bx,       /* 3. ONCODE:    any          */
+                   'FFFFFFFF'bx,       /* 4. ONCOUNT:   any          */
+                   '3FC00100'bx,       /* 5. ONFILE:    I/O          */
+                   '3FC00000'bx,       /* 6. ONKEY:     I/O          */
+                   'FFFFFFFF'bx,       /* 7. ONLOC:     any          */
+                   '00000100'bx );     /* 8. ONSOURCE:  CONVERSION   */
+
+ /*------------------------------------------------------------------*/
+ /*      ONCODE values                                               */
+ /* This is copied from SIG, and possible elsewhere.  It should be   */
+ /* put into an include file.                                        */
+ /*------------------------------------------------------------------*/
+ dcl     oncode_value    (25)fixed bin(15)       static   init(
+           4,   9,  10,  20,  40,  50,  70,  80,  90, 100,
+         150, 300, 310, 320, 330, 340, 350, 360, 400, 450, /*20030716*/
+         500, 510, 520, 600,   0  );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     pVoid               ptr                 based;
+ dcl     x2                  char(2)             based;
+ dcl     FB7                 fixed bin(7)        based;
+ dcl     c32                 char(32)            based;
+ dcl     VarStr              char(0)   varying   based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetDSA              entry
+                             external( '_pli_GetDSA' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl    (ADDR,FLOOR,MAX,MIN,MOD,NULL,PLIFILL,PLIMOVE)
+                             builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure Entry                                                  */
+ /*------------------------------------------------------------------*/
+ if iFun>hbound(bif_applies,1) then do; /* Pseudovariable            */
+   iFun = iFun-10;                      /* Adjust code               */
+   isPV = '1'b;                         /* Indicate pseudovariable   */
+   end;
+
+ if iFun<1 | iFun>hbound(bif_applies,1) /* Compiler error            */
+ then signal ERROR;
+
+ /* ONCODE and ONCOUNT return FIXED BIN(31) only.                    */
+ if iFun=BIF_ONCOUNT then return(0);   /* ONCOUNT not implemented    */
+ if iFunª=BIF_ONCODE then do;          /* ONCODE                     */
+   pData = pRet;                       /* Initialize return data     */
+   pData->pVoid = pData+2*stg(null()->pVoid);  /* .. dummy data addr */
+   ppDesc = pData + stg( null()->pVoid );
+   ppDesc->pVoid = ppDesc+stg(null()->pVoid); /* .. desc addr        */
+   pDesc = ppDesc + stg( null()->pVoid );     /* -> Descriptor       */
+   pDesc->pli_ded_STR.ST_id  = '10'x;  /* .. String Descriptor       */
+   pDesc->pli_ded_STR.ST_flg = '00'bx;                        /*1.3.1*/
+   pDesc->pli_ded_STR.fil1   = '0000'x;
+   pDesc->pli_ded_STR.ST_bo  = 0;
+   pDesc->pli_ded_STR.ST_len = 0;  
+   end;
+ applies = bif_applies(iFun);          /* Cond this BIF applies to.  */
+ 
+ EBP = GetDSA();                                 /* Get my EBP       */
+ pDSA = EBP - stg( null()->dsa_below_ebp );      /* -> Stack frame   */
+ my_edi = pDSA->dsa_edi;                         /* A(PGT)           */
+
+ /*------------------------------------------------------------------*/
+ /* Scan back for ON-Unit                                            */
+ /* This is a bit complex, but basically it does the following:      */
+ /* 1. Traces back the DSA chain until an ON-Unit is encountered     */
+ /*    or the beginning of the chain is reached.                     */
+ /* 2. When an ON-Unit is found, it checks to see if this condition  */
+ /*    applies to the builtin specified by the caller.               */
+ /* 3. If this condition applies, it returns the appropriate data    */
+ /*    from the IRCB.                                                */
+ /*------------------------------------------------------------------*/
+ outer:
+ do while( '1'b );
+ inner: do;
+     cond_index = '00000000'bx;
+     /* NOTE: This needs checking such as SIG or TRACE, but for the  */
+     /*       time being this should do.                             */
+     if pDSA->dsa_ediª=my_edi then leave inner;  /* Not PL/I         */
+     pEnt = pDSA->dsa_epa;                       /* ->Entry point    */
+     p = pEnt-1;                                 /* ->Name length    */
+     NameLen = p->FB7;                           /* Get length       */
+     pName = p-NameLen;                          /* ->Name           */
+     /* '_pli_Init' is the end of the DSA chain.                     */
+     if NameLen=9 & substr(pName->c32,1,9)='_pli_Init'
+     then return(0);                             /* No ON-Unit       */
+     string(cond_mask) = pDSA->dsa_msk;          /* Get flags word   */
+     if ªM_OnUnit then leave inner;              /* Not an ON-Unit   */
+     /* If this is an ON-Unit, the IRCB address is a hidden parameter*/
+     pIRCB = addr(pDSA->dsa_parm)->pVoid;
+     do i=1 by 1 while( oncode_value(i)ª=0 );
+       if oncode_value(i)=pIRCB->IRCBOnCode then leave;
+       end; /* do while */
+     if oncode_value(i)ª=0 then do;
+       /* See if this condition applies to the selected builtin      */
+       substr(cond_index,i,1)='1'b;           /* Set condition value */
+       if (cond_index&applies)ª='00000000'bx
+       then leave outer;
+       end; /* oncode_value */
+     end inner;
+   EBP = pDSA->dsa_ebp;                       /* Back up one DSA     */
+   pDSA = EBP - stg( null()->dsa_below_ebp ); /* -> Stack frame      */
+   end outer;
+
+ /*------------------------------------------------------------------*/
+ /* Matching ON-Unit was found.                                      */
+ /*------------------------------------------------------------------*/
+ if iFun=BIF_ONCODE then return( pIRCB->IRCBOnCode );
+
+ /* The remaining builtins return a character value                  */
+ /* If the IRCB pointer is sysnull, the data is unavailable,         */
+ /* e.g. the condition may have been raised by a SIGNAL statement.   */
+ select( iFun );
+   when( BIF_DATAFIELD ) do;
+     /* NOTE: DATAFIELD returns the entire field of the data-        */
+     /*       directed input, name and value, as 'J=1234'.           */
+     end; /* DATAFIELD */
+   when( BIF_ONCHAR    ) do;
+     if pIRCB->IRCBOnChar=sysnull then leave;
+     pData->pVoid = pIRCB->IRCBOnChar;
+     pDesc->pli_ded_STR.ST_len = 1; 
+     if isPV then pIRCB->IRCBStatus=1;
+     end; /* ONCHAR    */
+   /* ONCODE and ONLOC already handled */
+   when( BIF_ONFILE    ) do;
+     p = pIRCB->IRCBOnFile;            /* ->FILE                     */
+/*   if p=sysnull then leave;                                        */
+/*   p = p->FC_pName; Deleted 2018-01-06  ->Filename          0.9.10b*/
+     /* if FC_pName=sysnull this may be an unitialized file variable */
+     if p=sysnull then leave;
+     pData->pVoid = p+stg( null()->VarStr ); 
+     pDesc->pli_ded_STR.ST_len = length(p->VarStr); 
+     end; /* ONFILE    */
+   when( BIF_ONKEY     ) do;
+     if pIRCB->IRCBOnKey=sysnull then leave;
+     p = pIRCB->IRCBOnKey;             /* ->Loc/Desc                 */
+     pData->pVoid = p->pVoid;          /* Move data address          */
+     p = p+stg( null()->pVoid );
+     ppDesc->pVoid = p->pVoid;         /* Move descriptor address    */
+     end; /* ONKEY     */
+   when( BIF_ONLOC     ) do;
+     if pIRCB->IRCBOnLoc=sysnull then leave;
+     pDSA = pIRCB->IRCBOnLoc;          /* ->DSA address              */
+     /* IRCBOnLoc contains the DSA address of the procedure that     */
+     /* raised the condition, which may be a library procedure.      */
+     /* This code causes the ONLOC() builtin to return the entry     */
+     /* name of the most recently invoked non-library procedure.     */
+     /* The default is _pli_Init' if none.                           */
+ outer1:
+     do while( '1'b );
+ inner1: do;
+         if pDSA->dsa_ediª=my_edi then leave inner1;/* Not PL/I      */
+         pEnt = pDSA->dsa_epa;                      /* ->Entry point */
+         p = pEnt-1;                                /* ->Name length */
+         NameLen = p->FB7;                          /* Get length    */
+         pName = p-NameLen;                         /* ->Name        */
+         if NameLen=9 & substr(pName->c32,1,9)='_pli_Init'
+         then leave outer1;                         /* End of chain  */
+         string(cond_mask) = pDSA->dsa_msk;         /* Get flags word*/
+         if ªM_LibMod then leave outer1;            /* Not a library */
+         end inner1;
+       EBP = pDSA->dsa_ebp;                      /* Back up one DSA  */
+       pDSA = EBP - stg( null()->dsa_below_ebp );/* -> Stack frame   */
+       end outer1;
+     pData->pVoid = pName;                 /* ->Name                 */
+     pDesc->pli_ded_STR.ST_len = NameLen;  /* Update descr length    */
+     end; /* ONLOC     */
+   when( BIF_ONSOURCE  ) do;
+     if pIRCB->IRCBOnSource=sysnull then leave;
+     p = pIRCB->IRCBOnSource;          /* ->Loc/Desc                 */
+     pData->pVoid = p->pVoid;          /* Move data address          */
+     p = p+stg( null()->pVoid );
+     ppDesc->pVoid = p->pVoid;         /* Move descriptor address    */
+     if isPV then pIRCB->IRCBStatus=1;    
+     end; /* ONSOURCE  */
+   end; /* select */
+
+ return(0);
+ 
+
+ %include dsa;  
+ %include desc;
+ %include ircb;
+ %include file;
+
+ end CondBif;

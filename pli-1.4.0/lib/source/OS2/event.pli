@@ -1,0 +1,269 @@
+ /* _pli_Event                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.2         */
+ /*              See license for terms of use                        */
+ /*                                                                  */
+ /*      Module:        _pli_Event (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Oct, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:						     */
+ /*	    _pli_Wait   - WAIT statement                 	     */
+ /* 		wait: proc(pEvent)				     */
+ /*       		options( linkage(system) )		     */
+ /*       		ext( '_pli_Wait' );			     */
+ /*	    _pli_Cmpl   - COMPLETION pseudovariable	     	     */	
+ /* 		cmpl: proc(pEvent,bCmp)				     */
+ /*       		options( linkage(system) )		     */
+ /*       		ext( '_pli_Cmpl' );			     */
+ /*                                                                  */
+ /*      Function:      _pli_Event is the active event manager:      */
+ /*                     COMPLETION builtin and STATUS handled inline.*/
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     OS/2.                                        */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Returns:                                                    */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Event: package exports(wait,cmpl);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     complete            bit(32)       static    init( '80000000'bx );
+ dcl     event_lock          fixed bin(31) static    init(0);
+
+ dcl     ev_max              fixed bin(31)  static    init(10);
+ dcl     ev_count            fixed bin(31)  static;
+ dcl     ev_tab              ptr            static    init( sysnull );
+ 
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     ev_table	   (1)fixed bin(31)	  based(ev_tab);
+ dcl     FB31                fixed binary(31)     based;
+ dcl	 B32		     bit(32)		  based;
+		    
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace EVENT_CREATE by 0;
+ %replace EVENT_RESET  by 1;
+ %replace EVENT_POST   by 2;
+ %replace EVENT_WAIT   by 3;
+ %replace EVENT_CLOSE  by 4;
+ dcl     osevent             entry( fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) )
+		             options( linkage(system) )
+		             ext( '_pli_OSEvent' );
+			     
+ dcl    (addr,cs,heximage,substr,sysnull)
+                             builtin;
+ %page;
+
+ /*---------------------------------------------*/
+ /* Wait for event completion                   */
+ /*---------------------------------------------*/
+ wait: proc(pEvent)
+       options( linkage(system) )
+       ext( '_pli_Wait' );
+
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   pEvent              ptr;
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   RC                  fixed bin(31);
+   dcl   old_ev    	     bit(32)		 init( '00000000'bx );
+   dcl   new_ev    	     bit(32)		 init( '00000000'bx );
+
+   call lock_event;
+   /*display( 'Wait event=' || heximage(pEvent,16) );/**/
+   /* Test for completion using locking compare and swap             */
+   new_ev,old_ev = pEvent->B32;
+   substr(old_ev,1,1)='1'b;
+   /* NOTE: Make sure the following doesn't get optimized out.       */
+   addr(old_ev)->FB31 = addr(old_ev)->FB31;
+   RC = CS( addr(old_ev), pEvent, addr(new_ev)->FB31 ); 
+   /* RC=0 indicates that the event is complete.                     */
+   /* RC=1 indicates that the event is not complete.                 */
+   /* The current event value is unchanged.            		     */
+   if RC=0 then do;                        /* Event complete         */
+     event_lock = 0;                       /* Unlock                 */
+     return;
+     end; /* complete */
+   if pEvent->ev_hSem = 0                   /* If no waiters         */
+   then pEvent->ev_hSem = new_event();      /* Assign semaphore      */
+   new_ev,old_ev = pEvent->B32;
+   substr(new_ev,1,2) = '01'b;              /* Set 'waiting'         */
+   RC = CS( addr(old_ev), pEvent, addr(new_ev)->FB31 ); 
+   if RC^=0 then do;
+     event_lock=0;
+     signal ERROR;
+     end;
+   event_lock = 0;                          /* Unlock                */
+   /* COMMENT: completion(this_event) = '1'b will zero the semaphore.*/
+   /*          This may occur between the previous statement and the */
+   /*          following wait.  How do we fix this?                  */
+   RC = osevent( EVENT_WAIT, pEvent->ev_hSem ); 
+   return;
+       
+   end wait;       
+		
+ /*---------------------------------------------*/
+ /* Completion pseudovariable                   */
+ /*---------------------------------------------*/
+ cmpl: proc(pEvent,bCmp)
+       options( linkage(system) )
+       ext( '_pli_Cmpl' );
+
+   /*-----------------------*/ 
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   pEvent              ptr;
+   dcl	 bCmp		     bit(1);
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   RC                  fixed bin(31);
+   dcl   one                 fixed bin(31)       init(1);
+   dcl   new_ev 	     bit(32)		 init( '00000000'bx );
+   dcl   old_ev 	     bit(32)		 init( '00000000'bx );
+   dcl   curr_event          fixed bin(31);
+
+   call lock_event;
+   /*display( 'Completion event=' || heximage(pEvent,16) || ' ' || bCmp );/**/
+   /* NOTE: If we have the lock, there is a possible race condition  */
+   /*       if someone else has set the 'waiting' bit and freed the  */
+   /*       lock, but has not yet executed the wait.                 */
+   /* Set the event completion.  This doesn't strictly have to be    */
+   /* an atomic operation.  Not that the completion bit will be	     */
+   /* set BEFORE waking up any waiting tasks.			     */
+   substr(new_ev,1,1)=bCmp;
+   old_ev = pEvent->B32;
+   substr(old_ev,1,1)=^bCmp;
+   /* Note that if the 'new_ev' VALUE is passed to CS, it is         */
+   /* converted to the value 2**31.			             */
+   RC = CS( addr(old_ev), pEvent, addr(new_ev)->FB31 );
+   /* 
+      if RC=1 then display( 'COMPLETION: already ' || heximage(addr(old_ev),4) );
+      else         display( 'COMPLETION: set to  ' || heximage(addr(new_ev),4) );
+    */
+   /* RC=0 indicates that the event completion was not equal to      */
+   /*      the desired value prior to this point, and is now set.    */
+   /* RC=1 indicates that the event completion was already set to    */
+   /*      the desired value (complete or incomplete).		     */
+   if RC=1  then goto unlock_return;    /* No change in status       */
+   /* Exit if we have just set the event to incomplete.		     */
+   if ^bCmp then goto unlock_return;
+   /* If we have just marked the event complete, wake up any         */
+   /* waiting tasks.                                        	     */
+   if pEvent->ev_hSem=0                     /* No waiters            */
+   then goto unlock_return;
+   RC = osevent( EVENT_POST, pEvent->ev_hSem );
+   call rel_event(pEvent->ev_hsem);          /* Free semaphore       */
+   pEvent->ev_hsem = 0;
+    
+ unlock_return:
+   event_lock = 0;                     /* Free the lock              */
+   return;
+      
+   end cmpl;
+
+ /* Spinlock for event manager */
+ lock_event: proc;
+   dcl   zero                fixed bin(31);
+   dcl   RC                  fixed bin(31);
+   RC = 1;                                  /* Force one test */
+   do while( RC=1 );
+     zero = 0;  
+     RC = CS( addr(event_lock), addr(zero), 1 );
+     /* If we have lock RC=0 */
+     end;
+   end lock_event;
+
+ /*-----------------------------------------------------------------*/
+ /* Event Manager Procedures                                        */
+ /*-----------------------------------------------------------------*/
+
+ /*---------------------------------------*/
+ /* new_event: assign event semaphore     */
+ /*---------------------------------------*/
+ new_event:   proc
+              returns( fixed bin(31) )
+              options( linkage(system) );
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   n                   fixed bin(31);
+   dcl   RC                  fixed bin(31);      /* OS/2 return code */
+
+   /* Initialize event table first time thru */
+   if ev_tab=sysnull then do;
+     n = 10 * stg(ev_table);
+     ev_tab = allocate(n);
+     ev_count = 0;
+     call plifill( ev_tab, '00'x, n );
+     end;
+
+   /* Need another semaphore */
+   if ev_count=0 then do;
+     ev_count = 1;
+     ev_table(1) = OSEvent( EVENT_CREATE, 0 );
+     end;
+
+   /* Assign existing semaphore */
+   n = ev_table(ev_count);             /* Assign semaphore          */
+   ev_table(ev_count) = 0;             /* Mark assigned             */
+   ev_count = ev_count-1;
+   /* Reset semaphore before reuse */
+   RC = OSEvent( EVENT_RESET, n );
+   return(n);
+
+   end new_event;
+
+ /*---------------------------------------*/
+ /* rel_event: release event semaphore    */
+ /*---------------------------------------*/
+ rel_event:   proc( hEvent )
+              returns( fixed bin(31) )
+              options( linkage(system) );
+
+   /*-----------------------*/
+   /* Parameters            */
+   /*-----------------------*/
+   dcl   hEvent              fixed bin(31);      /* Event handle     */
+
+   /*-----------------------*/
+   /* Automatic Data        */
+   /*-----------------------*/
+   dcl   RC                  fixed bin(31);      /* OS/2 return code */
+
+   /* Table already full */
+   if ev_count >= ev_max then do;
+     RC = osevent( EVENT_CLOSE, hEvent ); /*Close the samaphore      */
+     end;
+
+   /* Add unassigned semaphore to table */
+   ev_count = ev_count+1;
+   ev_table(ev_count) = hEvent;
+
+   end rel_event;
+  
+ %include event;
+ 
+ end pli_Event;

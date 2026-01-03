@@ -1,0 +1,342 @@
+ /* _pli_Poly                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 1.0.0         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Poly  (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jun, 2022                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _Poly                                        */
+ /*                                                                  */
+ /*      Function:      PL/I Array-Handling builtin functions: POLY  */
+ /*                                                                  */
+ /*                     DIM, HBOUND, and LBOUND are handled either   */
+ /*                     inline or by procedure _pli_DIM. This        */
+ /*                     procedure handles the POLY function.         */
+ /*                                                                  */
+ /*                     SUM and PROD are handled by SUM.             */
+ /*                     ALL and ANY are handled elsewhere.           */
+ /*                                                                  */
+ /*      Operation:                                                  */
+ /*          This is an IBM-only procedure, the operation differs    */
+ /*          between (1) PL/I(F)/Optimizer, 2.3 and                  */
+ /*                  (2) Enterprise PL/I (and others)                */
+ /*                                                                  */
+ /*          The best description of (2) comes from Hughes           */
+ /*                                                 (pp.696-697)     */
+ /*            POLY(x,y) where x is a vector (x1,x2...xn), and       */
+ /*                      y is a scalar element.                      */
+ /*            Poly(x,y) = x1 + x2*y + x3*y**2 ...                   */
+ /*                                                                  */
+ /*          For (1), y may be a vector.                             */
+ /*          (if y is a scalar, this case reduces to (2).)           */
+ /*            Poly(x,y) = x1 + x2*y1 + x3*y2**y1 ...                */
+ /*                                                                  */
+ /*      Results:                                                    */
+ /*         "The returned value has a mode and base given by         */
+ /*          the rules for expression evaluation, and the            */
+ /*          precision of the longest argument."                     */
+ /*                                                                  */
+ /*          This, however, seems to differ among implementations.   */
+ /*                                                                  */
+ /*          The caller is responsible for determining the attributes*/
+ /*          of the result. The descriptor is passed to us.          */
+ /*          If necessary, data is converted here, rather than       */
+ /*          by the caller.                                          */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ Poly: proc( pXData, pXDesc, pName, 
+             pYData, pYDesc, pYName,
+             pRes, pdRes )               
+       options( linkage(system) )
+       ext( '_pli_Poly' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl      pXDesc               ptr;     /* -> Source array descriptor */
+ dcl      pXData               ptr;     /* -> Array address           */
+ dcl      pName               ptr;     /* -> Array name or sysnull() */
+ dcl      pYDesc              ptr;     /* -> Y array descriptor      */
+ dcl      pYData              ptr;     /* -> Y array address         */
+ dcl      pYName              ptr;     /* -> Y array name or sysnull(*/
+ dcl      pRes                ptr;     /* ->Result data              */
+ dcl      pdRes               ptr;     /* ->Result descriptor        */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl      result              cplx float bin(64); /* Choose one      */
+ dcl      expon               cplx float bin(64);
+ dcl      yvalue              cplx float bin(64);
+ dcl      temp                cplx float bin(64);
+ dcl     (nx,ny)              fixed bin(31);
+ dcl      res_size            fixed bin(31);
+ dcl      res_cplx            bit(1);
+
+ /* Argument bases, scales, and modes */
+ dcl    1 x_info,
+          3 xdesc             ptr,
+          3 xaddr             ptr,
+          3 xmult             fixed bin(31),
+          3 xcnt              fixed bin(31),
+          3 xsiz              fixed bin(7),
+          3 xcplx             bit(1),
+          3 xfixedbin         bit(1),
+          3 xdec              bit(1);              /* FIXED DEC only  */
+ dcl    1 y_info,
+          3 ydesc             ptr,
+          3 yaddr             ptr,
+          3 ymult             fixed bin(31),
+          3 ycnt              fixed bin(31),
+          3 ysiz              fixed bin(7),
+          3 ycplx             bit(1),
+          3 yfixedbin         bit(1),
+          3 ydec              bit(1);              /* FIXED DEC only  */
+     
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      UNIMPLEMENTED       condition;                      /*1.2.1*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      pVoid               ptr           based;
+ dcl      VarStr              char(0)       varying     based;
+
+ /* Data types for arithmetic data */
+ dcl      FB7                 fixed bin(7)   cplx based;
+ dcl      FB15                fixed bin(15)  cplx based;
+ dcl      FB31                fixed bin(31)  cplx based;
+ dcl      FD18                fixed dec(18)  cplx based;
+ dcl      LB23                float bin(23)  cplx based;
+ dcl      LB49                float bin(49)  cplx based;
+ dcl      LB64                float bin(64)  cplx based;
+ dcl      LD7                 float dec(7)   cplx based;
+ dcl      LD15                float dec(15)  cplx based;
+ dcl      LD20                float dec(20)  cplx based;
+   
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+
+%page; 
+ 
+  /*-----------------------------------*/
+  /* Setup                             */
+  /*-----------------------------------*/
+  result = 0;
+  expon  = 1;  
+  if pdRes->XB_id = '48'x               /* FIXED DEC(OPTIONS(IBM))   */
+  then signal UNIMPLEMENTED;
+
+  /* 'x' must be one dimensional (vector)   */ 
+  call plifill(addr(x_info),'00'x,stg(x_info));
+  call get_arg_info(pXDesc,addr(x_info));
+  /* NOTE: What do we really want to do with the fillowing?          */
+  /*       Maybe return zero?                                        */
+  if xCnt=0 then signal error;          /* 'x' is scalar or no elem  */
+ 
+  /* 'y' may be either a vector or a scalar */ 
+  /* ycnt=0 indicates scalar                */          
+  call plifill(addr(y_info),'00'x,stg(y_info));
+  call get_arg_info(pyDesc,addr(y_info));
+  /* COMMENT: Result attributes are determined by the caller, but    */
+  /*          hopefully we agree here.                               */
+  res_size = max(xsiz,ysiz);            /* Use size instead of prec  */
+  res_cplx = xcplx|ycplx;               /* Need complex result       */
+
+  /*-----------------------------------*/
+  /* Do all elements of x              */
+  /*-----------------------------------*/
+  xaddr = pXData;                       /* ->'x' array               */
+  yaddr = pYData;                       /* ->'y' array               */
+  ny = 1;
+
+  do nx = 1 to xcnt;
+    temp = get_elem(addr(x_info));      /* Get next 'x' array elem   */ 
+    if nx=1 then do;                    /* First time                */
+      result=temp;
+      yvalue = get_elem(addr(y_info));  /* Get first 'y' value       */
+      expon = yvalue;
+      end;
+    else do;  
+      if ^res_cplx then do;              /* Real arguments           */
+        result = result + real(temp) * real(expon);
+        end;
+      else do;                           /* Complex arguments        */
+        call complex_mult(addr(temp),addr(expon));
+        result = result + temp;
+        end;
+      
+      if ny<ycnt then do;               /* If 'y' is not scalar      */
+        yvalue = get_elem(addr(y_info));/* Get next 'y' value        */
+        /* Use last or only element of 'y' until done */
+        ny = ny+1;
+        end;
+      if ^ycplx then real(expon) = real(expon) * real(yvalue);
+      else do;
+        call complex_mult(addr(expon),addr(yvalue));
+        end;
+      end; /* else */
+    end; /* do while */
+
+  /*-----------------------------------*/
+  /* Store the result (always float)   */
+  /*-----------------------------------*/
+  if res_size=4 then do;
+    real(pRes->LD7) = real(addr(result)->LD20);
+    if res_cplx
+    then imag(pRes->LD7) = imag(addr(result)->LD20);
+    end;
+  else if res_size=8 then do;
+    real(pRes->LD15) = real(addr(result)->LD20);
+    if res_cplx
+    then imag(pRes->LD15) = imag(addr(result)->LD20);
+    end;
+  else do;
+    real(pRes->LD20) = real(addr(result)->LD20);
+    if res_cplx
+    then imag(pRes->LD20) = imag(addr(result)->LD20);
+    end;
+
+  return;
+
+  /*-----------------------------------*/
+  /* Get a data element                */
+  /*-----------------------------------*/
+  get_elem: proc(pInf) returns(float bin(64) complex );
+    dcl   pInf                ptr;  
+    dcl 1 e_info              based(pInf),
+          3 edesc             ptr,
+          3 eaddr             ptr,
+          3 emult             fixed bin(31),
+          3 ecnt              fixed bin(31),
+          3 esiz              fixed bin(7),
+          3 ecplx             bit(1),
+          3 efixedbin         bit(1),
+          3 edec              bit(1);
+    dcl   res                 float bin(64)  complex;
+    res = 0;
+    if efixedbin then do;               /* FIXED BINARY source       */
+      if edesc->XB_prec<=7 then do;
+        real(res) = real(res) + real(eaddr->FB7);
+        if ecplx
+        then imag(res) = imag(res) + imag(eaddr->FB7);
+        end;
+      else if edesc->XB_prec<=15 then do;
+        real(res) = real(res) + real(eaddr->FB15);
+        if ecplx
+        then imag(res) = imag(res) + imag(eaddr->FB15);
+        end;
+      else do;
+       real(res) = real(res) + real(eaddr->FB31);
+        if ecplx
+        then imag(res) = imag(res) + imag(eaddr->FB31);
+        end;
+      end; /* fixed */
+    else if edec then do;               /* FIXED DECIMAL source      */
+      real(res) = real(res) + real(eaddr->FD18);
+      if ecplx
+      then imag(res) = imag(res) + imag(eaddr->FD18);
+      end; /* decimal */
+    else do;                            /* FLOAT source              */
+      if esiz = 4 then do;
+        real(res) = real(res) + real(eaddr->LB23);
+        if ecplx
+        then imag(res) = imag(res) + imag(eaddr->LB23);
+        end;
+      else if esiz = 8 then do;
+        real(res) = real(res) + real(eaddr->LB49);
+        if ecplx
+        then imag(res) = imag(res) + imag(eaddr->LB49);
+        end;
+      else do;
+        real(res) = real(res) + real(eaddr->LB64);
+        if ecplx
+        then imag(res) = imag(res) + imag(eaddr->LB64);
+        end;  
+      end; /* float */
+
+    eaddr = eaddr+emult;
+    return(res);
+
+    end get_elem;
+
+ /*------------------------------------------------------------------*/
+ /* Complex multiplication:  p1<-p1*p2 (max float binary)            */
+ /* Let x, y, and z be complex. x=y*z is defined as:                 */
+ /*     real(x) = real(y)*real(z) - imag(y)*imag(z)                  */
+ /*     imag(x) = imag(y)*real(z) + real(y)*imag(z)                  */
+ /* Need temps, because REAL and IMAG are used more than once        */
+ /*------------------------------------------------------------------*/
+ complex_mult: proc (p1,p2);
+   dcl   (p1,p2)              ptr;  
+   dcl    temp                float bin(64)  complex; 
+   real(temp) = real(p1->LB64) * real(p2->LB64) -
+                imag(p1->LB64) * imag(p2->LB64);
+   imag(temp) = imag(p1->LB64) * real(p2->LB64) +
+                real(p1->LB64) * imag(p2->LB64);
+   p1->LB64 = temp;
+   end complex_mult;
+
+ /*------------------------------------*/
+ /* Get 'x' or 'y' argument info       */
+ /*------------------------------------*/
+ get_arg_info: proc(pD,pR);
+   dcl   (pD,pR)              ptr;
+   dcl  1 r_info              based(pR),
+          3 rdesc             ptr,
+          3 raddr             ptr,
+          3 rmult             fixed bin(31),
+          3 rcnt              fixed bin(31),
+          3 rsiz              fixed bin(7),
+          3 rcplx             bit(1),
+          3 rfixedbin         bit(1),
+          3 rdec              bit(1);
+  dcl    (p,px)               ptr;
+
+  px = pD;                              /* ->'x' descriptor (array)  */
+  px = addr(px->AR_dims);               /* ->Dimension(1) info       */
+  rmult = px->DM_mult(1);               /* Multiplier                */
+  rcnt  = px->DM_hbnd(1)-px->DM_lbnd(1)+1;/* Number of elements      */
+  px    = addr(px->DM_next);            /* ->Element desc            */
+  rDesc = px;
+  /* Determine argument type */
+  if px->XB_id = '41'x                  /* FIXED BIN                 */
+  then rfixedbin='1'b;
+  else if px->XD_id = '42'x  
+  then rdec='1'b;
+  else do;                              /* Else Float argument        */
+    if px->LB_id = '43'x then do;       /* FLOAT BINARY              */
+      if px->LB_prec<=23 then rsiz=4;
+      else if px->LB_prec<=49 then rsiz=8;
+      else rsiz=10; 
+      end; /* float bin */
+    if px->LB_id = '44'x then do;      /* FLOAT DECIMAL             */
+      if px->LB_prec<=7 then rsiz=4;
+      else if px->LB_prec<=15 then rsiz=8;
+      else rsiz=10; 
+      end; /* float dec */
+    end; /* float */
+  if (px->XB_flgs&'80'bx)^='00'bx       /* Arg is complex            */
+  then rcplx='1'b;
+  end get_arg_info;
+
+  %include desc;
+
+  end Poly;
+

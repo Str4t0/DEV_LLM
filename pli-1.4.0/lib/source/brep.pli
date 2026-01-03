@@ -1,0 +1,129 @@
+ /* _pli_BRep                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_BRep (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2007                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_BRep [REPEAT()/COPY() BIFs]             */
+ /*                                                                  */
+ /*      Function:      Implement REPEAT and COPY for                */
+ /*                     bit string expressions                       */
+ /*                     longer than a single bit.                    */
+ /*                                                                  */
+ /*                     The compiler generates inline code for       */
+ /*                     character REPEAT/COPY for a single bit.      */
+ /*                                                                  */
+ /*                     The target string for REPEAT is always a     */
+ /*                     nonvarying, aligned bit string.              */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL BRep entry(pSrc,pDSrc,tTgt,pDTgt)        */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                                                                  */
+ /*                     pTgt->Target string                          */
+ /*                     pDTgt->Target Descriptor                     */
+ /*                     pSrc->Source string                          */
+ /*                     pDSrc->Source Descriptor                     */
+ /*                                                                  */
+ /*                     'Target' and 'Source' are both bit-string    */
+ /*                     expressions.                                 */
+ /*                                                                  */
+ /*                     Compiled code guarantees that the target     */
+ /*                     length is an exact multiple of the           */
+ /*                     source length.  The target is always         */
+ /*                     a nonvarying string.                         */
+ /*                                                                  */
+ /*                     Each address points to a bit-string          */
+ /*                     Locator/Descriptor.                          */
+ /*                                                                  */
+ /*      Exceptions:    No conditions should be raised.              */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ BRep: proc( pSrc, pDSrc, pTgt, pDTgt )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_BRep' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    (pSrc,pDSrc)         ptr;
+ dcl    (pTgt,pDTgt)         ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pT,pS)              ptr;      /* ->Src,Tgt Data    */
+ dcl    (lSrc,lTgt)          fixed bin(31);
+ dcl     TempDesc            char( stg(null()->pli_ded_STR) );
+ dcl    (o,x)                fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     MBS                 entry( ptr, ptr, ptr, ptr )
+                             options( LINKAGE(SYSTEM) )
+                             ext( '_pli_MBS' );
+
+ %page;
+ /*-----------------------------------*/
+ /* Get Addresses and Lengths         */
+ /*-----------------------------------*/
+ pT = pTgt;                            /* Address of Target          */
+ lTgt = pDTgt->ST_len;                 /* Length of Target           */
+ pS = pSrc;                            /* Address of Source          */
+ if pDSrc->ST_id='20'x                 /* Is Source fixed-length?    */
+ then lSrc=pDSrc->ST_len;              /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lSrc = length(pSrc->Varying_String);
+   pS = pS + stg( sysnull()->Varying_String );
+   end;
+
+ if lSrc<=0 then return;               /* Zero-length source         */
+ /* COMMENT: It requires several instructions to check the source    */
+ /*          length for zero.  Assuming this is a fairly uncommon    */
+ /*          occurrence, there's less overhead to check here.        */
+
+ /*-----------------------------------*/
+ /* Build temporary output descriptor */
+ /* for one repetition.               */
+ /*-----------------------------------*/
+ addr(TempDesc)->ST_id   = '20'x;     /* Nonvarying bit              */
+ addr(TempDesc)->pli_ded_STR.fil1 = '0000'x;
+ addr(TempDesc)->ST_bo   = 0;         /* Target always ALIGNED       */
+ addr(TempDesc)->ST_len  = lSrc;      /* Target len = source len     */
+
+ /*-----------------------------------*/
+ /* Do the move                       */
+ /*-----------------------------------*/
+ do while( lTgt>0 );
+   call MBS( pS, pDSrc,               /* Move one copy of source     */
+             pT, addr(TempDesc) );
+   o = addr(TempDesc)->ST_bo + lSrc;  /* Update target address       */
+   x = o/8;
+   pT = pT+x;
+   addr(TempDesc)->st_bo = o - (x*8);
+   lTgt = lTgt-lSrc;
+   end; /* do while */
+
+ return;
+
+ %page;
+ %include DESC;
+
+ end BRep;

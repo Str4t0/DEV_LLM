@@ -1,0 +1,88 @@
+ /* _pli_OSWrite                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSWrite (PL/I runtime) [OS/2]           */
+ /*      Version:       2.0                                          */
+ /*      Date:          Jun, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSWrite                                 */
+ /*                                                                  */
+ /*      Function:      Operating system dependent write logic.      */
+ /*                                                                  */
+ /*      This is a revised version of 'OSWrite' that uses a more     */
+ /*      C-like interface.  OS/2's DosWrite provides a similar level */
+ /*      of abstraction that's missing on bare-metal Linux.          */
+ /*      This routine will either call DosWrite or the Linux system  */
+ /*      service.                                                    */
+ /*                                                                  */
+ /*      OSWrite is called by WRITE to write a block of data.        */
+ /*      This procedure contains all operating-system dependent code.*/
+ /*      The file must be open for write.                            */
+ /*      The file position is assumed to be set prior to the call    */
+ /*      to OSWrite.                                                 */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Linux: Syscall                               */
+ /*                     OS/2:  DosWrite                              */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     RC = OSWrite(hFile,pBuf,iCnt);               */
+ /*                                                                  */
+ /*                     hFile is the OS 'File Handle'.               */
+ /*                     pBuf is the address of the buffer.           */
+ /*                     iCnt is the number of bytes to be written. . */
+ /*                     The returned value is either the positive    */
+ /*                     count of bytes written (may be zero), or a   */
+ /*                     negative error code.                         */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSWrite: proc(hFile,pBuf,iCnt)
+               returns( fixed bin(31) )
+	       options( linkage(system) )
+               ext( '_pli_OSWrite' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     hFile               fixed bin(31);      /* FD               */
+ dcl     pBuf                ptr;                /* ->Buffer         */
+ dcl     iCnt                fixed bin(31);      /* Byte count       */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     cbWritten           fixed bin(31);
+ dcl     RC                  fixed bin(31);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosWrite            entry( fixed bin(31),    /* hFile       */
+                                    ptr,              /* pBuffer     */
+                                    fixed bin(31),    /* cbWritten   */
+                                    ptr )             /* pcbActual   */
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( asm linkage(system) )
+                             external( 'DosWrite' );
+
+ /*-------------------------------------------------------*/
+ /* Write a block of data                                 */
+ /*-------------------------------------------------------*/
+ RC = DOSWrite( hFile, pBuf, iCnt, addr(cbWritten) );
+ if RC=0 then return(cbWritten);
+ return(-RC);
+
+ end pli_OSWrite;

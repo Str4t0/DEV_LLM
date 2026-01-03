@@ -1,0 +1,92 @@
+ /* _pli_FHS                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        FHS     (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_FHS Free heap storage.                  */
+ /*                                                                  */
+ /*      Function:      Heap storage free.                           */
+ /*                                                                  */
+ /*      Dependencies:  OS/2 Memory management APIs.                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     The address of the storage to be freed is    */
+ /*                     passed on the stack.  By convention the      */
+ /*                     dword at address-4 contains the size of      */
+ /*                     the area to be freed.  The storage is freed  */
+ /*                     and control is returned to the caller.       */
+ /*                                                                  */
+ /*                     Additional processing for CONTROLLED storage */
+ /*                     is done elsewhere.                           */
+ /*                                                                  */
+ /*      Called From:   Compiled code via PGT.                       */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . It would be nice if handling of AREAs was    */
+ /*                     integrated with handling the default heap.   */
+ /*                     On the other hand, AREAs have some require-  */
+ /*                     ments not found in the heap (Read/Write of   */
+ /*                     entire areas, e.g.) and OS/2 provides a nice */
+ /*                     simple, presumably fast API for handling     */
+ /*                     heaps that it's a shame not to use.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2010-07-22: Track approximate storage used.        0.9.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ FHS: proc(pBlk)
+      external( '_pli_FHS' )
+      options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pBlk                ptr;                     /* -> Block    */
+
+ /*-------------------------*/
+ /* External Data           */
+ /*-------------------------*/
+ dcl   1 Heap                                         /* -> Heap     */
+                             external( '_pli_Heap' ),
+         5 Heap_addr         ptr,                          /*20100722*/
+         5 Heap_size         fixed bin(31),                /*20100722*/
+         5 Heap_used         fixed bin(31);                /*20100722*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pB                  ptr;
+ dcl     iSz                 fixed bin(31);
+ dcl     RC                  fixed bin(31) /* unsigned */ ;
+ dcl     dword               fixed bin(31) based;
+
+ /*-------------------------*/
+ /* OS/2 Memory Functions   */
+ /*-------------------------*/
+ dcl     DosSubFreeMem       entry(
+                                    ptr,              /* pbBase      */
+                                    ptr,              /* ppb         */
+                                    fixed bin(31)     /* cb(UNSIGNED)*/
+                                  )
+                             external( 'DosSubFreeMem' )
+                             returns( fixed bin(31) ) /* APIRET      */
+                             options( ASM LINKAGE(SYSTEM) );
+
+ dcl    (addr,sysnull)       builtin;
+
+ pB = pBlk - stg( pBlk->dword );
+ iSz = pB->dword;
+ RC = DosSubFreeMem( Heap_addr, pB, iSz );                 /*20100722*/
+ /* NOTE: Need mechanism to report back the system return code.      */
+ if RCª=0 then signal ERROR;
+ Heap_used = Heap_used - iSz;                              /*20100722*/
+
+ return;                     /* No data returned                     */
+
+ end FHS;

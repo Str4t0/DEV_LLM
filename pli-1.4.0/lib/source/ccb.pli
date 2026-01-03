@@ -1,0 +1,241 @@
+ /* _pli_CCB                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CCB (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jun, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CCB                                     */
+ /*                                                                  */
+ /*      Function:      Convert character string to bit string.      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Descriptor formats, ENTRY variable format    */
+ /*                     PGT layout.                                  */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> FILE or SYSNULL (for ONFILE)      |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Bit string locator/desc           |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Char string locator/descriptor    |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Converted value returned on the stack.       */
+ /*                                                                  */
+ /*      Errors:        CONVERSION                                   */
+ /*                                                                  */
+ /*      Called from:   Compiled code.  Not in PGT because hopefully */
+ /*                     will not be needed in all programs.          */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                     Apparently, the source character string can  */
+ /*                     contain leading and trailing blanks, so the  */
+ /*                     result may be smaller than the source.       */
+ /*                     As of 1.0.0. this procedure has been changed */
+ /*                     to return the actual length of the string    */
+ /*                     in EAX. This may not be the best way to      */
+ /*                     handle it. Perhaps the result should be      */
+ /*                     VARYING or adjustable.                       */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2022-06-12: Modify to accept leading and trailing    1.0.0*/
+ /*                    blanks and return the length of the result.0.0*/ 
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CCB: proc(pChar,pBits,pFile)
+          external( '_pli_CCB' )
+          returns( fixed bin(31) )                            /*1.0.0*/
+          options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pChar               ptr;                     /* -> Char L/D */
+ dcl     pBits               ptr;                     /* -> Bit L/D  */
+ dcl     pFile               ptr;                     /* -> FILE     */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pB                  ptr;                     /* -> Bit str  */
+ dcl     pC                  ptr;                     /* -> Char str */
+ dcl     pD                  ptr;                     /* -> Descript */
+ dcl     pDSA                ptr;                     /* -> DSA      */
+ dcl     pPGT                ptr;                     /* -> PGT      */
+ dcl     p                   ptr;
+ dcl     lChar               fixed bin(31);           /* Bit str len */
+ dcl     c                   char(1);
+ dcl     b                   bit(1);
+ dcl     t                   fixed bin(31);
+ dcl     trailing_blank      fixed bin(7);                    /*1.0.0*/
+
+ dcl     pSIG                entry( fixed bin(31), ptr )
+                             options( linkage(system) )
+                             variable;
+
+ dcl     PGT          (0:127)ptr based;
+
+ /*-------------------------*/
+ /* Parms for CONVERSION    */
+ /*-------------------------*/
+ dcl   1 conv_parms,
+         5 conv_onsource     ptr,      /* -> ONSOURCE Locator/Descr  */
+         5 conv_onchar       ptr,      /* -> Single character        */
+         5 conv_onfile       ptr;      /* -> ONFILE or SYSNULL       */
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     bStr       (0:32760)bit(1) unaligned    based(pB);
+ dcl     cStr                char(1)             based(pC);
+ dcl     prefix              fixed bin(15)       based;
+ dcl     vStr                char(0)   based     varying;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             returns( bit(16) )
+                             ext( '_pli_GetFlags' )
+                             options( linkage(system) );
+ dcl     GetDSA              entry
+                             returns( ptr )
+                             ext( '_pli_GetDSA' )
+                             options( linkage(system) );
+
+ dcl    (addr,length,string,stg,sysnull)
+                             builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure Entry                                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get enabled condition mask */
+
+ /*-----------------------------------*/
+ /* Set up entry variable and data    */
+ /* for SIGNAL CONVERSION             */
+ /*-----------------------------------*/
+ pDSA = GETDSA();                      /* Get my DSA address         */
+ pDSA = pDSA - stg( SYSNULL->dsa_below_ebp );
+ pPGT = pDSA->dsa_edi;                 /* -> PGT                     */
+ addr(pSIG)->ent_entry_point = pPGT->PGT(16);
+ /* PGT(16) is ic_sig                 */
+ addr(pSIG)->ent_static_DSA  = SYSNULL;
+ conv_onsource = pChar;                /* -> Source Loc/Desc         */
+ conv_onfile   = pFile;                /* -> FILE for ONFILE         */
+
+ /*-----------------------------------*/
+ /* Restart here after CONVERSION     */
+ /*-----------------------------------*/
+ retry:
+
+ pC = pChar->pData;                    /* -> Source character string */
+ pD = pChar->pDesc;                    /* -> Source descriptor       */
+ if pD->ST_id = '10'x                  /* Fixed-length source?       */
+ then lChar = pD->ST_len;              /* Yes, use that              */
+ else do;                              /* Otherwise -                */
+   lChar = length(pC->vStr);           /*   Length from prefix       */
+   pC = pC + stg(NULL()->prefix);      /*   Adjust addr of string    */
+   end;
+ pB = pBits->pData;                    /* -> Target bit string       */
+ pD = pBits->pDesc;                    /* -> Target descriptor       */
+ if pD->ST_id ª= '20'x                 /* Varying target?            */
+ then do;                              /* Yes -                      */
+   pB->prefix = lChar;                 /* Set length                 */
+   pB = pB + stg(NULL()->prefix);      /*   Adjust addr of string    */
+   end;
+
+ /* Clear result field */
+ t  = (lChar+7)/8;                                            /*1.0.0*/
+ call plifill(pB,'00'x,t);                                    /*1.0.0*/
+/* p = pB + (lChar/8);                 /* -> Last target byte        */
+/* p->cStr='00'x;                      /* Make sure it's clear       */
+
+ /* OPT: Since the result of the conversion is always an ALIGNED     */
+ /*      bit string on the stack, maybe we can initialize it to      */
+ /*      zeroes with PLIFILL before trying the conversion.  Then we  */
+ /*      need to set only the 'one' bits in the result.              */
+
+ /*-----------------------------------*/                      /*1.0.0*/
+ /* Bypass leading blanks             */                      /*1.0.0*/
+ /*-----------------------------------*/                      /*1.0.0*/
+ do while( lChar>0 );                                         /*1.0.0*/
+   if cStr^=' ' then leave;                                   /*1.0.0*/
+   pC    = pC+1;                       /* Bump input pointer    1.0.0*/
+   lChar = lChar-1;                    /* Decrement count       1.0.0*/
+   end;                                                       /*1.0.0*/
+  if lChar=0 then return(0);           /* All blank           /*1.0.0*/
+
+ /*-----------------------------------*/
+ /* Do the Conversion                 */
+ /*-----------------------------------*/
+ t=0;
+ trailing_blank=0;                                           /*1.0.0*/
+ do while( lChar>0 );
+   c = cStr;                           /* Get next character         */
+   if c=' '                            /* Trailing blank      /*1.0.0*/
+   then trailing_blank=1;                                     /*1.0.0*/
+   else do; 
+     if c='0'      & trailing_blank=0 then b='0'b;
+     else if c='1' & trailing_blank=0 then b='1'b;
+     else do;                           /* Character not '0' or '1'  */
+       /*------------------------------*/
+       /* Character not '0' or '1'     */
+       /*------------------------------*/
+       if M_CONVERSION then do;         /* CONVERSION enabled        */
+         /*----------------------------------------------------------*/
+         /* "Signal CONVERSION;"                                     */
+         /* This can't be done via SIGNAL statement due to the need  */
+         /* to pass a parameter for the ONSOURCE and ONCHAR informati*/
+         /*----------------------------------------------------------*/
+         conv_onchar = pC;              /* Set up ONCHAR             */
+         call pSIG(oncode_conv,addr(conv_parms));
+         GOTO retry;                    /* Retry conversion          */
+         /* COMMENT: "If the ONSOURCE or ONCHAR pseudovariable is    */
+         /*          used, the program retries the conversion on     */
+         /*          return from the ON-unit.  If the error is not,  */
+         /*          corrected, the program loops.  If these  are    */
+         /*          pseudovariables are not used, the ERROR         */
+         /*          condition is raised."                           */
+         /*             -SC26-3114-2, p.313,                         */
+         /*          SIG checks to see whether these pseudovariables */
+         /*          have been used, and raises ERROR if not.  If the*/
+         /*          code returns here, they have been used.         */
+         end; /* M_CONVERSION */
+       else b='0'b;                     /* CONVERSION disabled       */
+       /* COMMENT: "If the CONVERSION condition is raised and it is  */
+       /*          disabled, the program is in error."               */
+       /*          (I.E. The behavior is undefined.)                 */
+       /*               -SC26-3114-2, p.313.                         */
+       /*          Our default action is to treat the invalid        */
+       /*          character as if it contained '0' and continue     */
+       /*          the conversion.                                   */
+       end;
+     bStr(t) = b;                      /* Move bit to target         */ 
+     t = t+1;                          /* Bump target subscript      */
+     end;                                                     /*1.0.0*/
+   pC    = pC+1;                       /* Bump input pointer         */
+   lChar = lChar-1;                    /* Decrement count            */
+   end; /* do while */
+ return(t);                            /* Characters converted  1.0.0*/
+
+ %include CONDMASK;
+ %include ONCODE;
+ %include DESC;
+ %include DSA;
+ %include ENTRY;
+ %include LOCDESC;
+
+ end pli_CCB;

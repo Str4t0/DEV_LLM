@@ -1,0 +1,142 @@
+ /* _pli_OSEvent                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.7           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSEvent (PL/I runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          Feb, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSEvent                                 */
+ /*                                                                  */
+ /*      Function:      Operating system dependent Event semaphores. */
+ /*                                                                  */
+ /*      OSEvent is a wrapper for OS-dependent Event semaphores.     */
+ /*      This procedure is called as follows:                        */
+ /*        P1    P2      Function                                    */
+ /*         0    ignored Create an Event sem, return handle in EAX.  */
+ /*         1    hEvent  Reset an Event semaphore.                   */
+ /*         2    hEvent  Post an Event semaphore.                    */
+ /*         3    hEvent  Wait for  an Event semaphore.               */
+ /*         4    hEvent  Close or Free Event semaphore.              */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     OS/2: DosCreateEventSem, DosResetEventSem,   */
+ /*                           DosPostEventSem, DosWaitEventSem,      */
+ /*                           DosCloseEventSem.                      */
+ /*                     Assumes the OS handle of or pointer to an    */
+ /*                     Event semaphore is FIXED BIN(31).            */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     hEvent = OSEvent(0,0);                       */
+ /*                     call OSEvent(fun,hEvent)                     */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSEvent: proc(fun,hEvent)
+              returns( fixed bin(31) )
+              options( linkage(system) )
+              ext( '_pli_OSEvent' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ %replace EVENT_CREATE by 0;
+ %replace EVENT_RESET  by 1;
+ %replace EVENT_POST   by 2;
+ %replace EVENT_WAIT   by 3;
+ %replace EVENT_CLOSE  by 4;
+ dcl     fun                 fixed bin(31);      /* Function code    */
+ dcl     hEvent              fixed bin(31);      /* Semaphore handle */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     NewEvent            fixed bin(31);
+ dcl     RC                  fixed bin(31);      /* OS/2 return code */
+ dcl     post_count          fixed bin(31);      /* Count for Reset  */
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosCreateEventSem   entry( ptr, ptr,
+                                    fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosCreateEventSem' );
+ dcl     DosResetEventSem    entry( fixed bin(31), ptr )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosResetEventSem' );
+ dcl     DosPostEventSem     entry( fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosPostEventSem' );
+ dcl     DosWaitEventSem     entry( fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosWaitEventSem' );
+ dcl     DosCloseEventSem    entry( fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosCloseEventSem' );
+
+ dcl    (addr,sysnull)       builtin;
+
+ /*-------------------------------------------------------*/
+ /*                                                       */
+ /*-------------------------------------------------------*/
+  if hEvent=0 & funª=0       /* Erroneous call                  0.9.1*/
+  then return;               /* .. just get out                 0.9.1*/
+  select( fun );
+   when(EVENT_CREATE) do;    /* 0=Create Event Semaphore             */
+     RC = DosCreateEventSem( sysnull(),          /* Unnamed Event    */
+                             addr(NewEvent),     /* addr(handle)     */
+                             0,                  /* Unshared         */
+                             0 );                /* Initial State    */
+     if RC=0 then return(NewEvent);              /* Created          */
+     signal ERROR;                               /* Not created      */
+     end; /* EVENT_CREATE */
+   when(EVENT_RESET) do;     /* 1=Reset Event Semaphore              */
+     RC = DosResetEventSem( hEvent, addr(post_count) );
+     if RC=0   then return;                      /* No returned value*/
+     if RC=300 then return;                      /* ERROR_ALREADY_RES*/
+     signal ERROR;      
+     end; /* EVENT_RESET */   
+   when(EVENT_POST) do;      /* 2=Post Event Semaphore               */
+     RC = DosPostEventSem(hEvent);
+     /* IOR calls to DOSxxxEventSem ignored return codes,            */
+     /* Until we can figure out the problem, we need to do the same. */
+     return;
+     if RC=0   then return;
+     if RC=299 then return;                      /* ERROR_ALREADY_POS*/
+     signal ERROR;
+     end; /* EVENT_POST */
+   when(EVENT_WAIT) do;      /* 3=Wait for Event Semaphore           */
+     RC = DosWaitEventSem(hEvent,-1);            /* Indefinite wait  */
+     if RC=0   then return;                      /* No returned value*/
+     if RCª=95 then signal ERROR;                /* ERROR_INTERRUPT  */
+     /*display( 'Attention!' );     /**/
+     signal ATTENTION;
+     /* Normal return from ATTENTION On-unit */
+     end; /* EVENT_WAIT */
+   when(EVENT_CLOSE) do;     /* 4=Close Event Semaphore              */
+     RC = DosCloseEventSem(hEvent);
+     if RCª=0 then signal ERROR;
+     end; /* EVENT_CLOSE */
+   /* otherwise raise ERROR condition */
+   end; /* select */
+
+ /* return */
+
+ end pli_OSEvent;

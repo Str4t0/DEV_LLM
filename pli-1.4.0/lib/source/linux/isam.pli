@@ -1,0 +1,1094 @@
+ /* _pli_ISAM                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.10        */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_ISAM (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2017                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_ISAM                                    */
+ /*                                                                  */
+ /*      Function:      ISAM provides all indexed file functions     */
+ /*                     for PL/I programs.                           */
+ /*                                                                  */
+ /*      Limitations:   * The LOCATE instruction is not currently    */
+ /*                       supported.                                 */
+ /*                     * The UNLOCK instruction is ignored.         */
+ /*                                                                  */
+ /*      This procedure is called by IOR, OPEN, or CLOSE             */
+ /*      when it recognizes an operation on an ISAM file.            */
+ /*      It is not intended to be user-callable.                     */
+ /*                                                                  */
+ /*      ISAM provides alternate functionality for all I/O           */
+ /*      operations. It is passed the address of an FCB for the      */
+ /*      file and an IORB for the requested operation. The FCB is    */
+ /*      locked with a "soft lock" to serialize operations among     */
+ /*      threads.                                                    */
+ /*                                                                  */
+ /*      Interaction with condition-handling:                        */
+ /*        Conditions raised from I/O routines will leave the FCB    */
+ /*        in a locked state.  The condition handler mainline        */
+ /*        extracts data needed by the ON-Unit (ONFILE, etc),        */
+ /*        and unlocks the FCB via function 35 (status).             */
+ /*        Conditions raised by open code (SIGNAL ENDPAGE(), etc.)   */
+ /*        will be recognized by the fact that the FCB is not locked */
+ /*        by the current task and will therefore not unlock         */
+ /*        the FCB.                                                  */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*        pblIsam open source library.                              */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*        ISAM is called thru an entry point in 'GBL' established   */
+ /*        during initialization.                                    */
+ /*          DCL (pFCB,pIORB) ptr;                                   */
+ /*          CALL ISAM(pIORB,pFCB);                                  */
+ /*                                                                  */
+ /*                                                                  */
+ /*      Returns:                                                    */
+ /*        Nothing is returned.                                      */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2034-06-08: Add error code to debug UNDEFINEDFILE  1.3.1*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_ISAM: proc(pIORB,pFCB)
+               ext( '_pli_ISAM' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pIORB               ptr;
+ dcl     pFCB                ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl      err_file            char(9) var    static
+                   init( '<unknown>' );
+ dcl      zero             (2)fixed bin(31)  static    init((2)0);
+ dcl      UNIMPLEMENTED       condition;                      /*1.2.1*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     fun                 fixed bin(31);
+ dcl     RC                  fixed bin(31);
+ dcl     IOR_RC              fixed bin(31);
+ dcl     err_code            fixed bin(31);  /* Code for debug  1.3.1*/
+ dcl     pF                  ptr;
+ dcl     pN                  ptr;
+ dcl     pX                  ptr;
+ dcl     op                  char(8);
+ dcl     which               fixed bin(31);  /* File positioned?     */
+ dcl     bRead_Set           bit(1);                          
+ dcl   1  procinfo,           /* like pliprocinfo               0.9.1*/
+          5 pi_len            fixed bin(31),                  /*0.9.1*/
+          5 pi_pid            fixed bin(31),                  /*0.9.1*/
+          5 pi_tid            fixed bin(31);                  /*0.9.1*/
+
+ /* IORB option flags (values originally from 'keyword')             */
+ dcl   1 bOpt                unaligned,/* Option flags               */
+         5 fil1              bit(22),  /* Stream options             */
+         5 O_IGNORE          bit(1),   /* '00000200'bx               */
+         5 O_NOLOCK          bit(1),   /* '00000100'bx               */
+         5 O_SET             bit(1),   /* '00000080'bx               */
+         5 O_FROM            bit(1),   /* '00000040'bx               */
+         5 O_INTO            bit(1),   /* '00000020'bx               */
+         5 O_EVENT           bit(1),   /* '00000010'bx               */
+         5 O_KEYFROM         bit(1),   /* '00000008'bx               */
+         5 O_KEYTO           bit(1),   /* '00000004'bx               */
+         5 O_KEY             bit(1),   /* '00000002'bx               */
+         5 fil3              bit(1);
+
+ /* IORB option values                                               */
+ dcl   1 IORB_val,                     /* Option values              */
+         5 pDat              ptr,            /* INTO/SET/FROM value  */
+         5 pKey              ptr,            /* KEY or KEYTO value   */
+         5 pEvt              ptr,            /* EVENT value          */
+         5 lCnt              fixed bin(31);  /* IGNORE value         */
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     this_file           file                based;
+ dcl     NONVAR_STR          char(1024)          based;
+ dcl     VAR_STR             char(1024)          based varying;
+ dcl     pVoid               ptr                 based;
+ dcl     sVoid               char(0)  varying    based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB7                 fixed bin(7)        based;
+ dcl   1 VRL                 based,     /* Length info for ENV(V) fil*/
+         5 recl              fixed bin(15),
+         5 mbz               fixed bin(15);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetDSA              entry
+                             external( '_pli_GetDSA' )
+                             returns( ptr )
+                             options( LINKAGE(SYSTEM) );
+ dcl     GetProcInfo         entry( ptr )                     /*0.9.1*/
+                             returns( fixed bin(31) )         /*0.9.1*/
+                             external( '_pli_OSGetProcInfo' ) /*0.9.1*/
+                             options( LINKAGE(SYSTEM) );      /*0.9.1*/
+
+ dcl     PLI_Open            entry( ptr, ptr )
+                             external( '_pli_Open' );
+ dcl     PLI_Close           entry( ptr, ptr )
+                             external( '_pli_Close' );
+ dcl     osdelete            entry( char(*) var )
+                             returns( fixed bin(31) )
+                             ext( '_pli_OSDelete' );
+ dcl     conv                entry( fixed bin(31), ptr )     /*0.9.10*/
+                             returns( ptr )                  /*0.9.10*/
+                             ext( '_pli_Conv' )              /*0.9.10*/
+                             options( linkage(system) );     /*0.9.10*/
+%page;
+ %noprint;
+ %include pbl;
+ %print;
+
+ /*------------------------------------------------------------------*/
+ /* Program entry                                                    */
+ /* This parallels logic from IOR, replacing system calls            */                                 
+ /* with ISAM calls                                                  */
+ /*------------------------------------------------------------------*/
+ IOR_RC = 0;                           /* Prime return code          */
+ err_code = 0;                                                /*1.3.1*/
+
+ /* 'terminate' closes files at EOJ, no IORB is supplied             */
+ if pIORB=SYSNULL() then do;           /* Entry from 'TERMINATE'     */
+   call isam_close;                    /* Close this file            */
+   return;
+   end; /* terminate */
+
+ pF  = pIORB->IOR_pFile;               /* A(FILE)                    */
+ fun = pIORB->IOR_Func;                /* Get function code          */
+ /*------------------------------------------------------------------*/
+ /* Get IORB option data                                             */                                 
+ /* Option values follow fixed portion of IORB in same order as bits */                                 
+ /*------------------------------------------------------------------*/
+ string(bOpt) = string(pIORB->IOR_bOpt); /* Get option flags         */
+ pX  = pIORB->IOR_pOpt;                /* addr(Options)              */
+ if fun>2 & fun<30 then do;            /* Not OPEN or CLOSE          */
+   /* Note that SET and INTO cannot both be specified                */
+   if O_INTO then do;                  /* INTO specified             */
+     pDat = pX->pVoid;                 /* pDat->Record Loc/Desc      */
+     pX = pX + stg(NULL->IOR_optP);    /* Bump option pointer        */
+     end; /* INTO */
+   if O_FROM then do;                  /* FROM specified             */
+     pDat = pX->pVoid;                 /* pDat->Record Loc/Desc      */
+     pX = pX + stg(NULL->IOR_optP);    /* Bump option pointer        */
+     end; /* FROM */
+   /* Note that KEY and KEYTO cannot both be specified               */
+   if O_KEY | O_KEYTO then do;         /* KEY or KEYTO specified     */
+     pKey = pX->pVoid;                 /* pKey->Key Loc/Desc         */
+     pX = pX + stg(NULL->IOR_optP);    /* Bump option pointer        */
+     end; /* KEY|KEYTO */
+   if O_SET then do;                   /* SET specified              */
+     pDat = pX->pVoid;                 /* pDat->ptr                  */
+     pX = pX + stg(NULL->IOR_optP);    /* Bump option pointer        */
+     end; /* SET  */
+   if O_IGNORE then do;                /* IGNORE specified           */
+     lCnt  = pX->IOR_OptF;             /* lCnt = Value               */
+     pX = pX + stg(NULL->IOR_optF);    /* Bump option pointer        */
+     end; /* IGNORE */
+   if O_KEYFROM then do;               /* KEYFROM specified          */
+     pKey = pX->pVoid;                 /* pKey->Keyfrom Loc/Desc     */
+     pX = pX + stg(NULL->IOR_optP);    /* Bump option pointer        */
+     end; /* KEYFROM */
+   /* COMMENT: KEYTO would be out of order for WRITE,                */
+   /*          but is invalid for isam.                              */
+   if O_EVENT then do;                 /* EVENT specified            */
+     pEvt = pX->pVoid;                 /* pEvt->Event Loc/Desc       */
+     pX = pX + stg(NULL->IOR_optP);    /* Bump option pointer        */
+     end; /* EVENT */
+   end; /* Not OPEN or CLOSE */
+
+ /*------------------------------------------------------------------*/
+ /* Test for implicit open.                                          */                                 
+ /*------------------------------------------------------------------*/
+ if substr(pFCB->FCB_status,1,1)='0'b  /* Not open                   */
+ then do;                              /* Implicit or Explicit open  */
+   pFCB->FCB_pFile = pF;               /* Set A(FILE) in FCB         */
+   /* 2=CLOSE, 30=LINENO(), 31=COUNT(), 35=STATUS()                  */
+   if funª=30 & funª=31 & funª=35 &    /* No implicit open for these */
+      funª=2
+   then call isam_open;                /* Open the FCB               */
+   /* COMMENT: OPEN of an already-open file is ignored.              */
+   /*          This seems to correspond to IBM PL/I.                 */
+   end; /* open file */
+
+ bRead_Set = substr(pFCB->FCB_status,30,1); /* Last read was SET()   */
+ substr(pFCB->FCB_status,30,1) = '0'b;      /* Clear the bit         */
+ if pFCB->FCB_CurrPos = -1             /* File not Positioned        */
+ then which = PBLFIRST;                /* Record to read for seq read*/
+ else which = PBLNEXT; 
+
+ /* NOTE: UNDEFINEDFILE -- needs to have a bit in the IORB that      */
+ /*       is cleared on first call and set if UNDF is raised.        */
+ /*       If second entry is made when this bit is set raise         */
+ /*       the ERROR condition. (or use IOR_Func).                    */
+
+ /*---------------------------------------------*/
+ /* Perform the requested I/O operation         */
+ /* if the file attributes permit.              */
+ /*---------------------------------------------*/
+ select( fun );
+   when(  1 ) /* continue */ ;         /* OPEN is no-op              */
+   when(  2 )                          /* CLOSE                      */
+     call isam_close;                  /* Close the FCB              */
+   when( 10 )                          /* READ                       */
+     call isam_read;                   /* Read a record              */
+   when( 11 )                          /* WRITE                      */
+     call isam_write;                  /* Write a record             */
+   when( 12 )                          /* REWRITE                    */
+     call isam_rewrite;                /* Rewrite record             */
+   when( 13 )                          /* LOCATE                     */
+     call isam_locate;                 /* Locate rec in output buff  */
+   when( 14 )                          /* DELETE                     */
+     call isam_delete;                 /* Delete a record            */
+   when( 15 )                          /* UNLOCK                     */
+     call isam_unlock;                 /* Unlock a record            */
+   /*----------------------------------------------------------------*/
+   /*  COMMENT: No stream I/O for ISAM files                         */
+   /*----------------------------------------------------------------*/
+   when( 20, 21, 30, 31 )              /* GET, PUT, COUNT(), LINENO()*/
+     goto undefined_file;              /* err_code = 0               */           
+   /*-----------------------*/
+   /* Internal Non-I/O      */
+   /*-----------------------*/
+   /* SAMEKEY is not implemented      */
+   when( 35 ) do;                      /* Status Internal function   */
+     IOR_RC = binvalue( pFCB->FCB_pError );
+     pFCB->FCB_pError,pFCB->FCB_pFile = SYSNULL;
+     end; /* Status */
+   otherwise  signal ERROR;
+   end; /* select */
+
+ if fun^=1                                  /* All but OPEN          */
+ then pFCB->FCB_CurrPos = 0;                /* File positioned       */ 
+
+ return;
+
+%page;
+
+/*-------------------------------------------------------------------*/
+/* Functional processing routines                                    */                                 
+/*-------------------------------------------------------------------*/
+
+/*--------------------------*/
+/* OPEN                     */
+/*--------------------------*/
+isam_open: proc;
+  dcl    (pDataName,pIndexName)ptr;
+  dcl     pTitle              ptr;
+  dcl     pIsamFile           ptr;
+  dcl     n                   fixed bin(31);
+  dcl     indexname_list   (2)ptr;
+  dcl     file_mode           fixed bin(31)       init(0);
+  dcl     ret_key_data        char(255);
+
+  /* Build data and index file names - only one index allowed        */
+  op = 'OPEN    ';
+  pTitle = pFCB->FCB_pTitle;
+  pDataName  = build_name(pTitle,'.D');
+  pIndexName = build_name(pTitle,'.I');
+  indexname_list(1) = pIndexName;            /* List of index files  */
+  indexname_list(2) = sysnull();
+
+  /* COMMENT: I was going to delete any existing data if the file is */
+  /*          opened OUTPUT, but apparently mainframe PL/I           */
+  /*          implementations append in this case.                   */
+
+  if (pFCB->FCB_attrib&'00000200'bx)='00000000'bx /* Not INPUT       */
+  then file_mode = 1;
+
+  pIsamFile = pblIsamOpen( pDataName,        /* *path                */
+                           file_mode,        /* update 1=R/W, 0=RO   */
+                           sysnull(),        /* *filesettag          */
+                           1,                /* nkeys                */
+                           addr(indexname_list), /* **keyfilenames   */
+                           addr(zero) );     /* *keydup (*int[])  )  */
+
+  if pIsamFile=sysnull() then do;                             /*1.3.1*/
+    err_code = 1;                                             /*1.3.1*/
+    goto undefined_file;               
+    end;                                                      /*1.3.1*/
+
+  /* Set 'open' plus 'no I/O' flags   */
+  substr(pFCB->FCB_status,1,1)='1'b;   /* File now open              */
+  pFCB->FCB_pIsamFile = pIsamFile;     /* Open was successful        */
+  call plifree(pDataName);             /* Free unneeded names        */
+  call plifree(pIndexName);
+  pFCB->FCB_CurrPos = -1;              /* Position not set           */
+
+ /* Build component name as nonvarying null-terminated string        */
+ build_name: proc(pN,c) returns(ptr);
+  dcl     pN                  ptr;
+  dcl     c                   char(2);
+  dcl     p                   ptr;
+  dcl     n                   fixed bin(31);
+  n = length(pN->File_Name) + 3;
+  p = allocate(n);
+  substr(p->NONVAR_STR,1,n)  = 
+             pN->File_Name || c || '00'x;
+  return(p);
+  end build_name;
+
+  end isam_open;
+
+/*--------------------------*/
+/* CLOSE                    */
+/*--------------------------*/
+isam_close: proc;
+
+  op = 'CLOSE   ';
+  RC = pblIsamClose(pFCB->FCB_pIsamFile);/* ISAM CLOSE logic         */
+  pFCB->FCB_pIsamFile  = SYSNULL();     /* Zero file handle          */
+  pFCB->FCB_LastSt = RC;                /* Set last OS return code   */
+  substr(pFCB->FCB_status,1,1)='0'b;    /* Indicate file now closed  */
+  if pFCB->FCB_pTitleª=sysnull()        /* Free title string         */
+  then call plifree(pFCB->FCB_pTitle);
+  pFCB->FCB_pTitle=sysnull();
+  if pFCB->FCB_abufª=sysnull()          /* Free buffer               */
+  then call plifree(pFCB->FCB_abuf);
+  pFCB->FCB_aBuf,pFCB->FCB_pBuf = SYSNULL;/* Mark deleted            */
+
+  if RC<0 then do;
+    call print_error(pbl_errno);        /* print_error raises ERROR  */
+    return;
+    end;
+
+  end isam_close;
+
+/*-------------------------------------------------------------------*/
+/* READ options                                                      */
+/*                                                                   */
+/* SEQUENTIAL BUFFERED INPUT:                                        */
+/*   READ FILE(file) INTO(rec) [KEY(exp) | KEYTO(ref) ]              */
+/*   READ FILE(file) SET(ptr)  [KEY(exp) | KEYTO(ref) ]              */
+/*   READ FILE(file) [ IGNORE(count) ] <-- default=ignore(1)         */
+/* SEQUENTIAL BUFFERED UPDATE:                                       */
+/*   READ FILE(file) INTO(rec) [KEY(exp) | KEYTO(ref) ]              */
+/*   READ FILE(file) SET(ptr) [ KEY(exp) | KEYTO(ref) ]              */
+/*   READ FILE(file) [ IGNORE(count) ] <-- default=ignore(1)         */
+/* SEQUENTIAL UNBUFFERED INPUT:                                      */
+/*   READ FILE(file) INTO(rec) [KEY(exp) | KEYTO(ref) ]              */
+/*   READ FILE(file) [ IGNORE(count) ] <-- default=ignore(1)         */
+/* SEQUENTIAL UNBUFFERED UPDATE:                                     */
+/*   READ FILE(file) INTO(rec) [KEY(exp) | KEYTO(ref) ]              */
+/*   READ FILE(file) [ IGNORE(count) ] <-- default=ignore(1)         */
+/* DIRECT UPDATE:                                                    */
+/*   READ FILE(file) INTO(rec) KEY(exp)                              */
+/*                                                                   */
+/*   Ignored: EVENT                                                  */
+/*                                                                   */
+/*-------------------------------------------------------------------*/
+isam_read: proc;
+ dcl      RC                  fixed bin(31);
+ dcl      p                   ptr;
+ dcl    1 ret_data,
+          5 ret_data_addr     ptr,       
+          5 ret_data_len      fixed bin(31); 
+ dcl    1 in_key,
+          5 in_key_addr       ptr,       
+          5 in_key_len        fixed bin(31); 
+ dcl    1 ret_key,
+          5 ret_key_addr      ptr,       
+          5 ret_key_len       fixed bin(31); 
+ dcl      ret_key_data        char(255);
+
+ /* READ option data from IORB (bit values originally from 'keyword')*/
+ dcl   1 Read_opt            unaligned,/* Option flags               */
+         5 fil1              bit(22),
+         5 O_IGNORE          bit(1),   /* '00000200'bx               */
+         5 O_NOLOCK          bit(1),   /* '00000100'bx               */
+         5 O_SET             bit(1),   /* '00000080'bx               */
+         5 fil2              bit(1),
+         5 O_INTO            bit(1),   /* '00000020'bx               */
+         5 O_EVENT           bit(1),   /* '00000010'bx               */
+         5 fil3              bit(1),
+         5 O_KEYTO           bit(1),   /* '00000004'bx               */
+         5 O_KEY             bit(1),   /* '00000002'bx               */
+         5 fil4              bit(1);
+
+  op = 'READ    ';
+ string(Read_opt) = string(bOpt);      /* Get option flags           */
+ ret_key_addr = addr(ret_key_data);
+ lCnt=1;                                /* default 'IGNORE' rec count*/
+
+ /* File must be opened as INPUT or UPDATE                           */
+ if (pFCB->FCB_attrib&'02008200'bx)='00000000'bx/* NOT INPUT/UPDATE  */
+ then do;                                                     /*1.3.1*/
+   err_code = 2;                                              /*1.3.1*/
+   goto undefined_file;
+   end;                                                       /*1.3.1*/
+ 
+ if ^(O_INTO | O_SET) then do;          /* READ IGNORE (or default)  */
+   if (pFCB->FCB_attrib&'00100000'bx)='00000000'bx /* Not SEQUENTIAL */
+   then do;                                                   /*1.3.1*/
+     err_code = 3;                                            /*1.3.1*/
+     goto undefined_file;
+     end;                                                     /*1.3.1*/
+   call read_ignore(addr(ret_key),lCnt);/*   valid only for seq file */
+   return;
+   end;
+ 
+ /* Set the current file position for read.                          */
+ /* If KEY is omitted this is a sequential read, and the file        */
+ /* must be SEQUENTIAL; otherwise this is a keyed read.              */
+ if ^O_KEY then do;                     /* Sequential read           */
+   if (pFCB->FCB_attrib&'00100000'bx)='00000000'bx /* Not SEQUENTIAL */
+   then do;                                                   /*1.3.1*/
+     err_code = 4;                                            /*1.3.1*/
+     goto undefined_file;
+     end;                                                     /*1.3.1*/
+   call read_sequential(addr(ret_key));
+   if ret_key_len<=0 then do;
+     signal ENDFILE(pIORB->IOR_pFile->this_file);
+     return;
+     end; /*endfile*/
+   end; /* sequential read */
+ else do;                               /* KEYED read                */
+   call get_str(pKey,addr(in_key));
+   call read_direct(addr(in_key),addr(ret_key));
+   end; /* keyed */
+
+  if O_KEYTO then do;
+    call put_str(pKey,addr(ret_key));
+    end; /* KEYTO */
+ 
+  RC = pblIsamReadData(pFCB->FCB_pIsamFile,
+                       pFCB->FCB_pBuf,         
+                       pFCB->FCB_recsize );
+  if RC<0 then do;
+    call print_error(pbl_errno);
+    end;
+  ret_data_len  = RC;
+
+  /* The read will always read the maximum size record (1024B)       */
+  /* Check to see if wrong-length record was read.                   */
+  if ret_data_len^=pFCB->FCB_recsize then do;
+    if (pFCB->FCB_envflags&'0000003C'bx)^='00000000'bx & /* RECFM=F(B*/
+        ret_data_len^=pFCB->FCB_recsize /* Not fixed size            */
+    then goto signal_record;            /* Raise the RECORD condition*/
+    else if ret_data_len>pFCB->FCB_recsize /* Too big                */
+    then goto signal_record;            /* Raise the RECORD condition*/
+    end; /* Record size check */
+
+ if O_SET then do;                     /* READ SET(): Use record buf */
+   ret_data_addr = pFCB->FCB_aLine;
+   if (pFCB->FCB_envflags&'00000780'bx)^='00000000'bx        /*0.9.10*/
+   then do;
+     ret_data_addr->vrl.recl=ret_data_len;
+     ret_data_addr->vrl.mbz=0;
+     ret_data_addr = ret_data_addr+4;
+     end;
+   call plifill( ret_data_addr, '00'x, pFCB->FCB_recsize );
+   substr(pFCB->FCB_status,30,1) = '0'b;    /* Indicate SET()        */
+   end; /* SET */
+
+ if O_INTO then do;                    /* READ INTO(): Caller's buf  */
+   /* When reading INTO a nonvarying string, the IBM compiler will   */
+   /* only transmit the actual data read and leave the rest of the   */
+   /* buffer, if any, untouched.  I can't find where this is         */
+   /* documented, but it is the actual behavior.                     */
+   /* In particular, the buffer is not space-filled.                 */
+   if ret_data_len > pDat->pDesc->ST_len
+   then goto signal_record;
+   ret_data_addr = pDat->pData;
+   if pDat->pDesc->ST_id='11'x then do;/* INTO(varying_string)       */
+     ret_data_addr->FB15 = ret_data_len;/* Set VARYING record length */
+     ret_data_addr = ret_data_addr+stg(null()->sVoid);
+     end; /* VARYING */
+   end; /* INTO */
+
+  call plimove( ret_data_addr,
+                pFCB->FCB_pBuf,
+                ret_data_len);          /* Move record data          */
+
+  /* For READ SET tell the caller where the record is                */
+  if O_SET                              /* Set pointer for caller    */
+  then pDat->pVoid = ret_data_addr;    
+
+  return;
+
+read_sequential: proc(pRetkey);
+  dcl     pRetkey             ptr;
+  dcl     RC                  fixed bin(31);
+  dcl   1 ret_key             based(pRetkey),
+          5 ret_key_addr      ptr,       
+          5 ret_key_len       fixed bin(31);
+
+  RC = pblIsamGet(pFCB->FCB_pIsamFile,
+                   which,               /* First or next             */
+                   0,
+                   ret_key_addr );
+  ret_key_len = RC;                     /* Save returned key length  */
+  if RC<0 then do;
+    if pbl_errno = PBL_ERROR_NOT_FOUND  /* Check for ENDFILE         */
+    then return;
+    call print_error(pbl_errno);
+    end;
+  return;
+
+  end read_sequential;
+
+read_ignore: proc(pRetkey,n);
+  dcl     pRetKey             ptr;
+  dcl   1 ret_key             based(pRetkey),
+          5 ret_key_addr      ptr,       
+          5 ret_key_len       fixed bin(31); 
+  dcl     n                   fixed bin(31);      /* Skip count      */         
+  dcl     i                   fixed bin(31);
+  dcl     RC                  fixed bin(31);
+
+  /* if n is zero or negative, this is a no-op */
+  do i=1 to n;
+    RC = pblIsamGet(pFCB->FCB_pIsamFile,
+                     which,             /* First or next             */
+                     0,
+                     ret_key_addr );  
+    ret_key_len = RC;                   /* Save returned key length  */
+    if RC<0 then do;
+      if pbl_errno = PBL_ERROR_NOT_FOUND/* Check for ENDFILE         */
+      then do;
+        signal ENDFILE(pIORB->IOR_pFile->this_file);
+        return;
+        end;
+      call print_error(pbl_errno);
+      return;
+      end;
+    end; /* do */
+  ret_key_len = RC;
+
+  end read_ignore;
+
+  end isam_read;
+
+/*-------------------------------------------------------------------*/
+/* WRITE options                                                     */
+/*                                                                   */
+/*   WRITE FILE(file) FROM(rec) KEYFROM(exp)                         */
+/*                                                                   */
+/*   Ignored: EVENT                                                  */
+/*                                                                   */
+/*-------------------------------------------------------------------*/
+isam_write: proc;
+ dcl     pTmp                ptr;
+ dcl     RC                  fixed bin(31);
+
+ dcl    1 out_data,
+          5 out_data_addr     ptr,       
+          5 out_data_len      fixed bin(31); 
+ dcl    1 in_key,
+          5 in_key_addr       ptr,       
+          5 in_key_len        fixed bin(31); 
+
+ /* WRITE option data frpm IORB (bit values originally from 'keyword'*/
+ dcl   1 Write_opt           unaligned,/* Option flags               */
+         5 fil1              bit(25),                        /*0.9.10*/
+         5 O_FROM            bit(1),        /* '00000040'bx    0.9.10*/
+         5 fil2              bit(1),
+         5 O_EVENT           bit(1),        /* '00000010'bx          */
+         5 O_KEYFROM         bit(1),        /* '00000008'bx          */
+         5 fil3              bit(3);
+
+  op = 'WRITE   ';
+  string(Write_opt) = string(bOpt);     /* Get option flags          */
+
+  /* File must be opened as OUTPUT or UPDATE                         */
+  if (pFCB->FCB_attrib&'02008000'bx)='00000000'bx/* NOT OUTPUT/UPDATE*/
+  then do;                                                    /*1.3.1*/
+    err_code = 5;                                             /*1.3.1*/
+    goto undefined_file;
+    end;                                                      /*1.3.1*/
+ 
+  /* A key is required, but the compiler can't detect that it was not*/
+  /* provided, since the write may specify e.g. a file variable, and */
+  /* in the general case we have no way of knowing the actual file.  */ 
+  if ^(O_KEYFROM) then do;              /* Key not specified         */
+    in_key_addr = addr(in_key);         /* Dummy                     */
+    in_key_len  = 0;                    /* Null key                  */
+    call signal_key(in_key_addr,in_key_len);
+    return;
+    end;
+
+  call get_str(pKey,addr(in_key));
+  if in_key_len<=0 | in_key_len>255     /* Invalid key length        */
+  then do;
+    call signal_key(in_key_addr,in_key_len);
+    return;
+    end;
+
+  if ^O_FROM then goto signal_record;   /* Record not supplied       */
+
+  call get_str(pDat,addr(out_data));    /* Get record info           */ 
+
+  /* Check to see if wrong-length record is to be written            */
+  if out_data_len<=0 | out_data_len>1024/* Invalid record length     */
+  then goto signal_record;
+  if out_data_len^=pFCB->FCB_recsize then do;
+    if (pFCB->FCB_envflags&'0000003C'bx)^='00000000'bx & /* RECFM=F(B*/
+        out_data_len^=pFCB->FCB_recsize /* Not fixed size            */
+    then goto signal_record;            /* Raise the RECORD condition*/
+    else if out_data_len>pFCB->FCB_recsize /* Too big                 */
+    then goto signal_record;            /* Raise the RECORD condition*/
+    end; /* Record size check */
+
+  /* Format key in storage             */
+  pTmp = allocate(in_key_len+2);        /* Allocate key storage      */
+  pTmp->FB7 = in_key_len;
+  call plimove(pTmp+1,in_key_addr,in_key_len); /* Build key          */
+  substr(pTmp->NONVAR_STR,in_key_len+2,1)='00'x;
+
+  RC = pblIsamInsert( pFCB->FCB_pIsamFile,/* Read the record         */
+                      pTmp, 
+                      in_key_len+1,     /* allkeyslen                */
+                      out_data_addr,
+                      out_data_len );
+   
+  call plifree(pTmp);                   /* Free key storage          */
+
+  if RC^=0 then do;
+    if pbl_errno = PBL_ERROR_EXISTS 
+    then do;
+      call signal_key(in_key_addr,in_key_len);
+      return;
+      end;
+    call print_error(pbl_errno);
+    return;
+    end;
+
+  end isam_write;
+
+ /*------------------------------------------------------------------*/
+ /* REWRITE                                                          */
+ /*                                                                  */
+ /* SEQUENTIAL BUFFERED UPDATE:                                      */
+ /*   REWRITE FILE(file) [ FROM(rec) ]                               */
+ /* SEQUENTIAL UNBUFFERED UPDATE:                                    */
+ /*   REWRITE FILE(file) FROM(rec)                                   */
+ /* DIRECT UPDATE:                                                   */
+ /*   REWRITE FILE(file) FROM(rec) KEY(exp)                          */
+ /*                                                                  */
+ /*   Not allowed: EVENT                                             */
+ /*------------------------------------------------------------------*/
+isam_rewrite: proc;
+ dcl     RC                  fixed bin(31);
+ dcl     p                   ptr;
+
+ dcl    1 out_data,
+          5 out_data_addr     ptr,       
+          5 out_data_len      fixed bin(31); 
+ dcl    1 in_key,
+          5 in_key_addr       ptr,       
+          5 in_key_len        fixed bin(31); 
+ dcl      ret_key_data        char(255);
+ dcl    1 ret_key,
+          5 ret_key_addr      ptr,       
+          5 ret_key_len       fixed bin(31); 
+
+ /* REWRITE option data frpm IORB (bit values originally from 'keywor*/
+ dcl   1 Rewrite_opt         unaligned,/* Option flags               */
+         5 fil1              bit(25),                        /*0.9.10*/
+         5 O_FROM            bit(1),        /* '00000040'bx    0.9.10*/
+         5 fil2              bit(1),
+         5 O_EVENT           bit(1),        /* '00000010'bx          */
+         5 fil3              bit(2),
+         5 O_KEY             bit(1),        /* '00000002'bx          */
+         5 fil4              bit(1);
+
+  op = 'REWRITE ';
+  string(Rewrite_opt) = string(bOpt);   /* Get option flags          */
+
+  /* File must be opened as UPDATE                                   */
+  if (pFCB->FCB_attrib&'02000000'bx)='00000000'bx/* NOT UPDATE       */
+  then do;                                                    /*1.3.1*/
+    err_code = 6;                                             /*1.3.1*/
+    goto undefined_file;
+    end;                                                      /*1.3.1*/
+ 
+  /* A key is required for DIRECT UPDATE, but the compiler can't     */
+  /* detect that it was not provided, since the write may specify    */
+  /* e.g. a file variable, and in the general case we have no way    */
+  /* of knowing the actual file.                                     */ 
+  if O_KEY then do;                     /* Key specified             */
+   call get_str(pKey,addr(in_key));
+   if in_key_len<=0 | in_key_len>255    /* Invalid key length        */
+   then do;
+     call signal_key(in_key_addr,in_key_len);
+     return;
+     end;
+    ret_key_addr = addr(ret_key_data);
+    call read_direct(addr(in_key),addr(ret_key));
+    if pbl_errno = PBL_ERROR_NOT_FOUND  /* read_direct will raise KEY*/
+    then return;                        /* So just exit here         */
+    end; /* O_KEY */
+  else do;                              /* Valid only for DIRECT     */
+    if (pFCB->FCB_attrib&'00000010'bx)='00000000'bx
+    then goto signal_record;            /* Raise the RECORD condition*/
+    end; /* ^O_KEY */
+
+  if O_FROM then do;                   /* Record supplied            */
+    call get_str(pDat,addr(out_data));
+    /* Check to see if wrong-length record is to be written          */
+    if out_data_len<=0 | out_data_len>1024/* Invalid record length   */
+    then goto signal_record;
+    if out_data_len^=pFCB->FCB_recsize then do;
+      if (pFCB->FCB_envflags&'0000003C'bx)^='00000000'bx & /* RECFM=F*/
+          out_data_len^=pFCB->FCB_recsize /* Not fixed size          */
+      then goto signal_record;          /* Raise the RECORD condition*/
+      else if out_data_len>pFCB->FCB_recsize /* Too big              */
+      then goto signal_record;          /* Raise the RECORD condition*/
+      end; /* Record size check */
+    end; /* O_FROM */
+  /*-----------------------------------------------------------------*/
+  /* COMMENT: "For SEQUENTIAL UPDATE files, the REWRITE statement    */
+  /*           specifies that the last record read from the file     */
+  /*           is to be rewritten. For ... KEYED SEQUENTIAL UPDATE   */
+  /*           files ... any record can be rewitten whether or not   */
+  /*           it has been read."                                    */
+  /*          "If the last record was read by a READ statement       */
+  /*           with the INTO option, REWRITE without FROM            */
+  /*           has no effect on the dataset."                        */
+  /*                                           - SC26-3114-01, p.238 */
+  /*-----------------------------------------------------------------*/
+  else do;                              /* REWRITE from buffer       */
+    if bRead_Set then return;           /* Last READ was SET()       */
+    p = pFCB->FCB_aLine;                /* ->Internal buffer         */
+    out_data_len  = p->vrl.recl;        /* Stored record length      */
+    out_data_addr = p+4;                /* Record address            */
+    end;
+
+  RC = pblIsamUpdateData
+                    ( pFCB->FCB_pIsamFile,/*                         */
+                      out_data_addr,
+                      out_data_len );
+   
+  if RC<0 then do;
+    call print_error(pbl_errno);
+    return;
+    end;
+
+  end isam_rewrite;
+
+ /*------------------------------------------------------------------*/
+ /* LOCATE                                                           */
+ /*                                                                  */
+ /* SEQUENTIAL BUFFERED OUTPUT: (only):                              */
+ /*   LOCATE based-variable FILE(file) KEYFROM(exp) [ SET(ptr) ]     */
+ /*                                                                  */
+ /*   Not allowed: EVENT                                             */
+ /*------------------------------------------------------------------*/
+isam_locate: proc;
+  op = 'LOCATE  ';
+  signal condition(UNIMPLEMENTED);
+  end isam_locate;
+
+ /*------------------------------------------------------------------*/
+ /* DELETE                                                           */
+ /*                                                                  */
+ /*   DELETE FILE(file) [ KEY(exp) ]                                 */
+ /*                                                                  */
+ /*   Ignored: EVENT                                                 */
+ /*------------------------------------------------------------------*/
+isam_delete: proc;
+ dcl      RC                  fixed bin(31);
+ dcl    1 in_key,
+          5 in_key_addr       ptr,       
+          5 in_key_len        fixed bin(31); 
+  dcl   1 ret_key,
+          5 ret_key_addr      ptr,       
+          5 ret_key_len       fixed bin(31); 
+  dcl     ret_key_data        char(255);
+
+  /* DELETE option data from IORB (bit values orig from 'keyword')    */
+  dcl  1 Delete_opt          unaligned,/* Option flags               */
+         5 fil1              bit(30),
+         5 O_KEY             bit(1),    /* '00000002'bx              */
+         5 fil2              bit(1);
+ 
+ op = 'DELETE  ';
+ string(Delete_opt) = string(bOpt);     /* Get option flags          */
+
+ /* File must be opened as UPDATE                                    */
+ if (pFCB->FCB_attrib&'02000000'bx)='00000000'bx/* NOT UPDATE        */
+ then do;                                                     /*1.3.1*/
+   err_code = 7;                                              /*1.3.1*/
+   goto undefined_file;
+   end;                                                       /*1.3.1*/
+ 
+ /* A key is optional. If not supplied the current record is deleted */    
+ if O_KEY then do;                      /* Key supplied              */
+   call get_str(pKey,addr(in_key));
+   if in_key_len<=0 | in_key_len>255    /* Invalid key length        */
+   then do;
+     call signal_key(in_key_addr,in_key_len);
+     return;
+     end;
+   ret_key_addr = addr(ret_key_data);
+   call read_direct(addr(in_key),addr(ret_key));
+   if ret_key_len<0 then return;        /* Not found                 */
+   end; /* key */
+
+  RC = pblIsamDelete(pFCB->FCB_pIsamFile);
+
+  if RC^=0 then do;
+    call print_error(pbl_errno);
+    return;
+    end;
+
+  end isam_delete;
+
+ /*------------------------------------------------------------------*/
+ /* UNLOCK                                                           */
+ /*                                                                  */
+ /*   UNLOCK FILE(file) KEY(exp)                                     */
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+isam_unlock: proc;
+  /*-----------------------------------*/
+  /* UNLOCK and the EXCLUSIVE          */
+  /* attribute are not implemented     */
+  /*-----------------------------------*/
+  op = 'UNLOCK  ';
+  end isam_unlock;
+%page;
+
+/*-------------------------------------------------------------------*/
+/*                     SUBROUTINES                                   */
+/*-------------------------------------------------------------------*/
+
+/*--------------------------*/
+/* Raise UNDEFINEDFILE      */
+/*--------------------------*/
+undefined_file:
+/*display('ISAM UNDEFINEDFILE. Code='||trim(err_code));       /*1.3.1*/
+  signal UNDEFINEDFILE(pIORB->IOR_pFile->this_file);        /*0.9.10b*/
+  /* There is no return from ENDEFINEDFILE */   
+
+/*--------------------------*/
+/* Raise RECORD             */
+/*--------------------------*/
+signal_record:   
+  signal RECORD(pIORB->IOR_pFile->this_file);
+  /* There is no return from RECORD        */   
+
+/*--------------------------*/
+/* Raise KEY                */
+/*--------------------------*/
+signal_key: proc(pK,lK);
+   dcl    pK                  ptr;
+   dcl    lK                  fixed bin(31);
+   dcl  1 key_parms,                    /* Parameter list for KEY    */
+          5 key_file          ptr,      /* ONFILE or sysnull()       */
+          5 key_loc_addr      ptr;      /* ONKEY                     */
+   dcl  1 key_loc_desc,                 /* Key locator/descriptor    */
+          5 key_pData         ptr,
+          5 key_pDesc         ptr;
+   dcl    strdesc             char(8);  /* stg(pli_ded_STR)          */
+   dcl    oncode_key          fixed bin(15)  static    init(   50 );
+   key_file     = pIORB->IOR_pFile;
+   key_loc_addr = addr(key_loc_desc);
+   key_pData = pK;
+   key_pDesc = addr(strdesc);
+   /* Pass the key format as a nonvarying string                     */
+   strdesc = '10000000'x;
+   addr(strdesc)->ST_len = lK;
+   call CONV( oncode_key, addr(key_parms) );
+   return;                              /* Normal return             */
+   end signal_key;
+
+/*--------------------------*/
+/* Read record by key       */
+/*--------------------------*/
+read_direct: proc(pInkey,pRetkey);
+  dcl    (pInkey,pRetkey)     ptr;
+  dcl     pTmp                ptr;
+  dcl     RC                  fixed bin(31);
+  dcl   1 in_key              based(pInkey),
+          5 in_key_addr       ptr,       
+          5 in_key_len        fixed bin(31); 
+  dcl   1 ret_key             based(pRetkey),
+          5 ret_key_addr      ptr,       
+          5 ret_key_len       fixed bin(31); 
+
+  pTmp = allocate(in_key_len+1);          /* Allocate key storage       */
+  call plimove(pTmp,in_key_addr,in_key_len); /* Build key            */
+  substr(pTmp->NONVAR_STR,in_key_len+1,1)='00'x;   
+  RC = pblIsamFind(pFCB->FCB_pIsamFile,
+                   PBLEQ,
+                   0,
+                   in_key_addr,
+                   in_key_len,
+                   ret_key_addr );
+  call plifree(pTmp);
+  ret_key_len = RC;
+  if RC<0 then do;
+    if pbl_errno = PBL_ERROR_NOT_FOUND then do;
+      call signal_key(in_key_addr,in_key_len);
+      return;                           /* Normal return             */
+      end;
+    call print_error(pbl_errno);
+    return;
+    end;
+  return;
+  end read_direct;
+
+/*--------------------------*/
+/* Get string addr+length   */
+/*--------------------------*/
+ get_str: proc(pLD,pStr);
+   dcl   (pLd,pStr)           ptr;
+   dcl   (pDat,pDsc)          ptr;
+   dcl  1 str_data            based(pStr),
+          5 str_addr          ptr,       
+          5 str_len           fixed bin(31); 
+    pDat = pLD->pData;                 /* ->Data                     */
+    pDsc = pLD->pDesc;                 /* ->Descriptor               */
+    str_len = pDsc->ST_len;            /* Length from descriptor     */
+    if pDsc->ST_id = '11'x             /* Varying?                   */
+    then do;                           /* Yes, length from string    */
+      str_len = length(pDat->sVoid);
+      pDat = pDat+stg(null()->svoid);
+      end;
+    str_addr = pDat;
+    end get_str;
+
+/*--------------------------*/
+/* Put string               */
+/*--------------------------*/
+ put_str: proc(pLD,pSrc);
+   dcl   (pLd,pSrc)           ptr;
+   dcl   (pDat,pDsc)          ptr;
+   dcl    out_len             fixed bin(31);
+   dcl  1 src_data            based(pSrc),
+          5 src_addr          ptr,       
+          5 src_len           fixed bin(31); 
+
+    pDat = pLD->pData;                 /* ->Output address           */
+    pDsc = pLD->pDesc;                 /* ->Output Descriptor        */
+    out_len = pDsc->ST_len;            /* Max length of output       */
+    call plifill( pDat, ' ', out_len );/* Space fill                 */
+    out_len = min(src_len,out_len);    /* Actual length to move      */
+    if pDsc->ST_id = '11'x             /* Varying output?            */
+    then do;                           /* Get key length             */
+      pDat->FB15 = out_len;            /* Set variable length        */
+      pDat = pDat+stg(null()->FB15);
+      end;
+    call plimove( pDat,                /* Move key                   */
+                  src_addr,
+                  out_len);
+
+    end put_str;
+
+ /*------------------------------------------------------------------*/
+print_error: proc(pbl_err);
+  dcl     pbl_err             fixed bin(31);
+
+  /*-----------------------------------------------------------------*/
+  /* The following code is left here for debugging, to activate it   */
+  /* just remove the comments. Recognizable errors (UNDEFINEDFILE,   */
+  /* RECORD, or KEY) above. All other errors come here to raise      */
+  /* the ERROR condition.                                            */
+  /*-----------------------------------------------------------------*/
+
+/* -------  
+  dcl     n                   fixed bin(31);
+  dcl     perr                ptr;
+  dcl     tls_errno           fixed bin(31) based(perr);
+  dcl     __errno_location    entry
+                              returns(ptr)
+                              options( asm linkage(system) )
+                              ext( '__errno_location' );
+
+  if pbl_err>0
+  then n = pbl_err - 1000;
+  else n = 0;
+  if n<0 | n>hbound(isam_errs) then n=hbound(isam_errs);
+  display( 'ISAM RC ' || trim(char(pbl_err)) || 
+                 ': ' || isam_errs(n) );
+  if n>=20 & n<=24 then do;
+    perr = __errno_location; 
+    display( 'file system error code ' || 
+                    trim(char(tls_errno))  || '- ' ||
+                    errno_desc(tls_errno) );
+    end;  
+  display( 'Operation was ' || op );
+   
+dcl     isam_errs      (0:49)char(80) varying   static    init(
+        'Success.',       
+        'Out of memory.', 
+        'The record already exists.', 
+        'Record not found.', 
+        'File structure damaged.', 
+        'Parameter mode is not valid.', 
+        'Parameter key is not valid.', 
+        'Parameter keylen is not valid.', 
+        'Parameter data is not valid.', 
+        'Parameter datalen is not valid.', 
+        'Parameter index is not valid.', 
+        'Parameter list is not valid.', 
+        'Parameter list is not valid.', 
+        'Parameter element is not valid.', 
+        'Parameter set is not valid.', 
+        'Parameter format is not valid.', 
+        '1016',
+        '1017',
+        '1018',
+        '1019',
+        'File system create error.',
+        'File system open error.', 
+        'File system seek error.', 
+        'File system read error.', 
+        'File system write error.',
+        '1025',
+        '1026',
+        '1027',
+        '1028',
+        '1029',
+        'An internal error in pblIsam.',
+        'An internal condition forcing a block split.', 
+        '1032',
+        '1033',
+        '1034',
+        '1035',
+        '1036',
+        '1037',
+        '1038',
+        '1039',
+        'File not open for update, operation not allowed.', 
+        'The current record is not positioned.', 
+        'Index out of range (index < 0 || index >= size()).', 
+        'A collection was modified concurrently to an iterator.',
+        '1044',
+        '1045',
+        '1046',
+        '1047',
+        '1048',
+        'Unknown error.'
+                    );
+
+ %include errno_txt;
+ ------------- */   
+
+    signal ERROR;
+
+    end print_error;
+
+ %include iorb;
+ %include fcb;
+ %include file;
+ %include locdesc;
+ %include desc;
+
+  end pli_ISAM;

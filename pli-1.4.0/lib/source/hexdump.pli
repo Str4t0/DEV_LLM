@@ -1,0 +1,101 @@
+ /* HEXDUMP: HEXADECIMAL STORAGE DUMP                                */
+ /********************************************************************/
+ /*      PRINT A HEX/CHAR DUMP OF AN AREA OF STORAGE                 */
+ /*        INPUT:  AREA -> DATA TO BE PRINTED                        */
+ /*        LENGTH: LENGTH OF AREA IN BYTES                           */
+ /*        TITLE:  DESCRIPTION OF AREA FOR PRINTOUT                  */
+ /*      PORT:   The ported version has no concept of endian-ness.   */
+ /*                  Changed character set to ASCII                  */
+ /*                  Changed offsets to four bytes.                  */
+ /*                                                                  */
+ /*      This is an old-old procedure which was originally a         */
+ /*      compiler module. It was moved to the RTL 2020-04-18         */
+ /*      for version 0.9.10c                                         */
+ /********************************************************************/
+ HEXDUMP: PROC(AREA,LENGTH,TITLE) OPTIONS(REENTRANT)
+              ext( '_pli_Hexdump' );
+ DCL     AREA                PTR;
+ DCL     AREA_X              PTR;
+ DCL     LENGTH              FIXED BIN(31);
+ DCL     TITLE               CHAR(80)  VARYING;
+ DCL     SYSPRINT            PRINT;
+ /* %INCLUDE(PRNTCHR2); */                                     /*PORT*/
+ /* PRINTABLE ASCII  CHARACTER TABLE */                        /*PORT*/
+ /*   (WITH LOWER-CASE)              */                        /*PORT*/
+ DCL PRNTCHAR(16)CHAR(16) STATIC INIT(                         /*PORT*/
+        '................',    /* 00-0F */                     /*PORT*/
+        '................',    /* 10-1F */                     /*PORT*/
+        ' !"#$%&''()*+,-./',   /* 20-2F */                     /*PORT*/
+        '0123456789:;<=>?',    /* 30-3F */                     /*PORT*/
+        '@ABCDEFGHIJKLMNO',    /* 40-4F */                     /*PORT*/
+        'PQRSTUVWXYZ[\]._',    /* 50-5F */                     /*PORT*/
+        '`abcdefghijklmno',    /* 60-6F */                     /*PORT*/
+        'pqrstuvwxyz(|). ',    /* 70-7F */                     /*PORT*/
+        '................',    /* 80-8F */                     /*PORT*/
+        '................',    /* 90-9F */                     /*PORT*/
+        '............ª...',    /* A0-AF */                     /*PORT*/
+        '................',    /* B0-BF */                     /*PORT*/
+        '................',    /* C0-CF */                     /*PORT*/
+        '................',    /* D0-DF */                     /*PORT*/
+        '................',    /* E0-EF */                     /*PORT*/
+        '................');   /* F0-FF */                     /*PORT*/
+ DCL PRINTCHARSET CHAR(256) DEFINED PRNTCHAR;
+ DCL     LINE                CHAR(120) VARYING;
+ DCL     OFFSET              FIXED BIN(31),
+         OFST                CHAR(4)   BASED( ADDR(OFFSET) );
+ DCL     C                   CHAR(1)   BASED(AREA_X);
+ DCL    (I,J,K,N)            FIXED BIN(31);
+ DCL    (SUBSTR,TRANSLATE,REPEAT)        BUILTIN;
+ DCL    (ADDR,MIN,MOD,UNSPEC)            BUILTIN;
+
+ AREA_X = AREA;
+ PUT SKIP(2) EDIT('DUMP OF AREA '''||TITLE||'''')(A);;
+ LINE = REPEAT( ' ', (120-35) ) || '*';
+ OFFSET = 0;
+ DO K=1 TO 4;                                                  /*PORT*/
+   SUBSTR(LINE,K*2-1,2) = HEXIT( SUBSTR(OFST,K,1) );           /*PORT*/
+   END; /* DO */
+
+ I = 1;
+ J = 11;                                                       /*PORT*/
+ DO WHILE(I<=LENGTH);                                       /*0.9.10e*/
+   N = MIN( LENGTH-I+1, 4 );
+   DO K = 1 TO N;
+     SUBSTR(LINE,J,2) = HEXIT(C);
+     I = I + 1;
+     J = J + 2;
+     LINE = LINE || TRANSLATE(C,PRINTCHARSET);
+     AREA_X = AREA_X + 1;
+     END; /* DO K */
+   J = J + 1;
+   IF J=47 THEN J=48;                                          /*PORT*/
+   IF J>83 THEN DO;                                            /*PORT*/
+     LINE = LINE||'*';
+     PUT SKIP EDIT(LINE)(A);
+     IF I=LENGTH THEN RETURN;
+     LINE = REPEAT( ' ', (120-35) ) || '*';
+     OFFSET = OFFSET+32;
+     DO K=1 TO 4;                                              /*PORT*/
+       SUBSTR(LINE,K*2-1,2) = HEXIT( SUBSTR(OFST,K,1) );       /*PORT*/
+       END; /* DO K */
+     J = 11;
+     END; /* J>83 */                                           /*PORT*/
+   END; /* DO I */
+
+   LINE = LINE||'*';
+   PUT SKIP EDIT(LINE)(A);
+
+ /*-----------------------------------*/
+ /* HEX CHARACTER CONVERSION          */
+ /*-----------------------------------*/
+
+ HEXIT: PROC(C) OPTIONS(REENTRANT) RETURNS( CHAR(2) );
+ DCL C                       CHAR(1);
+ DCL HEXTAB_X                CHAR(16)            STATIC
+                             INIT('0123456789ABCDEF');
+ DCL HEXTAB            (0:15)CHAR(1) DEFINED HEXTAB_X;
+ RETURN(HEXTAB( SUBSTR(UNSPEC(C),1,4) ) ||
+        HEXTAB( SUBSTR(UNSPEC(C),5,4) ) );
+ END HEXIT;
+
+ END HEXDUMP;

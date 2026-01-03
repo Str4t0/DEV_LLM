@@ -1,0 +1,147 @@
+ /* _pli_GCL                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_GCL (PL/I runtime)                      */
+ /*      Version:       0.8d [Linux]                                 */
+ /*      Date:          Mar 2010                                     */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GCL                                     */
+ /*                                                                  */
+ /*      Function:      Returns the command line arguments as        */
+ /*                     CHAR(*) VARYING;                             */
+ /*                                                                  */
+ /*      Dependencices: Linux                                        */
+ /*                                                                  */
+ /*      Calling sequence: Called twice with two arguments:          */
+ /*		     1. &argv[0] in C terms.   			     */
+ /*                  2. Address of the run-time parameters block.    */
+ /*			(see "Description" below).                   */
+ /*                                                                  */
+ /*      Called by:     _pli_Init to init. parms for MAIN procedure. */
+ /*                                                                  */
+ /*	 Description:	There is no "command-line" available on a    */
+ /*			Linux system, only a sequence of null-	     */
+ /*			terminated arguments.  This program builds a */
+ /*			psuedo-command-line by concatenating the     */
+ /*			arguments and replacing the nulls by spaces. */
+ /*			if the argument contains a space, it will be */
+ /*			enclosed in double-quotes.		     */	
+ /*                                                                  */
+ /*                     Note that the definition of 'sArg' below     */
+ /*                     limits each argument to a max of 1024 char.  */
+ /*                     The total length of all arguments is limited */
+ /*                     to 32K, but this is not checked.             */
+ /*                                                                  */
+ /*                     The field 'rtp_pCmd' points to the command   */
+ /*			locator/descriptor.			     */	
+ /*                     As mentioned above, GCL will be called       */
+ /*                     twice.  The first time the locator data addr */
+ /*                     will be sysnull.  The arguments are scanned  */
+ /*                     and the required length is stored in the     */
+ /*                     descriptor.  INIT will obtain the            */
+ /*                     required amount of stack space and store the */
+ /*                     address in the locator.  GCL will then be    */
+ /*                     called a second time to actually build the   */
+ /*                     argument string                              */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*                   . There is some thought of allowing run-time   */
+ /*                     parameters for heap size, etc. to be         */
+ /*                     specified on the command-line and parsed out */
+ /*                     here.  The 'NOEXECOPS' option of the main    */
+ /*                     procedure was introduced to bypass this      */
+ /*                     parse, however the parse is not implemented. */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*	     2010-03-01: Change to OS-dependent code.            0.8d*/
+ /*          2007-07-31: Added note about 'NOEXECOPS' option.        */
+ /*                      _pli_Start will extract this flag and       */
+ /*                      store in global for use here.               */
+ /*          2007-07-19: Separating the runtime options from the     */
+ /*                      parms by a '/' turned out to be a *bad*     */
+ /*                      idea.  I don't know how to do this,         */
+ /*                      maybe a $PLI() option in the command line,  */
+ /*                      but for now I'll just back off.             */
+ /*          2007-03-20: Return address and length of command line   */
+ /*                      in RTPARMS rather than as returned value.   */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_GCL: proc(pArgv,pRTParms)
+               options( LINKAGE(SYSTEM) )
+               external( '_pli_GCL' );
+
+ /*--------------------------*/
+ /* Parameters               */         
+ /*--------------------------*/
+ dcl     pArgv               ptr;
+ dcl     pRTParms            ptr;            /* ->rtparms block      */
+
+ /*--------------------------*/
+ /* AUTOMATIC Data           */         
+ /*--------------------------*/
+ dcl    (pDat,pDes)          ptr;            /* addr(loc), addr(desc)*/
+ dcl     pArg                ptr;            /* ->Argument address   */
+ dcl     pStr                ptr;            /* ->Argument value     */
+ dcl     arg_len             fixed bin(31);  /* Accumulated lemgth   */
+ dcl	 i		     fixed bin(31);
+
+ /*--------------------------*/
+ /* Prototypes               */         
+ /*--------------------------*/
+ dcl     pVoid               ptr             based;
+ dcl     sArg		     char(1024)      based;
+ dcl     c                   char(1)         based;
+ dcl	 iStrLen	     fixed bin(15)   based;
+
+ dcl   ( addr,
+ 	 index,
+	 null,
+	 plimove,
+ 	 stg,
+         substr,
+         sysnull )           builtin;
+ pDat = pRTParms->rtp_pCmd->pData;
+ if pDat^=sysnull then pDat = pDat+stg( null()->iStrLen );
+ pDes = pRTParms->rtp_pCmd->pDesc;
+ pArg = pArgv+stg( null()->pVoid );	/* ->*argv[1]                */
+ 
+ arg_len = 0;
+ do while( pArg->pVoid^=sysnull() );
+   pStr = pArg->pVoid;			/* ->Text string	     */
+   i = index( pStr->sArg, '00'x );      /* Find trailing null        */
+   arg_len = arg_len+i;			/* Accumulate length         */
+   i = i-1;
+   if pDat^=sysnull() then do;		/* Pass 2		     */
+     /* NOTE: If the argument contains single or double quotes we    */
+     /*       have a problem.  How should they be handled?	     */
+     call plimove( pDat, pStr, i );	/* Move the string	     */	
+     pDat = pDat+i;
+     pDat->c = ' ';			/* Replace null with space   */
+     pDat = pDat+1;
+     end; /* Pass 2 */
+     
+   pArg = pArg+stg( null()->pVoid );
+   
+   end; /* do while */
+   
+ if pDat=sysnull() then do;		/* Pass 1		     */
+   pDes->pli_ded_STR.ST_len = arg_len+2;/* Return arg string length  */
+   end; /* Pass 1 */
+ else do;				/* Pass 2 		     */
+   pDat = pRTParms->rtp_pCmd->pData;	/* Set varying string length */
+   if arg_len>0 then arg_len = arg_len-1;/* Trincate trailing blank  */
+   pDat->iStrLen = arg_len;		/* Set varying string length */
+   end; /* Pass 2 */
+ return;
+   
+ %include RTPARMS;
+ %include LOCDESC;
+ %include DESC;
+
+ end pli_GCL;

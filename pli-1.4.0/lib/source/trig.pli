@@ -1,0 +1,106 @@
+/* trig.pli                                                          */
+/*********************************************************************/
+/*           Iron Spring PL/I Runtime Library Version 0.9.10b        */
+/*              Distributed under the Gnu LGPL License               */
+/*                                                                   */
+/*      Module:        _pli_Trig, (PL/I runtime)                     */
+/*      Version:       2.0                                           */
+/*      Date:          May, 2022                                     */
+/*      Author:        Peter Flass                                   */
+/*                                                                   */
+/*      Entry Points:  _pli_asin                                     */
+/*                     _pli_acos                                     */
+/*                     _pli_atanh                                    */
+/*                                                                   */
+/*      Function:      Double precision asin, acos, atanh            */
+/*                     (FLOAT BIN(49))                               */
+/*                                                                   */
+/*                     asin(x)  = (atan(x, sqrt(1 - (x ** 2))))      */
+/*                     acos(x)  = pi/2 - atan(x/sqrt(1-x**2)         */
+/*                     atanh(x) = 1/2*(log(1+x)-log(1-x))            */
+/*                                                                   */
+/*      Dependencies:                                                */
+/*                                                                   */
+/*      Calling sequence:                                            */
+/*                     DCL ASIN ENTRY( FLOAT BIN(52) )               */
+/*                              RETURNS( FLOAT BIN(52) )             */
+/*                              OPTIONS( LINKAGE(SYSTEM))            */
+/*                              EXT( '_pli_ASIN' );                  */
+/*                     res = ASIN(x);                                */
+/*                                                                   */
+/*                     DCL ACOS ENTRY( FLOAT BIN(52) )               */
+/*                              RETURNS( FLOAT BIN(52) )             */
+/*                              OPTIONS( LINKAGE(SYSTEM))            */
+/*                              EXT( '_pli_ACOS' );                  */
+/*                     res = ACOS(x);                                */
+/*                                                                   */
+/*                     DCL ATANH ENTRY( FLOAT BIN(52) )              */
+/*                              RETURNS( FLOAT BIN(52) )             */
+/*                              OPTIONS( LINKAGE(SYSTEM))            */
+/*                              EXT( '_pli_ATANH' );                 */
+/*                     res = ACOS(x);                                */
+/*                                                                   */
+/*                       arg is float bin(52), converted             */
+/*                           if necessary by the caller.             */
+/*                                                                   */
+/*      Output:                                                      */
+/*                     res is float bin(52) returned in ST(0)        */
+/*                                                                   */
+/*      Called from:   Compiled code.                                */
+/*                                                                   */
+/*      Errors:                                                      */
+/*        * These routines are intended to be called from compiled   */
+/*          code. No checking of data is done.                       */
+/*                                                                   */
+/*      To Do:                                                       */
+/*                                                                   */
+/*      Modifications:                                               */
+/*        2022-05-07: Convert to package, add ACOS.           0.9.10e*/
+/*                                                                   */
+/*      ASIN Algorithm thanks to John Walker (http://www.fourmilab.ch*/
+/*                                                                   */
+/*-------------------------------------------------------------------*/
+trig: package exports( asin,acos,atanh );                   /*0.9.10e*/
+
+ dcl      atan                builtin;
+ dcl      pi                  float dec(20)  static         /*0.9.10e*/
+             init(3.1415926535897932384e0);                 /*0.9.10e*/
+ dcl      pi_over_two         float dec(20)  static         /*0.9.10e*/
+             init(1.5707963267948966192e0);                 /*0.9.10e*/
+
+/*------------------------------------*/
+/*   ASIN                             */
+/*------------------------------------*/
+asin: proc(x) returns( float bin(52) )
+              options( linkage(system) )
+              ext( '_pli_asin' );
+ dcl      x                   float bin(52);
+ return (atan(x, sqrt(1 - (x ** 2))));
+ end asin;
+
+/*------------------------------------*/
+/*   ACOS                             */
+/*------------------------------------*/
+acos: proc(x) returns( float bin(52) )
+              options( linkage(system) )
+              ext( '_pli_acos' );
+ dcl      x                   float bin(52);
+ /* The algorithm seems to get flakey at the extremes */
+ if x=-1e0 then return(pi);
+ if x= 1e0 then return(0e0);
+ return (pi_over_two-atan(x,sqrt(1 - (x ** 2))));
+ end acos;
+
+/*------------------------------------*/
+/*   ATANH                            */
+/*------------------------------------*/
+atanh: proc(x) returns( float bin(52) )
+              options( linkage(system) )
+              ext( '_pli_atanh' );
+ dcl      x                   float bin(52);
+ if x<0e0 | x>=1.0e0 then signal overflow;
+ /* Probably need to set FPCW */
+ return( .5*(log(1+x)-log(1-x)) );
+ end atanh;
+
+end trig;

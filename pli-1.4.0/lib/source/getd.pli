@@ -1,0 +1,324 @@
+ /* _pli_GetD                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_GetD (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Aug, 2017                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_GetD                                    */
+ /*                                                                  */
+ /*      Function:      GetD is the GET DATA processor.              */
+ /*                                                                  */
+ /*      GetD is called from GETX once per data element to be read.  */
+ /*      It is passed the base address of the element or aggregate,  */
+ /*      The descriptor, and the address of the name strings.        */
+ /*      GetD will process until:                                    */
+ /*        1) ?                                                      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I descriptor formats.                     */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*        * Procedure is currently a skeleton. Some code added for  */
+ /*          1.2.1, but lots more is needed.                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2024-02-27: Add some code                            1.2.1*/
+ /*                                                                  */
+ /********************************************************************/
+ 
+ pli_GetD: proc( pData, pDesc, pName ) 
+               ext( '_pli_GetD' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pData               ptr;      /* ->Element/Aggr base addr   */
+ dcl     pDesc               ptr;      /* ->Descriptor               */
+ dcl     pName               ptr;      /* ->Lame string ptrs         */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pSRB                ptr;      /* -> SRB               0.9.10*/
+ dcl     pSBB                ptr;      /* -> SBB                     */
+ dcl     state               fixed bin(7)    init(0);         /*1.2.1*/
+ dcl     Count               fixed bin(31);
+ dcl     char_workarea       char(64);
+         /* This field needs to be as long as the largest possible   */
+         /* complex converted data-element.                          */
+         /* 64 is a made-up placeholder.                             */
+ dcl     num_workarea     (2)fixed dec(18);
+ dcl     desc_workarea       char(16);
+         /* This field needs to be as long as the largest possible   */
+         /* converted descriptor.                                    */
+         /* 16 is a made-up placeholder.                             */
+ dcl     field_width         fixed bin(31);
+ dcl     data_width          fixed bin(31);
+ dcl     error_code          char(1)              init(' '); /*0.9.10*/
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     UNIMPLEMENTED       condition;                       /*1.2.1*/
+
+ dcl     UC                  char(26)     static init(        /*1.2.1*/       
+         'ABCDEFGHIJKLMNOPQRSTUVWXYZ' );                      /*1.2.1*/
+ dcl     LC                  char(26)     static init(        /*1.2.1*/       
+         'abcdefghijklmnopqrstuvwxyz' );                      /*1.2.1*/
+
+ /* NOTE: This table lifted from elsewhere, and needs to be     1.2.1*/
+ /*       adjusted for use here.                                1.2.1*/
+ dcl     ascii_tab           char(256) static    init(
+    /*                                                               */
+    /* Character meanings for this table:                            */
+    /* '00'x Any character not otherwise defined                     */
+    /* '01'x Space                                                   */
+    /* '02'x alphabetic                                              */
+    /* '03'x numeric                                                 */
+    /* '04'x single or double quote                                  */
+    /* '05'x left paren                                              */
+    /* '06'x right paren                                             */
+    /* '07'x dash                                                    */
+    /* '08'x comma                                                   */
+    /* '09'x-'0F'x unused                                            */
+    /*                                                               */
+    /*  0 1 2 3 4 5 6 7 8 9 A B C D E F                              */
+    ( '00000000000000000000000000000000'x   ||   /* 00-0F            */
+      '00000000000000000000000000000000'x   ||   /* 10-1F            */
+      '01000400000000040506000008070000'x   ||   /* 20-2F            */
+      '03030303030303030303000000000000'x   ||   /* 30-3F            */
+      '00020202020202020202020202020202'x   ||   /* 40-4F            */
+      '02020202020202020202020000000000'x   ||   /* 50-5F            */
+      '00020202020202020202020202020202'x   ||   /* 60-6F            */
+      '02020202020202020202020000000000'x   ||   /* 70-7F            */
+      '00000000000000000000000000000000'x   ||   /* 80-8F            */
+      '00000000000000000000000000000000'x   ||   /* 90-9F            */
+      '00000000000000000000000000000000'x   ||   /* A0-AF            */
+      '00000000000000000000000000000000'x   ||   /* B0-BF            */
+      '00000000000000000000000000000000'x   ||   /* C0-CF            */
+      '00000000000000000000000000000000'x   ||   /* D0-DF            */
+      '00000000000000000000000000000000'x   ||   /* E0-EF            */
+      '00000000000000000000000000000000'x )  );  /* F0-FF            */
+
+ /*-------------------------*/
+ /* Actions for FSM         */
+ /*-------------------------*/
+ dcl     act_tab       (0:36)char(16)  static    init(
+    /*  0 1 2 3 4 5 6 7 8 9 A B C D E F             State:           */
+      /* Initial state                                               */
+      '0E010E0E0E0E0E020E0E0E0E0E0E0E0E'x,       /*   0 - initial    */
+      /* State 1, found '-' option                                   */
+      '00000300000000000000000000000000'x,       /*   1 - '-' option */
+      /* State 2, list options (-l)                                  */
+      '00010400000000000000000000000000'x,       /*   2 - Parse -l   */
+      /* State 3, character options (-c)                             */
+      '00000500000000000000000000000000'x,       /*   3 - Parse -c   */
+      '00000000000200000000000000000000'x,       /*   4 - -cx(       */
+      '06060606070601060706060606060606'x,       /*   5 - -cx(.      */
+      '08080808080808080808080808080808'x,       /*   6 - -cx("      */
+      '00000000000001000000000000000000'x,       /*   7 - end -cx("  */
+      '00000000000000000000000000000000'x,       /*   8 - (unused)   */
+      '00000000000000000000000000000000'x,       /*   9 - (unused)   */
+      /* State 10, margin options (-m)                               */
+      '00000000000900000000000000000000'x,       /*  10 - Parse -m   */
+      '0000000A00000A000A00000000000000'x,       /*  11 - -m(        */
+      '0000000B00000B0B0000000000000000'x,       /*  12 - -m(...,    */
+      '00000000000000000000000000000000'x,       /*  13 - (unused)   */
+      '00000000000000000000000000000000'x,       /*  14 - (unused)   */
+      '00000000000000000000000000000000'x,       /*  15 - (unused)   */
+      /* State 16, input and output fiienames and include dirs       */
+      '0C0C0C0C0C0C0C0C0C0C0C0C0C0C0C0C'x,       /*  16 - Parse -i   */
+      '0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D'x,       /*  17 - Parse -o   */
+      '0E0E0E0E0E0E0E0E0E0E0E0E0E0E0E0E'x,       /*  18 - Parse input*/
+      '11101111111111111111111111111111'x,       /*  19 - Unquoted f */
+      '11111111101111111111111111111111'x,       /*  20 - Quoted file*/
+      /* State 21, error level                                       */
+      '00011200000000000000000000000000'x,       /*  21 - -ex        */
+      '00000000000000000000000000000000'x,       /*  22 - (unused)   */
+      '00000000000000000000000000000000'x,       /*  23 - (unused)   */
+      /* State 24, miscellaneous parameters                          */
+      '13131313131313131313131313131313'x,       /*  24 - Parse -d   */
+      '14141414141414141414141414141414'x,       /*  25 - Option     */
+      /* State 26, compatibility options                             */
+      '15151515151515151515151515151515'x,       /*  26 - Parse -x   */
+      '16161616161616161616161616161616'x,       /*  27 - Option     */
+      '00000000000000000000000000000000'x        /*  28 - (unused)   */
+                        );
+                   
+ %include CONDMASK;
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FD18                fixed dec(18) based;
+ dcl     FB31                fixed bin(31) based;
+ dcl     FB15                fixed bin(15) based;
+ dcl     FB7                 fixed bin(7)  based;
+ dcl     pVoid               ptr           based;
+ dcl     VarStr              char(0)       based varying;
+ dcl     C1                  char(1)       based;              /*0.7c*/
+ dcl     VarStrLen           fixed bin(15) based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry                            /*1.2.1*/
+                             external( '_pli_GetFlags' )      /*1.2.1*/
+                             returns( bit(16) )               /*1.2.1*/
+                             options( LINKAGE(SYSTEM) );      /*1.2.1*/
+ dcl     SetFlags            entry( bit(16) )
+                             ext( '_pli_SetFlags' )
+                             options( linkage(system) );
+ dcl     Format              entry( ptr )
+                             external( '_pli_Fmt' );
+ dcl     NPO                 entry( ptr, bit(32), ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_NPO' );
+ dcl     CBA                 entry( ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_CBA' );
+ dcl     CBD                 entry( ptr, ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_CBD' );
+ dcl     CCA                 entry( ptr, ptr, ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_CCA' );
+ dcl     CAC                 entry( ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_CAC' );
+ dcl     NumVal              entry( ptr, ptr, ptr, ptr )       /*0.7c*/
+                             options( linkage(system) )        /*0.7c*/
+                             external( '_pli_NumVal' );        /*0.7c*/
+ dcl     Cnvt                entry( ptr, ptr, ptr, ptr )       /*0.7c*/
+                             options( linkage(system) )        /*0.7c*/
+                             external( '_pli_Cnvt' );          /*0.7c*/
+ dcl     FmtSub              entry( ptr, ptr, ptr )          /*0.9.10*/
+                             options( linkage(system) )      /*0.9.10*/
+                             ext( '_pli_FmtSub' );           /*0.9.10*/
+
+ dcl    (
+         addr,length,
+         plimove,ptrvalue,
+         stg,string,substr,
+         sysnull
+        )                    builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure entry                                                  */
+ /*------------------------------------------------------------------*/
+ /*------------------------------------------------------------------*/
+ /* COMMENT: Set the condition flags in the DSA so that any          */
+ /*          called routines will have the correct values.           */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Enab cond from GETX   1.2.1*/
+
+ /* IBM: "If the data-list contains a name than is not included in   */
+ /*       the stream, the named variable remains unchanged."         */
+ /*                                                                  */
+ /*       If the stream contains an unrecognizable element-variable  */
+ /*       or a name that does not have a counterpart in the          */
+ /*       data-list, the NAME condition is raised."                  */
+ /*                                       -SC26-3114-01, p.266       */
+
+ /*---------------------------------------------*/
+ /* Error-handling                              */
+ /*---------------------------------------------*/
+ signal_unimplemented:
+   signal condition( UNIMPLEMENTED );
+   return;
+
+ signal_error:
+   /*display( 'getx error code=' || error_code ); /**/
+   signal ERROR;
+   /* No normal return from ERROR */
+
+ /*---------------------------------------------*/
+ /* Move data to temporary buffer               */
+ /*---------------------------------------------*/
+ move_from_buffer: proc(where,howmuch);
+   dcl   where               ptr;
+   dcl   howmuch             fixed bin(31);
+   dcl  (i,n)                fixed bin(31);
+   dcl   p                   ptr;
+   i = howmuch;
+   p = where;
+   data_width = 0;                        /* Bytes read      20090922*/
+   do while( i>0 );
+     n = pSBB->SBB_lnsize - pSBB->SBB_col;/* Data left in buffer     */
+     if i<n then n=i;                     /* n=min(i,n)              */
+     if pª=SYSNULL then do;               /* Move data               */
+       call plimove(p,pSBB->SBB_pline,n);
+       data_width = data_width+n;         /* Count bytes read        */
+       end;
+     i = i-n;                             /* Adjust addr and count   */
+     p = p+n;
+     pSBB->SBB_pline  = pSBB->SBB_pline+n;/* Bump line ptr           */
+     pSBB->SBB_col    = pSBB->SBB_col+n;  /* Bump col position       */
+/*
+     if pSBB->SBB_col = pSBB->SBB_lnsize &/* End of line?            *)
+        i>0                               /*  and more data needed?  *)
+     then call PL.SPL_LineEnd(0,0);       /*  yes, get next line     *)
+ */
+     /* COMMENT: If ENDFILE occurs, the read returns here.           */
+     /*          Partial data may have been read, just recognize     */
+     /*          this now and exit.                                  */
+     if pSBB->SBB_pline = SYSNULL() then i=0;
+     end; /* do while */
+   end move_from_buffer;
+
+ %page;
+ /*------------------------------------------------------------------*/
+ /* B2D: Convert number of binary to number of decimal digits        */
+ /*------------------------------------------------------------------*/
+ B2D: proc(n) returns( fixed bin(7) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   do i=1 to 33;
+     if w<n_3dot32(i) then leave;
+     end;
+   if neg then i=-i;
+   return(i);
+   end B2D;
+ /*------------------------------------------------------------------*/
+ /* Table lookup - CEIL(n*3.32) table Decimal to Binary digits       */
+ /* NOTE: Same as code in 'EXPRES' and 'CONST'                       */
+ /*------------------------------------------------------------------*/
+ D2B: proc(n) returns( fixed bin(15) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   if w<1 | w>hbound(n_3dot32,1) then return(0);
+   i = n_3dot32(w);
+   if neg then i=-i;
+   return(i);
+   end D2B;
+
+ %page;
+
+ %include SRB;
+ %include LOCDESC;
+ %include DESC;
+ %include N3DOT32;
+
+ end pli_GetD;

@@ -1,0 +1,194 @@
+ /* _pli_Integ                                                       */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Integ (PL/I runtime)                    */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Integ                                   */
+ /*                                                                  */
+ /*      Function:      Integral of a functiom.                      */
+ /*                                                                  */
+ /* INTEG returns the approximation of the integral of the function  */
+ /* 'func' between 'a' and 'b'.  Integration is performed by         */
+ /*  Romberg's method of order(2K) where, e.g. k=2 is Simpson's rule.*/
+ /* 'eps' is the fractional accuracy desired, as determined by the   */
+ /* extrapolation error estimate; 'jmax' limits the total number     */
+ /* of steps; 'k' is the number of points used in the extrapolation. */
+ /* All calculations are done in ext. floating point [float bin(64)] */
+ /* INTEG is used for the ERF, ERFC, GAMMA, and LOGGAMMA builtins.   */
+ /*                                                                  */
+ /*      Romberg integration, Press, et.al. _Numerical Recipes_      */
+ /*      Cambridge, Cambridge University Press, 1989                 */
+ /*      Algorithms pp 110-115; POLINT p.82.                         */
+ /*      Press calls 'QROMB' the function I have called 'INTEG'.     */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Descriptor formats.                          */
+ /*                                                                  */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*        ERROR, various floating-point exceptions.                 */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ INTEG: proc(func,a,b,eps)
+        returns( float bin(64) )
+        ext( '_pli_Integ' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    func                 entry(float bin(64)) 
+                             returns( float bin(64) );
+ dcl   (a,b,eps)             float bin(64);
+
+ /*-------------------------*/
+ /* Automatic storage       */
+ /*-------------------------*/
+ /* 'jmax' is the maximum number of iterations used to produce a     */
+ /* result within 'eps'.  'k' is the number of points used in        */
+ /* the extrapolation.                                               */
+ %replace jmax  by 20;
+ %replace jmaxp by 21;       /* =jmax+1                              */
+ %replace k     by 5;
+ %replace km    by 4;        /* =k-1                                 */
+ dcl    (s,h)         (jmaxp)float bin(64);
+ dcl     j                   fixed bin(31);
+ dcl    (ss,dss)             float bin(64);
+ 
+ /*-------------------------*/
+ /* Static storage          */
+ /*-------------------------*/
+ /* Constants are stored thus to insure that they are generated      */
+ /* as extended floating point values                                */
+ dcl  point_two_five         float bin(64)  static    init( 2.5e-1 );
+ dcl  point_five             float bin(64)  static    init( 5.0e-1 );
+
+  /* If a and b are equal (to the desired accuracy) the result is 0  */
+  if abs(b)-abs(a)<eps then return( 0.0e0 );
+  h(1) = 1.0;
+  do j=1 to jmax;
+    call TRAPZD(func,a,b,s(j),j);
+    if j>=k then do;
+      /* Notice that this passes the addresses of the array elements */
+      /* rather than the elements themselves to avoid creating       */
+      /* dummy arguments                                             */
+      call POLINT(addr(h(j-km)),addr(s(j-km)),k,0e0,ss,dss);
+      if abs(dss)<eps*abs(ss) then return(ss);
+      end;
+    s(j+1) = s(j);
+    h(j+1) = point_two_five * h(j);
+    end; /* do */
+  /* Too many steps         */
+  signal error;
+
+ /*------------------------------------------------------------------*/
+ /* TRAPZD computes the N'th stage of refinement of an extended      */
+ /* trapezoidal rule.  'func' is the function to be integrated       */
+ /* between limits 'a' and 'b'.  When called with n=1, the routine   */
+ /* returns 's' as the crudest estimate of the integral from 'a' to  */
+ /* 'b' of f(x)dx.  Subsequent calls with 'n'=2,3,... (in that       */
+ /* sequential order) will improve the accuracy of 's' by adding     */
+ /* 2**n-2 additional interior points.  's' should not be            */
+ /* modified between subsequent calls.                               */
+ /*-------------------------------------------------------------------*/
+ TRAPZD: proc(func,a,b,s,n);
+   dcl   func                entry(float bin(64))
+                             returns( float bin(64) );
+   dcl  (a,b,s)              float bin(64);
+   dcl   n                   fixed bin(31);
+
+   dcl  (it,j)               fixed bin(31) static;
+   dcl   tnm                 fixed bin(31);
+   dcl  (del,x,sum)          float bin(64);
+   
+   if n=1 then do;
+     s = point_five*(b-a) * (func(a)+func(b));
+     it = 1;
+     end;
+   else do;
+     tnm = it;
+     del = (b-a)/tnm;
+     x = a+point_five*del;
+     sum = 0e0;
+     do j=1 to it;
+       sum = sum+func(x);
+       x = x+del;
+       end; /* do */
+     s=point_five*(s+(b-a)*sum/tnm);
+     it = it*2;
+     end;
+   return;
+   end TRAPZD;
+
+ /*------------------------------------------------------------------*/
+ /* Given arrays 'xa' and 'ya', each of length 'n', and given a      */
+ /* value 'x', POLINT returns a value 'y', and an error estimate 'dy'*/
+ /* If P(x) is the polynomial of degree (n-1) such that              */
+ /* P(xa(i)) = ya(i), i=0,...n, then the returned value y=P(x).      */
+ /* In the PL/I version of this algorithm, we are passed pointers    */
+ /* to the array elements since passing the element itself may       */
+ /* result in the creation of a dummy argument.                      */
+ /*------------------------------------------------------------------*/
+ POLINT: proc(pxa,pya,n,x,y,dy);
+   dcl  (pxa,pya)            ptr;
+   dcl   xa               (1)float bin(64) based(pxa);
+   dcl   ya               (1)float bin(64) based(pya);
+   dcl  (x,y,dy)             float bin(64);
+   dcl  (i,n)                fixed bin(31);
+
+   /* 'nmax' is the largest anticipated value of 'n'.                */
+   %replace nmax by 16;
+   dcl  (c,d)          (nmax)float bin(64);
+   dcl  (m,ns)               fixed bin(31);
+   dcl  (dif,dift)           float bin(64);
+   dcl  (ho,hp,w,den)        float bin(64);
+
+   ns = 1;
+   dif = abs(x-xa(1));
+   do i=1 to n;
+     dift = abs(x-xa(i));
+     if dift<dif then do;
+       ns = i;
+       dif = dift;
+       end;
+     c(i) = ya(i);
+     d(i) = ya(i);
+     end; /* do */
+   y = ya(ns);
+   ns = ns-1;
+   do m=1 to n-1;
+     do i=1 to n-m;
+       ho = xa(i)-x;
+       hp = xa(i+m)-x;
+       w = c(i+1)-d(i);
+       den = ho-hp;
+       if den=0 then do;
+         /* "Two input XA's are identical" */
+         signal error; 
+         end;
+       den = w/den;
+       d(i) = hp*den;
+       c(i) = ho*den;
+       end; /* do i */
+     if ns*2<n-m
+     then dy = c(ns+1);
+     else do;
+       dy = d(ns);
+       ns = ns-1;
+       end;
+     y = y+dy;
+     end; /* do m */
+   return;
+   end POLINT;
+
+ end INTEG;
+

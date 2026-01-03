@@ -1,0 +1,209 @@
+ /* _pli_OSMutex                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.7           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSMutex (PL/I runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          May, 2011                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_mutex_init                              */
+ /*                     _pli_mutex_wait                              */
+ /*                     _pli_mutex_trywait (not implemented)         */
+ /*                     _pli_mutex_timedwait                         */
+ /*                     _pli_mutex_post                              */
+ /*                     _pli_mutex_destroy                           */
+ /*                                                                  */
+ /*      Function:      Operating system dependent Mutex semaphores. */
+ /*                                                                  */
+ /*      OSMutex is a wrapper for OS-dependent Mutex semaphores.     */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     OS/2: DosCreateMutexSem, DosRequestMutexSem, */
+ /*                           DosReleaseMutexSem, DosCloseMutexSem.  */
+ /*                     Assumes the OS handle of or pointer to a     */
+ /*                     Mutex is FIXED BIN(31).                      */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2012-06-13: init - add ignored second arg (initial value*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSMutex: package 
+              exports( init wait timedwait post destroy );
+	      
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     hMutex              fixed bin(31)   based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosCreateMutexSem   entry( ptr, ptr,
+                                    fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosCreateMutexSem' );
+ dcl     DosRequestMutexSem  entry( fixed bin(31), fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosRequestMutexSem' );
+ dcl     DosReleaseMutexSem  entry( fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosReleaseMutexSem' );
+ dcl     DosCloseMutexSem    entry( fixed bin(31) )
+                             returns( fixed bin(31) /*unsigned*/ )
+                             options( linkage(system) )
+                             external( 'DosCloseMutexSem' );
+
+ dcl    (addr,sysnull)       builtin;
+
+	      
+ /*------------------------------------------------------------------*/
+ /* _pli_mutex_init                                                  */
+ /*------------------------------------------------------------------*/
+ init: proc(phMutex,iInit)                                    /*0.9.3*/	      
+       options( linkage(system) )
+       ext( '_pli_mutex_init' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     phMutex             ptr;
+ dcl     iInit               fixed bin(31);      /* Ignored      0.9.3*/
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS/2 return code */
+ dcl     NewMutex            fixed bin(31);
+ 
+ RC = DosCreateMutexSem( sysnull(),              /* Unnamed Mutex    */
+                         addr(NewMutex),         /* addr(handle)     */
+                         0,                      /* Unshared         */
+                         0 );                    /* Initial State    */
+ if RC=0 then do;                                /* Created          */
+   phMutex->hMutex = NewMutex;
+   return;
+   end;
+ signal ERROR;                                   /* Not created      */
+ end init;
+ 
+ /*------------------------------------------------------------------*/
+ /* _pli_mutex_wait                                                  */
+ /*------------------------------------------------------------------*/
+ wait: proc(phMutex)	      
+       options( linkage(system) )
+       ext( '_pli_mutex_wait' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    phMutex              ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS/2 return code */
+
+ RC = DosRequestMutexSem( phMutex->hMutex, -1 ); /* Indefinite wait  */
+ if RC=0   then return;                          /* No returned value*/
+ if RC^=95 then do;                              /* ERROR_INTERRUPT  */
+   signal ERROR;
+   end;
+ signal ATTENTION;
+ end wait;
+ 
+ /*------------------------------------------------------------------*/
+ /* _pli_mutex_timedwait                                             */
+ /*------------------------------------------------------------------*/
+ timedwait: proc(phMutex,pTimeSpec) 
+            options( linkage(system) )
+            ext( '_pli_mutex_timedwait' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     phMutex             ptr;
+ dcl     pTimeSpec           ptr;                  
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS/2 return code */
+ dcl     msec_wait           fixed bin(31);      /* Timeout in msec  */
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl    1 timespec            based,
+          5 tv_sec            fixed bin(31),
+	  5 tv_nsec           fixed bin(31);
+
+ /* Convert a Linux "timespec" value to milliseconds                 */
+ /* NOTE: Overflow is possible here!                                 */
+ msec_wait = pTimeSpec->tv_nsec / 1000000;       /* nsec / 10**6     */
+ msec_wait = msec_wait + pTimeSpec->tv_sec / 10000;/* +sec / 10**3   */
+ RC = DosRequestMutexSem( phMutex->hMutex, msec_wait );/* Wait w/tmot*/
+ if RC=0   then return;                          /* No returned value*/
+ if RC=640 then return;                          /* Timeout          */
+ if RC^=95 then signal ERROR;                    /* ERROR_INTERRUPT  */
+ signal ATTENTION;
+ end timedwait;
+ 
+ /*------------------------------------------------------------------*/
+ /* _pli_mutex_post                                                  */
+ /*------------------------------------------------------------------*/
+ post: proc(phMutex)	      
+       options( linkage(system) )
+       ext( '_pli_mutex_post' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    phMutex              ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS/2 return code */
+
+ RC = DosReleaseMutexSem( phMutex->hMutex );     /* Indefinite wait  */
+ if RC=0   then return;                          /* No returned value*/
+ signal ERROR;
+ end post;
+ 
+ /*------------------------------------------------------------------*/
+ /* _pli_mutex_destroy                                               */
+ /*------------------------------------------------------------------*/
+ destroy: proc(phMutex)	      
+          options( linkage(system) )
+          ext( '_pli_mutex_destroy' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl    phMutex              ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);      /* OS/2 return code */
+
+ RC = DosCloseMutexSem( phMutex->hMutex );
+ if RC^=0 then signal ERROR;
+ end destroy;
+
+ end pli_OSMutex;

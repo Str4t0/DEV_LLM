@@ -1,0 +1,259 @@
+ /* _pli_DumpFCB                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        DumpFCB (PL/I runtime; temporary)            */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      Print FCB information for debugging.         */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL f FILE;                                  */
+ /*                     DCL DumpFCB ENTRY( PTR )                     */
+ /*                                 EXTERNAL( '_pli_DumpFCB' );      */
+ /*                     CALL DumpFCB( addr(f) );                     */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                     GCALL needs to be changed to pass a          */
+ /*                     FILE variable.  DUMPFCB should then          */
+ /*                     reference a variable.                        */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2017-09-03: Correct printing of environment attr  0.9.10*/
+ /*          2011-08-11: Handle File Variables, remove temp disp0.9.3*/
+ /*          2009-12-14: Replace WriteLn with Display.           0.8c*/
+ /*          2009-09-19: Dump buffer contents.                   0.8c*/
+ /*                                                                  */
+ /********************************************************************/
+
+ DumpFCB: proc(pFile) external( '_pli_DumpFCB' );
+ dcl     pFile               ptr;
+
+ dcl     pFCB                ptr;
+ dcl     b32                 bit(32);
+ dcl     ln                  char(256) varying;
+ dcl     i                   fixed bin(31);
+ dcl     fmt                 pic '---------9';                /*0.9.2*/
+ dcl     p                   ptr;                          /*20090917*/
+ dcl     n                   fixed bin(31);                /*20090917*/
+
+ /*-------------------------------------------------------*/
+ /* FCB_attrib bit values                                 */
+ /* organized by some rational order                      */
+ /*-------------------------------------------------------*/
+   dcl   bAttr           (20)bit(32)   aligned   static    init(
+            '00100000'bx,              /* SEQUENTIAL                 */
+            '00000010'bx,              /* DIRECT                     */
+            '00800000'bx,              /* TRANSIENT                  */
+
+            '00200000'bx,              /* STREAM                     */
+            '00020000'bx,              /* RECORD                     */
+            '00010000'bx,              /* PRINT                      */
+
+            '00000200'bx,              /* INPUT                      */
+            '00008000'bx,              /* OUTPUT                     */
+            '02000000'bx,              /* UPDATE                     */
+
+            '00000400'bx,              /* KEYED                      */
+            '00000002'bx,              /* BUFFERED                   */
+            '01000000'bx,              /* UNBUFFERED                 */
+            '00002000'bx,              /* OPTIONAL                   */
+            '00000001'bx,              /* BACKWARDS                  */
+            '00000040'bx,              /* EXCLUSIVE                  */
+            '00000100'bx,              /* INDEXED                    */
+
+          /*'00000020'bx,              (* ENVIRONMENT()              */
+          /*'00000080'bx,              (* FILE                       */
+          /*'00400000'bx,              (* TITLE()                    */
+
+            '00000000'bx );            /* End of table               */
+
+ /*-------------------------------------------------------*/
+ /* FCB_attrib descriptions                               */
+ /* same order as bAttr                                   */
+ /*-------------------------------------------------------*/
+   dcl   sAttr           (20)char(11)  varying   static    init(
+            'Sequential ',
+            'Direct ',
+            'Transient ',
+            'Stream ',
+            'Record ',
+            'Print ',
+            'Input ',
+            'Output ',
+            'Update ',
+            'Keyed ',
+            'Buffered ',
+            'Unbuffered ',
+            'Optional ',
+            'Backwards ',
+            'Exclusive ',
+            'Indexed ',
+            '' );                      /* End of table               */
+
+ /*-------------------------------------------------------*/
+ /* FCB_env bit values                                    */
+ /* organized by some rational order                      */
+ /*-------------------------------------------------------*/
+   dcl   bEnv            (24)bit(32)   aligned   static    init(
+            '00000400'bx,              /* VS                         */
+            '00000200'bx,              /* VBS                        */
+            '00000100'bx,              /* VB                         */
+            '00000080'bx,              /* V                          */
+            '00000040'bx,              /* U                          */
+            '00000020'bx,              /* FS                         */
+            '00000010'bx,              /* FBS                        */
+            '00000008'bx,              /* FB                         */
+            '00000004'bx,              /* F                          */
+            '00000002'bx,              /* DB                         */
+            '00000001'bx,              /* D                          */
+
+            '00100000'bx,              /* SCALARVARYING              */
+            '00040000'bx,              /* TOTAL                      */
+            '00010000'bx,              /* CONSECUTIVE                */
+            '00002000'bx,              /* CTL360                     */
+            '00001000'bx,              /* CTLASA                     */
+            '02000000'bx,              /* INDEXED                    */
+            '40000000'bx,              /* APPEND                     */
+            '80000000'bx,              /* VARLS                      */
+            '20000000'bx,              /* LF                         */
+            '10000000'bx,              /* CRLF                       */
+
+            '00000000'bx );            /* End of table               */
+
+ /*-------------------------------------------------------*/
+ /* FCB_env descriptions                                  */
+ /* same order as bEnv                                    */
+ /*-------------------------------------------------------*/
+   dcl   sEnv            (24)char(14)  varying   static    init(
+            'VS ',
+            'VBS ',
+            'VB ',
+            'V ',
+            'U ',
+            'FS ',
+            'FBS ',
+            'FB ',
+            'F ',
+            'DB ',
+            'D ',
+            'Scalarvarying ',
+            'Total ',
+            'Consecutive ',
+            'CTL360 ',
+            'CTLASA ',
+            'Indexed ',
+            'Append ',
+            'VARLS ',
+            'LF ',
+            'CRLF ',
+            '' );                      /* End of table               */
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+
+ dcl   (
+         addr,
+         heximage,                                             /*0.8c*/
+         length,
+         sysnull
+       )                     builtin;
+
+ /*------------------------------------------------------------------*/
+ /* DumpFCB: Display data from FCB                                   */
+ /*------------------------------------------------------------------*/
+ pFCB = pFile->FC_pFCB;      /* Get FCB address from FILE            */
+ if pFile->FV_pDCLCB ^= sysnull() /* File Variable              0.9.3*/
+ then pFCB = pFile->FV_pFile->FC_pFCB;                        /*0.9.3*/
+ 
+ display( 
+         'Dump of FCB for file ' || pFile->FC_pName->File_Name
+	 );
+ if pFCB=sysnull then do;
+   display( 'File not open.' );
+   return;
+   end;
+
+ /* Print descriptions of FCB attribute bits                         */
+ b32 = pFCB->FCB_attrib;     /* File attributes                      */
+ ln = 'FCB_attrib <' || heximage(addr(b32),4) || '> ';
+ do i=1 by 1 while( bAttr(i)ª='00000000'bx );
+   if (b32&bAttr(i))ª='00000000'bx then do;
+     ln = ln || sAttr(i);
+     end;
+   end; /* do i */
+ display( ln );
+
+ /* Print descriptions of FCB environment data                       */
+ b32 = pFCB->FCB_envflags;     /* Environment attribute bits         */
+ ln = 'ENVIRONMENT ( <' || heximage(addr(b32),4) || '> ';
+ do i=1 by 1 while( bEnv(i)ª='00000000'bx );
+   if (b32&bEnv(i))ª='00000000'bx then ln = ln || sEnv(i);
+   end; /* do i */
+ display( ln );
+ ln = '              '; /* 'ENVIRONMENT ( ' */
+ fmt = pFCB->FCB_recsize;
+ ln = ln || 'RECSIZE(' || fmt || ') ';
+ fmt = pFCB->FCB_blksize;
+ ln = ln || 'BLKSIZE(' || fmt || ') ';
+ fmt = pFCB->FCB_lnsize;                                     /*0.9.10*/
+ ln = ln || 'LINESIZE(' || fmt || ') ';                      /*0.9.10*/
+ display( ln );
+
+ /* Print LINESIZE and PAGESIZE for PRINT files                      */
+ if (pFCB->FCB_attrib&'00010000'bx)ª='00000000'bx then do; /* PRINT  */
+   ln='';
+   fmt = pFCB->FCB_linesize;
+   ln = 'LINESIZE(' || fmt || ') ';
+   fmt = pFCB->FCB_pagesize;
+   ln = ln || 'PAGESIZE(' || fmt || ') ';
+   display( ln );
+   end; /* PRINT */
+
+ display( '' );
+ p = pFCB;                                                    /*0.9.2*/
+ do i=1 to stg(pFCB->FCB) by 16;
+   display( heximage(p,16) );                                 /*0.9.2*/
+   p = p+16;                                                  /*0.9.2*/
+   end;
+
+ /* Print any internal data desired.                                 */
+
+ /* Dump buffer contents in hex                                      */
+ i = pFCB->FCB_pBuf - pFCB->FCB_aBuf;
+ fmt = i;                                                  /*20090917*/
+ display( fmt || ' bytes in current buffer' );        /*20090917*/
+ p = pFCB->FCB_aBuf;                                       /*20090917*/
+ do while( p<pFCB->FCB_pBuf );                             /*20090917*/
+   i = p - pFCB->FCB_aBuf;                                 /*20090917*/
+   n = pFCB->FCB_pBuf-p;                                   /*20090921*/
+   display( heximage(addr(i),4) || ' ' || heximage(p,min(n,32)) );
+   p = p+32;                                               /*20090921*/
+   end; /* do while */                                     /*20090917*/
+
+ if pFCB->FCB_aLineª=sysnull() then do;                    /*20090921*/
+   i = pFCB->FCB_pLine - pFCB->FCB_aLine;/* Bytes in line    20090917*/
+   fmt = i;                                                /*20090917*/
+   display( fmt || ' bytes in current record' );      /*20090917*/
+   p = pFCB->FCB_aLine;                                    /*20090917*/
+   do while( p<pFCB->FCB_pLine );                          /*20090917*/
+     i = p - pFCB->FCB_aLine;                              /*20090917*/
+     n = pFCB->FCB_pLine-p;                                /*20090921*/
+     display( heximage(addr(i),4) || ' ' || heximage(p,min(n,32)) );
+     p = p+32;                                             /*20090921*/
+     end; /* do while */                                   /*20090917*/
+   end;                                                    /*20090921*/
+
+ return;
+ %page;
+
+ %include FILE;
+ %include FCB;
+
+ end DumpFCB;

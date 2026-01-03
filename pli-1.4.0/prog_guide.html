@@ -1,0 +1,2905 @@
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html;charset=UTF-8">
+<title>Iron Spring PL/I Compiler Programming Guide</title>
+</head>
+<body>
+<table border=0>
+<tr><td wigth="25%"><img src="islogo.gif"></td>
+<td>
+<h1>Iron Spring PL/I Compiler</h1>
+<h2>Programming Guide</h3>
+<h3>Version 1.4.0</h2>
+</td></tr></table>
+
+<ul>
+<li><a href="#intro">Introduction</a>
+<li><a href="#chg">Summary of Changes</a>
+<li><a href="#rest">Restrictions</a>
+<li><a href="#lim">Compiler limits</a>
+<li><a href="#int">Internal Data Representation</a>
+<li><a href="#doc">Documentation</a>
+<li><a href="#diff">Compiler differences</a>
+<li><a href="#run">Running the compiler</a>
+  <ul>
+    <li><a href="#link">Linking PL/I Programs</a>
+    <li><a href="#inp">Compiler input</a>
+    <li><a href="#out">Compiler output</a>
+  </ul>
+<li>Language differences
+  <ul>
+    <li><a href="#syn">Syntax chart format</a>
+    <li><a href="#lnk">THE PROCEDURE, ENTRY, and PACKAGE statements.</a>
+    <li><a href="#io">Input and Output</a>
+      <ul>
+        <li><a href="#decl">File Declarations<a>
+        <li><a href="#stmt">Input/Output Statements</a>
+      </ul>
+    <li><a href="#dsp">DISPLAY statement</a>
+    <li><a href="#mt">Multitasking</a>
+    <li><a href="#ibm">IBM-format packed decimal data</a>
+    <li><a href="#pre">Preprocessor</a>
+  </ul>  
+  <li><a href="#bif">Builtin Functions and Pseudovariables</a>
+    <ul>
+      <li><a href="#srt">The PLISRTx builtins</a>
+      <li><a href="#lib">User-callable library procedures</a>
+    </ul>
+<li><a href="#pre">Preprocessor Facilities</a>
+<li><a href="#argc">Accessing unprocessed comand arguments</a>
+<li><a href="#eff">Efficient programming</a>
+<li><a href="#dbg">Debugging PL/I programs</a>
+</ul>
+<hr width="25%">
+
+<a name="intro">
+<p>
+<h4>Introduction</h4>
+PL/I is a powerful programming language suitable for a wide range of
+problems.  PL/I has been used to write operating systems and compilers,
+simulations, real-time programs, mathematical software, spreadsheets,
+GUI programs, and for general computing.
+<p>
+PL/I is widely used on mainframes and midrange systems today, but since 
+the demise of Digital Research, Inc. has not been easily available on 
+personal computers.
+Iron Spring Software was founded in 2007 with the intention of bringing the
+flexibility, reliability, and portability, and security of PL/I to a
+wider market.
+<p>
+Iron Spring PL/I is the leading cross-platform PL/I compiler supporting
+both Linux and OS/2.  Both native and cross-compilation are supported.
+<p>
+This version of Iron Spring PL/I is still missing some features 
+of full PL/I.
+The section <a href="#rest">Restrictions</a> lists many of the 
+missing features.
+<p> 
+<!----- Modifications ----->
+<a name="chg">
+
+Summary of Changes for 1.4.0<br>
+<ul>
+<li>Array expressions are now supported for non-adjustable arrays.<br>
+    A+S, S+A, and A+A are allowed where A is an array, S is a scalar,
+    and + can be any operator. Currently builtins are not allowed, so
+    A=ABS(A), for example, will return the scalar ABS(A(1)). The array
+    bounds must be constant and the elements cannot be adjustable strings.
+<li>The %REPLACE preprocessor statement has been enhanced to replace a
+    sequence of tokens rather than a single token.
+    <pre style="display:inline"><tt>
+    %replace word by "fixed binary(31)";
+    declare a word; 
+    </tt></pre>
+ effectively generates the following declaration: declare A fixed bin(31,0);
+<li>The compiler option -ln will show a statement's nesting level
+    within a block and do-group.
+<li>The ISO-8859-15 "Not Sign" 'AC'x (¬) is now a builtin default 
+     in addition to the Codepage 850 value 'AA'x.
+     This reduces the number of additional alternates that can be 
+     specified to three.
+<li>The builtin ENTRYADDR can now be used as an initializer for
+    STATIC or EXTERNAL pointer variables.
+<li>The <i>Guide</i> section <a href="#int">Internal representation</a> has been
+    updated to include some program control data types previously omitted.
+</ul>
+<p>
+
+Summary of Changes for 1.3.2<br>
+<ul>
+<li>This version now supports hexadecimal binary fixed-point literals
+    (from IBM Enterprise PL/I). The syntax is:
+    <ul>
+      <li>"&lt;0 to 8 hex digits&gt;"XN (for signed values)
+      <li>"&lt;0 to 8 hex digits&gt;"XU (for unsigned values)
+    </ul>
+    These constants are big-endian REAL FIXED BINARY, either signed 
+    with precision(31,0) or unsigned (32,0). Note that these are 
+    written as strings enclosed in single or double quotes, followed 
+    immediately by "xu" or "xn" (case not significant), with no 
+    intervening spaces. Underscores may be used to separate groups 
+    of digits as desired. Values shorter than eight digits are padded 
+    on the left with zeroes.<br>
+    Examples:
+    <tt>
+    <ul>
+      <li>put skip list('80'XU);         ->  128
+      <li>put skip list("FFFF_FFFF"XN);  -> -1
+      <li>put skip list('FFFFFFFF'xu);  ->  4294967295
+    </ul>
+    </tt>
+</ul>
+<p>
+
+Summary of Changes for 1.3.1<br>
+<ul>
+<li>The ITERATE statement is now supported
+<blockquote>
+"The ITERATE statement transfers control to the END statement that delimits 
+its containing iterative
+do-group. The current iteration completes and the next iteration, if needed, 
+is started.
+The ITERATE statement can be specified inside a non-iterative do-group 
+as long as that do-group is
+contained by an iterative do-group.
+<p>
+If ITERATE &lt;label-constant&gt; is specified, label-constant must be the label 
+of a containing iterative do-group. 
+If label-constant is omitted, control transfers to the END
+statement of the most recent iterative do-group containing the ITERATE statement."
+</blockquote>
+<li>The operation and description of the STRING builtin function and pseudovariable
+    have been changed slightly. See the description in <a href="#bif">Builtin Functions and Pseudovariables</a>
+    STRING is not completely compatible among different compilers, and
+    this version is not completely compatible with any.
+</ul>
+<p>
+
+Summary of Changes for 1.3.0<br>
+<ul>
+<li>iSub defined arrays are now supported. This is an alpha feature 
+    in this release.
+<li>Undeclared user-defined conditions will now produce warning
+    message 557. To avoid this declare the name as a CONDITION. This
+    is not required with standard PL/I conditions.
+<li>Improvements to handing arrays of structures.
+<li>(Linux) Compiler changed to use "large filesystem" calls fstat64 
+</ul>
+<p>
+
+<p>
+<b>Trademarks</b><br>
+<ul>
+  <li>Iron Spring is a trademark of Iron Spring Software.
+  <li>Gnu is a trademark of the Free Software Foundation.
+  <li>IBM is a trademark of IBM, Inc.
+  <li>Intel is a trademark of Intel Corporation.
+  <li>Linux is a registered trademark of Linus Torvalds.
+  <li>VAX is a trademark of Hewlett-Packard, Inc.
+  <li>WATCOM is a trademark of Sybase, Inc. and its subsidiaries.
+</ul>
+<hr width="25%">
+
+<p>
+<!----- Restrictions ----->
+<a name="rest">
+<p>
+<h4>Restrictions</h4>
+<dl>
+<dt>Unicode<dd>Unicode is not supported.
+<dt>INITIAL<dd>INITIAL attribute generates incorrect results for arrays 
+        of structures of unaligned bit elements.
+<dt>STREAM INPUT
+    <dd>GET DATA is not yet implemented.<br>
+    C and E format codes and FLOAT pictures not implemented for GET EDIT.<br>
+    Due to a difference in data formats Edit-directed 
+    stream input may not be compatible with mainframe PL/I. See note on 
+    <a href="#stream">stream input compatibility.</a><br>
+    The COPY option of the GET statement, the NAME condition, and the 
+    DATAFIELD builtin functions are not supported.
+    <dd>
+ <dt>RECORD I/O<dd>The statements REWRITE, LOCATE, DELETE, and UNLOCK, and are
+    not supported for non-ISAM files.<br>
+    For ISAM files (Linux only) the statements LOCATE and UNLOCK, and the
+    builtin functions ONKEY, and SAMEKEY are not supported. 
+<dt>For better integration with 'ld' on Linux, the external
+    procedure name 'main' is reserved and should not be used.
+<dt>Interlanguage 
+<dd>PL/I procedures can call functions coded in other languages as 
+    long as they use the "SYSTEM" or "CDECL" calling convention.  The "OPTLINK"
+    and other calling conventions are not supported.
+    Programs in other languages can call PL/I procedures with restrictions.
+    The main program <b>must be</b> PL/I.
+    See <a href="#lnk">Program Linkage</a> for more information. 
+<dt>Preprocessor
+<dd>The only preprocessor statements
+    fully implemented by the <b>built-in</b> preprocessor are %INCLUDE and 
+    the listing
+    control statements %PAGE, %SKIP[(n)], %PRINT,
+    %NOPRINT, and %REPLACE.  %PROCESS (*PROCESS) is implemented incompatibly 
+    from the IBM compilers. 
+    All other preprocessor statements will generate a diagnostic.<br>
+    See <a href="#pre">Preprocessor</a> for more information.<br>
+    The beta version of the <b>full preprocessor</b> is described in 
+    <a href="Iron-SpringPLIPreprocessor.pdf">Iron-SpringPLIPreprocessor.pdf</a>. 
+<dt>COMPLEX attribute is not yet fully supported.
+<dt>GENERIC attribute is not implemented. If anyone wants to use 
+    GENERIC, please let us know.
+<dt>DEFAULT statement is recognized but ignored.
+<dt>DISPLAY<dd>The EVENT option of the DISPLAY statement is not 
+    currently supported. 
+<dt>The FETCH and RELEASE statements are not currently implemented.
+</table>
+<dt>Arithmetic builtins
+<dd>The TRUNC arithmetic builtin function is not implemented for FLOAT
+    data in the current version of the compiler.
+<dt>COMPLEX pseudovariable
+<dd>The COMPLEX pseudovariable (not builtin function) is not supported. This corresponds with
+    the IBM Enterprise PL/I compilers. The REAL and IMAG builtins can be 
+    used instead. This is a permanent restriction.
+<dt>Builtins PLICKPT, PLICANC, PLIREST, PLITEST
+<dd>These builtins are not implemented. This is a permanent restriction.
+<dt>PLISRTx
+<dd>The sort builtin function PLISRTD is supported. PLISRTA, PLISRTB, and PLISRTC
+    are not currently implemented.  It is anticipated that versions of these functions, 
+    and possible interfaces to one or more sort products will be added in the future.
+<dt>Aggregate Results
+<dd>Builtin functions will not return agregate results in the current
+    version.  This is similar to <i>Subset G</i> support for builtins.
+    PL/I procedures may return non-adjustable arrays, but procedures
+    returning structures are not yet supported.
+<dt>GRAPHIC data
+<dd>GRAPHIC data support will not be included in this compiler.  This is a 
+    permanent restriction.
+    A future version will include WIDECHAR data for UTF-16 support.  
+    The features not supported include the GRAPHIC attribute and
+    the GRAPHIC and MPSTR builtin functions.
+<dt>LIKE
+<dd>The LIKE attribute is implemented with one restriction.  If a structure is declared
+    as <tt>DECLARE a LIKE b;</tt> and some elements of "b" have the INITIAL
+    attribute, the initialization is not performed for "a".  This will be fixed in a future version.
+<dt>UNION
+<dd>The UNION (CELL) attribute may not be used in adjustable structures. <!-- NOTE:
+    is this still true? -->
+<dt>Array cross sections
+<dd>Array cross sections are not currently supported, but will be in an
+    upcoming release.
+<dt>Array expressions
+<dd>Array expressions are not allowed with adjustable arrays.           
+</dl>
+<p>
+
+<b>Other restrictions</b><br>
+This list may not be exhaustive at the present time.
+The compiler error message 995 ("Unimplemented feature xxx") and the
+run-time condition "UNIMPLEMENTED" are used to flag unimplemented 
+features.  Except for "permanent restrictions" noted above,
+these will be removed in future releases.  Some infrequently-used
+conversions may still be only partially implemented.
+
+<!------ Limits     -->
+<a name="lim">
+<h4>Compiler Limits</h4>
+<table border=1 cellpadding=5>
+<tr><th colspan=2>Compiler Limits</th></tr>
+<tr><td>Maximum number of dimensions</td><td>15</td></tr>
+<tr><td>Maximum number of levels in a structure
+</td><td>15</td></tr>
+<tr><td>Maximum level number in a structure</td><td>255</td></tr>
+<tr><td>Maximum number of picture characters in a picture<br>
+(after expanding all repetition factors)</td><td>511</td></tr>
+<tr><td>Maximum length of a CHAR or BIT string<br>
+(after expanding all repetition factors)</td><td>~32000</td></tr>
+<tr><td>Maximum nesting depth of %INCLUDE files</td><td>4</td></tr>
+<tr><td>Maximum precision of FIXED DECIMAL data</td><td>18</td></tr>
+<tr><td>Default precision of FIXED DECIMAL data</td><td>5</td></tr>
+<tr><td>Maximum precision of signed FIXED BINARY data</td><td>31</td></tr>
+<tr><td>Maximum precision of UNSIGNED FIXED BINARY data</td><td>32</td></tr>
+<tr><td>Default precision of signed FIXED BINARY data</td><td>15</td></tr>
+<tr><td>Default precision of UNSIGNED FIXED BINARY data</td><td>16</td></tr>
+<tr><td>Maximum precision of FLOAT DECIMAL data</td><td>20</td></tr>
+<tr><td>Default precision of FLOAT DECIMAL data</td><td>6</td></tr>
+<tr><td>Maximum precision of FLOAT BINARY data</td><td>64</td></tr>
+<tr><td>Default precision of FLOAT BINARY data</td><td>52</td></tr>
+<tr><td>Minimum/maximum scale factor</td><td>-128 / 128 </td></tr>
+<tr><td>Maximum length of an internal or<br>
+external label</td><td>31</td></tr>
+</table>
+
+<a name='int'>
+<h4>Internal Data Representations</h4>
+<table border=1 cellpadding=5>
+<tr><th colspan=2>Internal Data Representations</th></tr>
+<tr><td>FIXED BIN, precision 7 or less<br>
+UNSIGNED FIXED BIN, precision 8 or less</td><td>BYTE (8 bits)</td></tr>
+<tr><td>FIXED BIN, precision 15 or less<br>
+UNSIGNED FIXED BIN, precision 16 or less</td><td>WORD (2 bytes)</td></tr>
+<tr><td>FIXED BIN, precision 31 or less<br>
+UNSIGNED FIXED BIN, precision 32 or less</td><td>DWORD (4 bytes)</td></tr>
+<tr><td>FIXED DEC, any precision<br>Intel x87 BCD format</td><td>TBYTE (ten bytes)</td></tr>
+<tr><td>FIXED DEC OPTIONS(IBM)</td><td>ceil( (prec+1)/2) ) bytes</td></tr>
+<tr><td>FLOAT BIN, precision 23 or less<br>Intel x87 short floating-point</td><td>REAL4 (4 bytes)</td></tr>
+<tr><td>FLOAT BIN, precision 49 or less<br>Intel x87 long floating-point</td><td>REAL8 (8 bytes)</td></tr>
+<tr><td>FLOAT BIN, precision&gt;50<br>Intel x87 extended floating-point</td><td>REAL10 (10 bytes)</td></tr>
+<tr><td>FLOAT DEC, precision 7 or less</td><td>REAL4 (4 bytes)</td></tr>
+<tr><td>FLOAT DEC, precision 15 or less</td><td>REAL8 (8 bytes)</td></tr>
+<tr><td>FLOAT DEC, precision&gt;15</td><td>REAL10 (10 bytes)</td></tr>
+<tr><td>PTR, OFFSET</td><td>NEAR PTR (4 bytes) on a 4 byte boundary</td></tr>
+<tr><td>CHARACTER(n)</td><td>n bytes</td></tr>
+<tr><td>BIT(n) ALIGNED</td><td>(n+7)/8 bytes</td></tr>
+<tr><td>BIT(n) UNALIGNED</td><td>n bits</td></tr>
+<tr><td colspan=2>VARYING strings will be preceded by a two-byte length prefix<br>
+which will force WORD alignment.</td></tr>
+<tr><td>FILE</td><td>8 bytes aligned on a 4 byte boundaty</td></tr>
+<tr><td>ENTRY</td><td>12 bytes aligned on a 4 byte boundaty</td></tr>
+<tr><td>AREA</td><td>Declared size or default of  1000 bytes on a 
+                     4 byte boundary<br>
+                     area overhead is 20 bytes + 8 bytes per element.</td></tr>
+<tr><td>TASK</td><td>24 bytes aligned on 4 byte boundary</td></tr> 
+<tr><td>EVENT</td><td>16 bytes aligned on 4 byte boundary<br>
+                      EVENT data is always initialized.</td></tr> 
+</table>
+<hr width="25%">
+
+<!----- Documentation ----->
+<a name="doc">
+<p>
+<h4>Documentation</h4>
+Complete documentation for Iron Spring PL/I will 
+be available as part of a future release.  In the meantime, documentation
+for the IBM "PL/I for MVS and VM Compiler 1.1" is available 
+<a href="http://teampli.net/SC26-3114-01.pdf">online</a>.
+<hr width="25%">
+
+<!----- Differences ----->
+<a name="diff">
+<p>
+<h4>Compiler Differences</h4>
+The reference implementation for this compiler is IBM PL/I for MVS and VM 1.1. 
+some features from other compilers have been incorporated.
+Most of the differences  from INM PL/I 1.1 are in the area of Input/Output. 
+See the section <a href="#io">Input and Output</a> for a description of
+the input/output facilities.
+<p>
+See <a href="#rest">Restrictions</a> for information on major language
+features that are not currently implemented.
+
+<dl>
+<dt>Character representation
+<dd>Multiple alternate characters can be used to represent
+OR and NOT.  Either the single or double quote can be used as a string delimiter.
+<dt>DECIMAL FLOAT
+<dd>At the present time, DECIMAL FLOAT data is simulated using BINARY FLOAT. 
+    This is similar to S/370 PL/I implementations that simulate both 
+   DECIMAL FLOAT and BINARY FLOAT using the hardware Hexadecimal floating point formats.
+<dt>FIXED BINARY
+<dd>FIXED BINARY data with precision 7 or less is stored in a single byte.
+<dt>E Format
+<dd>E Format output will print four digits for exponent instead of two.
+Output field widths may need to be adjusted.
+<dt>STRING
+<dd>The STRING builtin function and pseudovariable restrict the range of data
+allowed as arguments.  This should not affect most normal use of STRING.  See
+the section <a href="#bif">Builtin Functions and Pseudovariables</a> for the definition
+of STRING.
+<dt>DATE, TIME, DATETIME
+<dd>Most Linux systems maintain the date and time in UTC. These builtins return
+the value supplied by the system. It is possible to instruct the OS to
+maintain the date and time in localtime, if desired.
+<dt>ONCODE
+<dd>The ONCODE builtin function returns only the base value of the error code.
+For example, IBM PL/I can return codes 600 to 639 for CONVERSION.  This compiler will
+return 600 in all cases. See <a href="#oncode">list of oncodes</a>.
+<dt>Additional builtins
+<dd>See the section <a href="#bif">Builtin Functions and Pseudovariables</a>
+ for the definitions of all supported builtin functions.
+<dt>ATTENTION
+<dd>The ATTENTION condition is enabled by default.  It is raised by pressing CONTROL/C while running
+a text-mode application or otherwise sending XCPT_SIGNAL_INTR/SIGINT to the PL/I process.  
+If no ON-Unit is established for ATTENTION, the implicit action is the same as for ERROR: 
+print an error message and raise the FINISH condition.  
+On normal return from an established ON-Unit, execution continues unaffected.
+Note that ATTENTION will be raised <u><b>only</b></u> in the initial task/thread
+<dt>RETURNS keyword
+<dd>Procedure and Entry statements (<i>not</i> ENTRY <i>declarations</i>) 
+may specify "RETURNS(&nbsp;CHARACTER(*) [VARYING] )", or
+"RETURNS(&nbsp;BIT(*) [VARYING] )".  The length of the returned string is determined by the entry declaration
+in the calling program, e.g.:<br>
+<tt>DECLARE a ENTRY RETURNS( CHARACTER(20) );</tt>.<br>  
+IBM compilers require an explicit length and will not allow '*'.
+<dt>EXTERNAL Attribute and Program Linkage
+<dd>The EXTERNAL attribute has been enhanced to allow the provision of a non-PL/I name visible to procedures
+outside the PL/I program.  The syntax is:<br>
+<tt>DECLARE x EXTERNAL( 'environment_name' )</tt><br>
+See <a href="#lnk">Program Linkage.</a> for more details.
+<p>
+
+<hr width="25%">
+
+<!----- Running ----->
+<a name="run">
+<p>
+<h4>Running the Compiler</h4>
+The "plic" command is used to invoke the compiler.<br>
+<p>
+The syntax of the plic command is shown.  The case of the option switches is significant.  Lower-case options
+have parameters, upper-case do not.
+<pre><tt>
+   plic [&lt;options&gt;] &lt;input files&gt; [-o &lt;output file&gt;]
+
+        &lt;options&gt; = &lt;output option&gt;    [&lt;include options&gt;]         [&lt;listing options&gt;]
+                    [&lt;source margins&gt;] [&lt;character substitutions&gt;] [&lt;version info&gt;]
+                    [&lt;error option&gt;]   [&lt;misc options&gt;]
+                    [&lt;optimization option&gt;]
+
+        Options may be entered in any order.
+        The Linux shell requires that options containing () be enclosed in double quotes (").  
+
+        &lt;<b>output option</b>&gt; = -S | -C | -L
+                          -S = generate assembler (symbolic) output.
+                          -C = generate compiled (object) output.
+                          -L = generated linked (EXE or DLL) output.
+                               (this option not currently implemented.}
+                          -N = generate statement number table to provide
+                               information for run-time error messages
+
+        &lt;<b>include options</b>&gt; = -i&lt;directory&gt;
+                            where &lt;directory&gt; is the absolute or relative path 
+                            to a directory to be searched for %INCLUDE files.
+                            This option may be used more than once on the command line,
+                            and directories will be searched in the order listed.
+
+        &lt;<b>listing options</b>&gt; =  -l[siaxgmovn]
+                            one or more of [siaxgmovn] may be entered, in any order as -lsx
+                            -ls = list source
+                            -li = list insource
+                            -la = list attributes
+                            -lx = list cross-reference
+                            -lg = list aggregates
+                            -lm = list generated code in a format similar to an
+                                       assembly listing 
+			    -lo = list procedure map (statement offset table)
+			    -lv = list additional warning messages           
+			    -ln = include statement nesting level in source listing.
+
+        &lt;<b>source margins</b>&gt; = -m(start[,end])
+                           This option defines the first and last positions of each
+                           input line that contain input for the compiler.  If this
+                           option is omitted the source is assumed to be the entire line.
+                           This option is included for compatibility with mainframe compilers
+                           which would use, for example, -m(2,72).
+
+        &lt;<b>character substitutions</b>&gt; = -cn(&lt;list&gt;) and/or
+                                    -co(&lt;list&gt;)
+                            This option defines up to four characters each to be used as
+                            substitutions for the NOT(&not;) [-cn()] and/or OR(|) [-co()]
+                            operator IN ADDITION TO the defaults.  The caret (^) is
+                            a metacharacter for the OS/2 command processor; if the
+                            caret is to be used, code two consecutive carets,
+                            for example -cn(^^).
+
+        &lt;<b>version info</b>&gt; = -V
+                         The compiler prints version and copyright information on stderr.
+
+        &lt;<b>error option</b>&gt; = -e&lt;option&gt;
+                         This option sets the errorlevel returned by the compiler for warning
+                         and error messages.  Normally compiler returns 4 if only warnings were
+                         issued, and 8 for any errors.
+                         -ew tells the compiler to return 0 if only warning messages were issued.
+                         -es tells the compiler to return 0 if any errors <u>or</u> warnings were issued.
+                           This option is useful when the compiler is run from a script or makefile.
+                         -ed tells the compiler to display messages on stderr as well as stdout.         
+
+        &lt;<b>misc options</b>&gt; = -d&lt;option&gt;
+                         &lt;option&gt; is a character string, with or without enclosing quotes.
+                         -dLIB tells the compiler it is compiling a standard run-time library procedure.
+                         -dELF causes the compiler to generate ELF object files.
+                         -dOMF causes the compiler to generate OMF object files.
+                         The default is to generate the standard object format for the host OS;
+                         for OS/2 -dOMF is the default.
+
+        &lt;<b>optimization option</b>&gt; = -O enables optimizations
+
+        &lt;<b>input files</b>&gt; and &lt;<b>output files</b>&gt; are absolute or relative path names.  Only one input and one
+                         one output file are currently allowed.  If the output file is omitted the name
+                         is generated.  For example, PLIC -S abc.pli will create a file named abc.asm.
+
+</tt></pre>
+<hr width="25%">
+
+<!------ Linking    -->
+<a name="link">
+<p>
+<h4>Linking PL/I Programs</h4>
+The "Readme" file for your environment - <a href="readme_linux.html">Linux</a> or 
+<a href="readme_os2.html">OS/2</a> contains information on linking PL/I programs.
+
+<p>
+<hr width="25%">
+
+<!------ Input    -->
+<a name="inp">
+<p>
+<h4>Compiler input</h4>
+Compiler input is a standard text file [ENV(TEXT)]. Conventionally, the source
+program might have the extension ".pli" or ".pl1", but this is not required. Lines are delimited by Newline 
+characters ('0A'x).  There is no limitation on line length, although individual <i>tokens</i> such as 
+character-strings are limited to approximately 32,000 characters. Other than newlines, characters 
+lower in the collating-sequence than spaces ('20'x) are ignored.  This means, therefore, that at the
+present time they should not be coded in character string constants.  To compile a character string
+constant containing one or more of these characters concatenate the hexadecimal value, for example:
+<pre><tt>
+declare two_line_constant char(24) static initial( ('Line one' || '0D0A'x || 'Line two.') );
+</tt></pre>
+This type of expression is resolved at compile-time and does not generate any additional code.
+<p>
+The compiler character set is Codepage 850.
+The default representations for the <b>OR</b> character is '|', '7C'x, 
+and for <b>NOT</b> '&not;', 'AA'x.  The corresponding unicode characters are 
+U+007C [bar, vertical], and U+00AC [NOT SIGN].
+The character or characters specified above under
+<a href="#run">Running the compiler</a>, the options -cn and -co can be used to indicate <b>additional</b>
+encodings used to represent these characters.
+<p>
+String data can be delimited by either the single (')
+or double (") quote characters.  The same character must be used to begin and end the
+string.  The character <u>not</u> used as a delimiter may be part of the string.
+If portability is a concern, use only the single-quote to delimit strings.  The character used as a 
+delimiter can be included in the string by specifying it twice in succession, for example,
+'Let''s dance' will be compiled as <b>Let's dance</b>, """Fine"", he said" as <b>"Fine", he said</b>.
+<p>
+Source lines are logically continued from the right margin of one line to the left margin of the next,
+with no whitespace assumed between the two character positions.
+(see the -m compiler option).  Any characters outside the margins, as well as any characters lower
+than space in the collating sequence, are ignored.  For example:
+<pre><tt>
+         Left Margin            Right Margin                  Line End
+             |                       |                            |
+             "This is a continued charsome stuff outside the margin
+ extra stuff acter string"
+</tt></pre>
+will be compiled as <b>This is a continued character string</b>.
+<p>
+<i>If a line ends with a word or a number with no trailing blank, and another
+word or number begins in the left margin of the next line the two  will be considered a single
+token.  A future release will cause words and numbers, but not strings, operators, etc.,
+to break at the end of a line.</i> 
+<p>
+<b>INCLUDE</b> files are identical in format to the source file.  Currently INCLUDE files <b>must</b>
+have either no extension or the extension ".inc" or ".cpy".  The compiler option -i, which can be 
+repeated multiple times, 
+provides a list of directories to be searched, in the order written, to locate an INCLUDE file.
+The current working directory is always searched last if the file is not found sooner.  INCLUDE files
+use the same list of alternate characters as the source, and must use the same margins,
+although a future release will allow these to be overridden for each individual file.
+<p>
+
+<hr width="25%">
+
+<!------ Output    -->
+<a name="out">
+<p>
+<h4>Compiler output</h4>
+If any of the listing options (-l<i>x</i>) is specified, compiling a program xxx.pli 
+will create a source listing file named xxx.lst.
+<p>
+Compiler output currently consists of the optional 
+ <a href='#src'>source</a>,
+ <a href="#asml">assembler</a>,
+ <a href='#off'>statement offset table</a>,
+ <a href='#aggr'>aggregate map</a>,
+and <a href="#att">symbol attribute, and cross-reference</a> listings,
+and an optional <a href='#obj'>object file</a> or <a href='#asm'>assembler file</a> of the compiled program.
+<p>
+All pages of the listing have a heading similar to the following showing the date and time of compilation
+and the compiler version used.  The title is taken from the first line of the source file.
+The subheading identifies the "Source Listing", the "Assembly Listing", the "Procedure Map", 
+the "Aggregate Listing", 
+and the "Symbol Table and Cross-Reference Listing."
+<pre><tt>
+Mar  5, 2010  10:28     /* _pli_Sig                                     */                          
+0.8d                                                Source Listing           ...         Page 1     
+</tt></pre>
+<p>
+<a name='src'>
+<b>Source listing:</b><br>
+If the compiler option "-ls" is specified a source listing will be generated.
+<p>
+Here are a few lines from a listing:  The letters in blue are a key to the descriptions below, and are not part of the listing.
+<pre><tt>
+<font color="blue">A   B  C</font>
+  340 
+  341  %include DSA;
+  342
+<font color="blue">  D     E   F</font> 
+341 (INF104)Processing include file DSA.
+<font color="blue">G</font>
+
+    1  /********************************************************************/
+    2  /*                                                                  */
+</tt></pre>
+<p>
+<font color="blue">'B'</font> is the line number.  The source file and each %include file
+are numbered starting from line one.  A future compiler version will also provide a file 
+number for each include file to be used on error messages.
+<p>
+<font color="blue">'C'</font>, the next 100 characters of the listing, show the input line.  
+If the line is longer than 100 characters additional unnumbered lines will display the overflow.
+<p>
+The line following line 342 above shows the format of error, warning, and information messages.  
+<font color="blue">'D'</font> is the source line number.  
+<font color="blue">'E'</font> is the severity and message number (xxxyyy)
+'xxx' is 'INF' for information-only messages as shown, 
+'WRN' for warnings, and 'ERR' for errors. 'yyy' is a unique message identifier for this error. 
+<font color="blue">'F'</font> is the message text.
+<p>Currently messages generated by the parser appear intermixed in the source listing, while code
+generator messages appear at the end of the source, or intermixed in the object code listing if
+one is produced.  In a future version all messages will appear at the end.  Due to parsing considerations
+the error message may appear one line before or after the line it references.  
+
+<p>
+<b>Source listing with nesting levels:</b><br>
+If the compiler option "-ln" is specified the source listing will include
+information on statement nesting within package/procedure/block and DO-Group.
+<pre><tt>
+    1       pk: package;
+    2  1      p1: proc;
+    3  2        i = 0;
+    4  2        do;
+    5  2  1       i = i+1;
+    6  2  1       end;
+    7  2      p2: proc;
+    8  3        return;
+    9  3        end p2;
+   10  2      end p1;
+   11  1      end pk;
+</tt></pre>
+The first number following the line number is the block level, 1 for the 
+outermost - statements within package pk, 2 for statements within procedure p1, etc. The second
+number is the depth of nesting of Do-Groups in a block, 1 for statements
+immediately contained in the DO on line 4, increasing for each nested DO. 
+<p>
+
+<p>
+<a name='asml'>
+<b>Assembly listing:</b><br>
+If the -lm option is specified, a listing of the generated code will appear after the source listing.
+This is similar in format to the listing generated by MASM or ALP.  The major difference
+is that ALP displays immediate operands in big-endian order.  This listing will always display 
+immediate operands <i>as they are stored in memory</i>, i.e. little-endian. Note that the
+assembly code shown is for illustrative purposes and may or may not be assembleable
+by any particular assembler.
+<p>Here is a small sample of the assembly listing:
+<table border=1 width="100%"><tr><td>
+<pre><tt>                                       ; Stmt 14, Line 17 (DO)
+00000313 89 65 [CC]                      mov dword ptr -52[ebp],esp
+00000316 8B 75 [D8]                      mov esi,dword ptr -40[ebp]
+00000319 8B 3E                           mov edi,dword ptr 0[esi]
+0000031B 83 FF 00                        cmp edi,00h
+0000031E 90 90 90 90 90 90               db 90h,90h,90h,90h,90h,90h
+00000324 8B 65 [CC]                      mov esp,dword ptr -52[ebp]
+                                        ; Stmt 15, Line 18 (Assignment)
+00000327 8B 75 [D8]                      mov esi,dword ptr -40[ebp]
+0000032A 8B 3E                           mov edi,dword ptr 0[esi]
+0000032C 89 7D [D4]                      mov dword ptr -44[ebp],edi
+                                        ; Stmt 16, Line 19 (DO)
+0000032F 89 65 [C8]                      mov dword ptr -56[ebp],esp
+00000332 8B 75 [D4]                      mov esi,dword ptr -44[ebp]
+</tt></pre>
+</td></tr></table>
+
+<p>
+<a name='aggr'>
+<b>Aggregate listing:</b><br>
+The -lg option causes a map of each aggregate (structure and array) to be printed.
+For example, the mapping of an aggregate describing the output of the TIME() builtin
+from the following declaration will appear as shown.
+
+<table border=1 width="100%"><tr><td>
+<pre><tt>
+  dcl   1 rTime,
+          5 Hours             pic'99',
+          5 Minutes           pic'99',
+          5 Seconds           pic'99',
+          5 Hundredths        pic'999';
+
+ Def Name            Lvl Dims       Off         Len       Tot Len
+  40 RTIME            1             0           9           9 
+     HOURS            2             0           2           2 
+     MINUTES          2             2           2           2 
+     SECONDS          2             4           2           2 
+     HUNDREDTHS       2             6           3           3 
+</tt></pre>
+</td></tr></table>
+'Def' is the line number of the declaration, 
+'Lvl' is the normalized level number, 
+'Off' is the offset of the member from the base of
+the structure. 'Off' will be shown as "B.b" for bit members, for example a
+one-bit field beginning in bit 1 of byte 0 will be shown as 0.1.
+'Dims' is the number of dimensions for array elements.
+ 'Len' is the member length, again as "B.b" for bit members. 
+'Tot Len' is the total length of the member, for non-adjustable arrays this 
+will be the array length. 
+Adjustable lengths or bounds will cause 'Len' and or 'Tot Len' to be 
+displayed as "*".
+ 
+<p>
+<a name='off'>
+<b>Statement offset listing:</b><br>
+The -lo option causes a procedure map to be printed listing the assembled offset 
+of each statement, its starting line number, and the statement type.
+Here is the procedure map for the procedure containing the code shown above:
+<table border=1 width="100%"><tr><td>
+<pre><tt>
+  Offset  Line Statement type             Offset  Line Statement type             Offset  Line Statement type           
+      08     2 PROCEDURE                ENV
+      23    10 Assignment                     35    11 PUT                            E4    12 PUT                      
+    0180    13 Assignment                   0197    14 PUT                          0246    15 PUT                      
+    02C3    16 PUT                          0313    17 DO                           0327    18 Assignment               
+    032F    19 DO                           0343    20 PUT                          03BF    21 Assignment               
+    03C8    22 END                          03D0    23 PUT                          0420    24 Assignment               
+    0429    25 END                          042E    27 END                      
+</tt></pre>
+</td></tr></table>
+'Offset' is the location of the beginning of the statement relative to the start of the compilation unit
+(zero).  
+'Line' is the starting line number of the statement.  
+'Statement type' describes the type of statement.
+
+<p>
+<a name='att'>
+<b>Symbol table and cross-reference listings:</b><br>
+If the compiler options "-la" or "-lx" are specified,  the attribute list (symbol table) or
+cross-reference listing is printed as shown below.
+"-la" causes the variable attributes to be printed,  
+"-lx" causes the cross-reference listing to be generated.  
+The example below shows the results of specifying "-lax".
+<table border=1 width="100%"><tr><td>
+<pre><tt>
+<font color="blue">H                    I    J                                                     K</font>
+ADDR                 124  Builtin
+BSW                  309  Entry Unaligned                                       [ Code+'13C0'x ]
+                            265 
+BYTE                 332* Builtin
+                            737   738 
+C                     77  Char(1) Unaligned                                     [ DSA-'51'x(1) ]
+                            266   278   300   321   346   362   370   446   452   453 
+                            478   507   510   512   514   516   531   553   557   566 
+C4                   109  Char(4) Unaligned Based                               [ +'00'x(4) ]
+                            297   298   533   615   679 
+C4                   327  Char(4) Unaligned Parameter                           [ Loc @DSA+'08'x(4) ]
+                            723   724   725   726   727 
+CONDS                 97  (9) Char(6) Var Unaligned Static Init()               [ Static+'12'x(8) ]
+                            407   635 
+DSA_BELOW_EBP         27  Unaligned Structure In(PLI_DSA)                       [ +'00'x(32) ]
+                            635   636   642   643   644   646   647 
+DSA_CHC               33  Ptr Aligned In(PLI_DSA.DSA_BELOW_EBP)                 [ +'08'x(4) ]
+                            643 
+PLI_DSA              340  Unaligned Based Structure Level(1)                    [ +'00'x(40) ]
+</tt></pre>
+</td></tr></table>
+<br>
+<font color="blue">'H'</font> is the name of the data element.  
+If the name is longer than twenty characters it will appear
+on a line by itself, with the remaining data shown on the next line.  
+<font color="blue">'I'</font> is the line
+number of the declaration of this item.  Undeclared data, like 'BYTE' above show the line number where this
+element is first used, followed by '*'.
+<p>Each <i>generation</i> of data will be listed separately.  The two occurrences of 'C4' above represent
+two data elements with the name 'C4' in two different blocks.  Usage of each is cross-referenced separately.
+<p>
+<font color="blue">'J'</font> lists the data attributes, which should be self-explanatory.  
+This field may occupy more than one line.
+<p>
+<font color="blue">'K'</font> shows the address of the item in [].  The addresses are displayed as follows:
+<dl>
+<dt>Code labels:<dd>Code+'oooo'x. 'oooo' is the hexadecimal offset from the first code byte.  See 'BSW' above.
+<dt>STATIC data:<dd>Static+'oooo'x(ll). 'oooo' is the offset from the first data byte.  'll' is
+the (decimal) length of the data element.  The length of UNALIGNED BIT elements is shown 
+as (x.y) where 'x' is the number of whole bytes, and 'y' is the number of additional bits.
+For an array,  'll' is the length of one member.  See 'CONDS' above.
+<dt>AUTOMATIC data:<dd>DSA-oooo'x(ll). 'oooo' is the offset from the start of the DSA containing the data.
+Register EBP always points to the current DSA.  Lexically containing DSAs (static scope) are chained from
+offset -8 in the contained DSA.  All offsets are negative.  
+See the file 'DSA.INC' distributed with the library.  
+The variable 'C' above is an example of AUTOMATIC data.
+<dt>BASED data:<dd>+'oooo'x(ll).  'oooo' shows the offset from the beginning of the BASED variable or
+structure.  See the first occurrence of 'C4' above.
+<dt>Data addressed via locator:<dd>Loc @DSA&#177;'oooo'(ll).  This is the address format for parameters,
+adjustable data, and CONTROLLED data.  'oooo' is the offset of the locator/descriptor which points to
+and describes the data.  See the second 'C4' above.
+</dl>
+
+<p>
+If there were any errors or warnings, a message showing the number of them appears at the end 
+of the listing.
+
+<p>
+<a name='obj'>
+<b>Object output:</b><br>
+Compiling a program xxx.pli with the -C option will create an object file xxx.obj for OMF-format
+output, or xxx.o for ELF.  The layout of the generated code is described under "Program Structure"
+below.
+
+<p>
+<a name='asm'>
+<b>Assembler output:</b><br>
+Compiling a program xxx.pli with the -S option will create an assembler file xxx.asm in a 
+format suitable for the IBM ALP assembler or the open-source JWASM assembler.  
+Other assemblers will most likely not be able to assemble this file correctly.<p>
+The compiler generates assembler labels for level-1 EXTERNAL data and for each
+EXTERNAL ENTRY.  Most assemblers have a list of <i>reserved
+words</i> which cannot be used for labels, typically including all
+register names (e.g. EAX), all instruction mnemonics (LEA), and
+most pseudo-ops (ORG).  Using any of these as PL/I external
+labels will cause an assembly error.
+<p>
+A few lines of assembler output are shown:
+<pre><tt>
+; Stmt 2, Line 3 (PUT)
+ .code
+ sub esp,64 
+ mov word ptr 0[esp],1 
+ mov dword ptr 12[esp],ebp
+</tt></pre>
+The source statement and line number that generated each piece of code, along with
+the statement type is shown as indicated.  The line number ties this code to the source
+listing.
+
+<h5>Program Structure</h5>
+The generated program consists of a single code segment(.text) identified by the 
+ label <b>'_pli_code'</b>, a single static initialized data segment(.data) 
+ identified by <b>'_pli_data'</b>, a single static unitialized data segment 
+ (.bss, <b>'_pli_bss'</b>), an unnamed stack segment for OS/2, 
+ and zero or more external common segments.  
+<p>
+External segments are generated for each variable or structure declared EXTERNAL, as well as for
+each EXTERNAL FILE.  If the variable has the INITIAL attribute the data is always generated, otherwise the
+declared amount of storage is reserved.  Here is the generated code for an uninitialized
+external structure named 'abc':
+<pre><tt>
+ABC segment dword common 'ABC'
+_ABC equ $
+ org _ABC+0Ch
+ABC ends
+</tt></pre>
+Here is the code for the initialized external segment 'sysprint':
+<pre><tt>
+SYSPRINT segment dword common 'SYSPRINT'
+_SYSPRINT equ $
+ dd 0
+ dd 0
+ dd _SYSPRINT+12
+ dw 8
+ db 'SYSPRINT'
+SYSPRINT ends
+</tt></pre>
+The linker combines identically-named external segments.  The resulting length
+will be the length of the largest such segment. All declarations of EXTERNAL data should be identical in length. 
+It is permissible to have only one declaration of EXTERNAL data have the INITIAL attribute, and
+all procedures declaring it will reference that data. If the initial values of the
+elements differ between declarations the results are unpredictable. 
+<font color="red">Warning:</font> The Gnu linker has a bug linking addresses
+declared with the INITIAL attribute in external data. Only <u>one</u> such  
+declaration can have the INITIAL attribute. The linker will add together the
+values of all initialized addresses.
+ 
+
+<p>
+
+<p>
+<b>Compiler Work File:</b><br>
+The compiler creates a temporary work file named PLI-xxxxxxxx-yyyyyyyy-zzzzzzzz.tmp,
+in the current working directory on OS/2, or the /tmp directory on Linux.
+Normally this file is deleted at the end
+of compilation.  Errors in the compiler causing 
+certain traps may prevent automatic deletion of this file.  
+If it not automatically removed it may be deleted manually.
+<hr width="25%">
+
+<!------ Syntax Chart Format -->
+<a name="syn">
+<p>
+<h4>Syntax Chart Format</h4>
+In the syntax charts that follow, the characters '-', '.', '+', 'v', '^', '|', '&lt;', and '&gt;' are used only for
+drawing the chart, and are not part of the syntax.  Other punctuation such as parentheses, semicolons, commas,
+ etc. must be entered as shown.Words shown in <i>CAPITALS</i> are PL/I keywords.
+Words shown in <i>lower-case</i> represent names chosen by the programmer or variable information.
+(The actual case of the word in the program is not significant.)
+'&gt;&gt;' identifies the beginning of a diagram, and '&gt;&lt;' represents the end. 
+Entities appearing in '|' data '|' represent a syntax fragment that is expanded later.
+Elements on the main line of the diagram as '--- stuff ---' are <i>required</i>.  Elements appearing above or 
+below the main line represent <i>choices</i>. Elements shown all below the line are optional with no default.
+Where one element is shown above the line it represents the default if none of the choices is specified.
+<p> 
+<hr width="25%">
+
+
+<!------ Linkage ----->
+<a name="lnk">
+<p>
+<h4>The PROCEDURE and ENTRY and PACKAGE statements</h4>
+<dl>
+<dt><b>PROCEDURE</b> statement.
+<dd>
+<pre><tt>
+PROCEDURE-+--------------------+-+-----------------+-+-----------------+-+-------------+-+------------------+-- ; ><
+          |                    | |                 | |                 | |             | |                  |
+          +-| ( parameters ) |-+ +-| returns-opt |-+ +-| options-opt |-+ +- RECURSIVE -+ +-| external-opt |-+
+</tt></pre>
+</dl>
+
+<dl>
+<dt><b>ENTRY</b> statement.
+<dd>
+<pre><tt>
+ENTRY--+--------------------+-+-----------------+-+-----------------+-+-------------+-+------------------+- ; ><
+       |                    | |                 | |                 | |             | |                  |
+       +-| ( parameters ) |-+ +-| returns-opt |-+ +-| options-opt |-+ +- RECURSIVE -+ +-| external-opt |-+ 
+</tt></pre>
+</dl>
+
+Other keywords defined by The IBM PL/I for MVS and VM compiler 1.1 and various other compilers are accepted for
+source compatibility, but are otherwise ignored.<p>
+<pre><tt>
+|parameters|
+
+  +------- , ----------------+
+  v                          |
+|-.- parameter-description --+----|
+</tt></pre>
+Each <i>parameter-description</i> supplies the attributes for one parameter, therefore the entry expects as many 
+arguments as there are items in the list.  A parameter-description is a list of data attributes that describes that parameter.  For example:
+<tt>FIXED BINARY(7)</tt>, <tt>CHARACTER(8)</tt>, <tt>POINTER</tt>, or <tt>ENTRY</tt> would all be valid parameter descriptions.
+<p>
+<pre><tt>
+|returns-opt|
+
+|-- RETURNS ( returns-description ) ---|
+</tt></pre>
+The <i>returns-description</i> describes the attributes of the data which will be returned by this entry
+if it is invoked as a function.  If the <i>returns-opt</i> is omitted the attributes are determined by the
+first character name of the first or only name prefix &mdash; I thru N: FIXED BINARY(15), other: FLOAT DECIMAL(6).
+<p>
+<pre><tt>
+|options-opt|
+
+                +--- , --------+
+                |              |
+                +--------------+
+                v              |
+|---- OPTIONS ( . entry-option +  ) ---|
+</tt></pre>
+Each <i>entry-option</i> is one of the following:
+<dl>
+<dt>FROMALIEN<dd>Indicates that this entry may be called from a non-PL/I program.  <b>A FROMALIEN
+procedure should be considered to be <i>non-nested</i> &mdash;  that is, it may not access any AUTOMATIC
+data in the containing procedures, if any.  Also, any condition-handling established in a
+previously-called procedure will be ignored on entry to the FROMALIEN procedure.</b><p>
+<dt>LINKAGE( linkage-type )<dd>'linkage-type' indicates the type of calling sequence with which
+this entry will be invoked.  If LINKAGE is omitted, a standard PL/I convention will be used.
+(see <a href="#rt">Run-time Considerations</a>).  
+Currently the only valid linkage type is SYSTEM.   
+This can be used to call functions written in C, including OS/2 API functions, 
+but is also a valid  convention among PL/I procedures, with some restrictions.<br>
+For source compatibility with IBM PL/I for OS/2, specify 
+'OPTIONS( <u><b>BYVALUE</b></u> LINKAGE(SYSTEM) )'.
+<i>BYVALUE</i> is assumed by this compiler and the keyword is ignored, but IBM PL/I defaults 
+to <i>BYADDR</i> unless otherwise specified.<p>
+ <tt>LINKAGE(OPTLINK)</tt>
+will be implemented in a future version to specify the "Optlink" calling convention that uses
+registers for some arguments.<p>
+
+<dt>MAIN<dd>Indicates that this is the initial or 'main' procedure.  Iron Spring PL/I allows only one
+OPTIONS(MAIN) procedure to be included in an executable program.
+<p>
+<dt>REENTRANT<dd>This is included for compatibility only.  All code compiled by Iron Spring PL/I is reentrant.
+</dl>
+<p>
+RECURSIVE is supported for compatibility only.  It indicates that this entry may call itself, either directly
+or indirectly through a chain of calls.  Iron Spring PL/I assumes all entries are potentially recursive.
+<p>
+<pre><tt>
+|external-opt|
+
+|-- EXTERNAL --+----------------------+---|
+               |                      |
+               +- ( external-name ) --+
+</tt></pre>
+The <i>external-name</i> is a character string, enclosed in quotes, representing the name by
+which this entry will be known to external callers.
+External 'external-name's beginning with the string "_pli" are reserved for use by the
+run-time library.  If the 'external-name' is not specified, the default external name is
+an uppercase translation of the first label on the external procedure or entry
+statement.  For example,
+<tt>x: y: PROCEDURE;</tt> will use "X" as the external name for the linker.
+<p>
+<h5>ENTRY Declarations</h5>
+The following attributes can be used in the declaration of an external entry:
+<pre><tt>
+DECLARE-- decl-name --ENTRY-+--------------------+-+-----------------+-+-----------------+-+------------------+-- ; ><
+                            |                    | |                 | |                 | |                  |
+                            +-| ( parameters ) |-+ +-| returns-opt |-+ +-| options-opt |-+ +-| external-opt |-+
+</tt></pre>
+Parameters, returns-opt, and external-opt are described under "PROCEDURE and ENTRY Statements" above.  
+An entry declared <i>without</i> a parameter list &mdash; <tt>DECLARE a ENTRY;</tt> will accept any
+number of arguments with no conversion.  An entry declared with an <i>empty</i> parameter list &mdash;
+<tt>DECLARE a ENTRY();</tt> does not allow any arguments.
+<pre><tt>
+|options-opt|
+
+                +--- , --------+
+                |              |
+                +--------------+
+                v              |
+|---- OPTIONS ( . entry-option +  ) ---|
+</tt></pre>
+The following options are valid for entry declarations:
+<dl>
+<dt>ASSEMBLER (abbreviated ASM)<dd>Indicates that the entry is a non-PL/I procedure (assembler, C, etc.)  
+The compiler generates code to save and restore the x87 Floating-point control word, since programs 
+in different languages may change this unpredictably.
+<dt>LINKAGE( linkage-type )<dd>'linkage-type' is as described above under "PROCEDURE and ENTRY Statements".
+</dl>
+
+<dl>
+<p>
+<dt><b>PACKAGE</b> statement.
+<dd>
+<pre><tt>
+PACKAGE-+-------------------------------------+----+-------------------------------------+--+-------------------+- ; ><
+        |                                     ^    |                                     ^  |                   ^
+        |               +----- , ------+      |    |                +---- , ------+      |  |                   |
+        |               |              |      |    |                |             |      |  |                   |
+        |               v              |      |    |                v             |      |  |                   |
+        +- EXPORTS ( -+-+- procedure --+-+- )-+    +- RESERVES ( -+-+- variable --+-+- )-+  +- OPTIONS(options)-+
+                      |                  ^                        |                 ^
+                      |                  |                        |                 |
+                      +------- * --------+                        +------- * -------+
+</tt></pre>
+</dl>
+<p>
+A package is a block which can immediately contain only declarations, DEFAULT statements, and PROCEDURE blocks.
+The package forms a name scope that is shared by all declarations and procedures it contains.  Some or all
+of the level-1 procedures can be exported and made known outside the package as external procedures.
+<dl>
+<dt>EXPORTS<dd>Specifies that all [EXPORTS(*)] or the named procedures are to be made known outside the
+package.  Procedures not exported are known only within the package.  If the EXPORTS keyword is not
+specified, EXPORTS(*) is assumed.
+<dt>RESERVES<dd>This keyword is not used by the Iron Spring compiler, and is treated as comments only due
+to differences in handling initialized and uninitialized EXTERNAL data.
+<dt>OPTIONS<dd>This keyword is not used by the Iron Spring compiler, and is treated as comments only for
+compatibility with other compilers.
+</dl>
+<p>
+All declarations with package scope (outside of procedures within the package) must have STATIC, BASED, 
+CONTROLLED, or EXTERNAL storage class, AUTOMATIC data is not allowed outside of procedures.
+<p>
+<hr width="25%">
+
+<!-- ---- Input and Output    -->
+<a name="io">
+<p>
+<h4>Input and Output Statements</h4>
+In the following discussion, <i>delimiter</i> signifies either a linefeed character (ASCII '0A'x),
+<u>or</u> a carriage-return/linefeed combination (ASCII '0D0A'x).<p>
+Iron Spring PL/I can read and write: 
+<ol>
+<li>Standard text files, with lines of text terminated by delimiters.
+<li>Files of fixed-length records with or without delimiters.
+<li>Files of variable-length records where the length of each record
+is indicated by a two-byte binary prefix, with or without delimiters.
+<li>Files containing arbitrary streams of binary data with no record boundaries. 
+</ol>
+<p>
+<ul>
+<li><a href="#decl">File Declarations</a>
+<li><a href="#stmt">Input/Output Statements</a>
+  <ul>
+  <li><a href="#stmtstrm">Stream Input/Output</a>
+  <li><a href="#stmtrec">Record Input/Output</a>
+  <li><a href="#stmtindx">INDEXED Input/Output 
+See <a href="Iron-SpringUsingIndexedFiles.pdf">Iron-SpringUsingIndexedFiles.pdf</a>
+
+  </ul>
+</ul>
+<p>
+<a name="decl">
+<h5>File Declarations</h5>
+The general form of a file declaration is shown below.  As usual, keywords can be specified in any order.  Many
+keywords may be specified either in the declaration or in the <b>OPEN</b> statement for the file.  If they are
+specified in both, they must not conflict.  For example, a file declared <b>INPUT</b> cannot be opened as <b>OUTPUT</b>
+or the UNDEFINEDFILE condition will raised when the file is opened.
+
+<pre><tt>
+>>-DECLARE-<a href=#fn>name</a>-+------+-+--------+-+--------+-+----------------------------------+-+------------------+-><
+                |      | |        | |        | |                                  | |                  |
+                +-<a href="#f">FILE</a>-+ +-<a href="#rs">RECORD</a>-+ +-<a href="#iou">INPUT</a> -+ +-<a href="#e">ENVIRONMENT(environment options)</a>-+ +-<a href="#o">other attributes</a>-+
+                         |        | |        |
+                         +-<a href="#rs">STREAM</a>-+ +-<a href="#iou">OUTPUT</a>-+
+                                    |        |
+                                    +-<a href="#iou">UPDATE</a>-+
+</tt></pre>
+<ul>
+<li><a name="fn">"name" is the name by which the file is known to the PL/I program.  It must follow the rules for PL/I
+identifiers.
+<li><a name="f">The keyword <b>FILE</b> is required if none of the other file declaration keywords are coded.  Otherwise it
+is implied.
+</ul>
+
+<a name="rs">
+<p>
+<h5>RECORD and STREAM Files</h5>
+<ul>
+<li><b>STREAM</b> indicates that the file is a <i>continuous stream</i> of data items in character form.  <b>STREAM</b> files
+are read or written without regard to record boundaries.  The PL/I statements <b>GET</b> and <b>PUT</b> are used to 
+process <b>STREAM</b> files.<br>
+<li><b>RECORD</b> indicates that the file is logically divided into <i>records</i> which are composed of one
+or more data items in any form.  A <i>record</i> is always read or written as a unit.  The PL/I statements <b>READ</b>,
+<b>WRITE</b>, <b>REWRITE</b>, and <b>LOCATE</b> are used to process <b>RECORD</b> files.
+</ul>
+<p>
+
+<a name="iou">
+<p>
+<h5>INPUT, OUTPUT, and UPDATE</h5>
+<ul>
+<li><b>INPUT</b> indicates that the file is to be read only.  The file must exist or the UNDEFINEDFILE condition will
+be raised when the file is opened.
+<li><b>OUTPUT</b> indicates that the file is to be written only.  If the file does not exist, it will be created when
+opened.  If it does exist, it will be deleted and a new file created, unless the <b>ENVIRONMENT</b> option <b>APPEND</b>
+is specified.
+<li><b>UPDATE</b> indicates that the file is going to be both read and written.
+</ul>
+<p>
+
+<a name="e">
+<p>
+<h5>ENVIRONMENT Options</h5>
+The <b>ENVIRONMENT</b> attribute allows specification of implementation-dependent options for a file.
+Iron Spring PL/I allows coding of all <b>ENVIRONMENT</b> attributes allowed by <i>IBM PL/I for MVS and VM</i>.
+Only attributes actually used are described here.
+
+<ul>
+
+<li>Record format keywords: <b>D, DB, F, FB, FS, FBS, V, VB, VS, VBS, U</b>.<br>
+One of these keywords is coded to indicate the type of records to be processed.  
+Only the <b>D, F, V, and U</b> are significant, the others
+are provided for compatibility.  <b>F</b> indicates that the file consists of records having all
+the same length.  <b>V</b> or <b>D</b> indicate that the records in the file can have different lengths.<p>
+The options <b>TEXT</b>, <b>CRLF</b>, <b>LF</b>, and <b>VARLS</b> provide additional information about the external 
+representation of <b>F, V, and D</b> files.
+<p>
+Record format <b>U</b> allows reading and writing files without regard to formatting or record boundaries.
+When reading <b>INTO</b> a character string, the amount of data available up to the maximum 
+length of the string is returned.  ENDFILE is raised only on the <i>next</i> read after the last byte has been returned.
+See the sample program 'readu.pli' for an example of using <b>ENV(U)</b> to read a file with no
+predetermined maximum record length.  Writing <b>FROM</b> a character string writes <i>n</i> bytes of data from the
+string, where <i>n</i> is the current or constant length of the string.
+
+<li><b>BLKSIZE(n)</b> specifies the size of the buffer used to transfer data 
+to or from the file or device.
+If this keyword is not specified, a default value is used.
+
+<li><b>RECSIZE(n)</b> specifies the uniform record length for <b>F</b> files, or the maximum record length for
+<b>V or D</b> files.  If this keyword is not specified, the default is <b>LINESIZE</b>.  The <b>RECSIZE</b> value 
+describes only the data portion of the record, exclusive of delimiters, length prefixes, etc.
+
+<li><b>TEXT</b>, <b>CRLF</b> or <b>LF</b> specifies the presence of record delimiters.
+If none of the three options is specified, no delimiters will be written on output or expected on input. 
+<b>TEXT</b> indicates that the default record delimiter for the system will be used: 
+CRLF for OS/2 or LF for Linux.  The <b>TEXT</b> option should be used in preference to either <b>CRLF</b> or
+<b>LF</b> unless a specific delimiter is required, since code specifying <b>TEXT</b> is portable.  
+<b>LF</b> indicates that a single newline character (ASCII '0A'x)
+delimits records in the file (Unix convention).  <b>CRLF</b> indicates that a carriage-return/linefeed combination
+(ASCII '0D0A'x) is used as a delimiter (OS/2, DOS convention).  The delimiters will be written as specified on output, but 
+either is always acceptable for input.
+
+<li><b>VARLS</b> specifies that records in the file will be written with a FIXED BINARY(15) prefix containing the
+length of the following data.
+
+<li><b>APPEND</b> specifies that an <b>INPUT</b> or <b>UPDATE</b> file will have data appended to the end if it
+already exists.  When the file is opened, the current file position will be set to the end of the file.
+
+</ul>
+<p>
+
+<a name="o">
+<p>
+<h5>Other Attributes</h5>
+<ul>
+<li>Storage attributes <b>ALIGNED, UNALIGNED, AUTOMATIC, BASED, DEFINED, STATIC, INTERNAL, and EXTERNAL</b>  may be
+used with declarations of <i>file variables</i>.  <b>INTERNAL and EXTERNAL</b> are also applicable to <i>file constants</i>.
+The default for a <i>file constant</i> is <b>EXTERNAL</b>.  A <i>file constant</i> declared INTERNAL
+is automatically made STATIC.
+<li><b>BUFFERED</b> or <b>UNBUFFERED</b> are used to control the amount of storage that will be used for buffers 
+for this file.  <b>BUFFERED</b> requests that a storage area of length <i>BLKSIZE</i> is to be used to handle
+transfers to or from the file or device, minimizing interaction with the Operating System.  <b>UNBUFFERED</b> specifies
+that each record is read or written immediately, and no additional storage is used.
+<li><b>KEYED</b> indicates that <i>keys</i> may be used to select a particular record to be read or written, bypassing
+normal sequential processing.  A <i>key</i> for this implementation is a CHARACTER(12) data item which uniquely identifies
+a record in the file.  This is not intended to be user-modifiable data, except that key of (12)'00'x indicates the beginning
+of the file, and (12)'FF'x indicates the end. The <b>KEY</b>, <b>KEYFROM</b>, and <b>KEYTO</b> keywords may be used 
+on I/O statements to receive or supply the identifier of the record.<br>
+<i>This implementation of KEYED is unique to Iron Spring PL/I.</i>
+<li><b>PRINT</b> is an additional attribute for <b>STREAM OUTPUT</b> files indicating that this file is ultimately
+destined to be printed.  The compiler keeps track of the current "page" and "line" in the file, and raises the 
+<b>ENDPAGE</b> condition when starting a new page.  <b>PRINT</b> also enables print-related processing of the <b>PAGE</b> 
+option on the <b>PUT</b> statement and the <b>PAGE</b> format item.
+Specifying <b>PAGESIZE(0)</b> on the <b>OPEN</b> statement will
+suppress page breaks for <b>PRINT</b> files.See <a href="#plitabs">PLITABS</a>.
+<li><b>VARIABLE</b> indicates that this declaration is a <i>file variable</i> rather than a <i>file constant</i>.  
+<i>File variables</i> can be assigned the value of a <i>file constant</i> at run time, for example, to pass a file 
+as a parameter to a procedure, but cannot be used for I/O unless a value has been assigned.  
+</ul>
+<p>
+<b>STREAM</b> files default to <b>ENV(V TEXT)</b> unless other attributes are specified.  <b>RECORD</b> <b>ENV(V)</b>
+files default to <b>ENV(V VARLS)</b>.  
+<p>
+
+<h5>Standard Files</h5>
+
+Unless overridden by <b>ENVIRONMENT</b> or <b>OPEN</b>, the
+standard files SYSIN and SYSPRINT default to stdin and stdout with the following attributes
+respectively.
+<table border=1>
+<tr><td>SYSIN</td><td>ENV(V TEXT RECSIZE120))</td></tr>
+<tr><td>SYSPRINT</td><td>PRINT ENV(V TEXT RECSIZE(120)) LINESIZE(120) PAGESIZE(60)</td></tr>
+<tr><td colspan=2>If stdin and stdout are the current terminal(VIO) window, these files default
+to ENV( BLKSIZE(0) ).
+</table>
+
+<h5>Interactive options</h5>
+<ul>
+<li><b>ENVIRONMENT(INTERACTIVE)</b> Specifying the "INTERACTIVE" environment 
+option for a STREAM OUTPUT file forces the file to be UNBUFFERED and will 
+immediately write each output data item followed by a new line.  
+This will cause prompts to be
+written immediately rather than buffered.  Normally a complete line is accumulated 
+and only written when a SKIP, PAGE, or COL which forces a line advance is written.
+<li><b>L-Format item</b> On input the L-Format item will read all characters up to 
+the end of the current line and assign it to the corresponding data list item,
+converting as necessary.
+On output the current item will be converted to character and written, padded
+on the right with blanks if necessary to fill the current line.  The current line 
+will then be written.  Declaring output files UNBUFFERED may be required to insure
+the completed line is not buffered. 
+
+<p>
+<a name="stmt">
+<h5>Input/Output Statements</h5>
+<b>OPEN</b> and <b>CLOSE</b> apply to both <b>STREAM</b> and <b>RECORD</b> files.  The <b>GET</b> and <b>PUT</b>
+statements operate on <b>STREAM</b> files.  The <b>READ</b>, <b>WRITE</b>, <b>REWRITE</b>, and <b>LOCATE</b>
+statements operate on <b>RECORD</b> files.  The assumption is made that the reader is familiar with, or has access
+to a reference for, the I/O statements of <i>IBM PL/I for MVS and VM</i>.  Only the syntax accepted by Iron Spring
+PL/I is shown here, no explanation is provided.
+<p>
+<dl>
+<dt><b>OPEN</b> statement.
+<dd>
+<pre><tt>
+         +----------------------- , -------------------------------------+
+         v                                                               |
+>>-OPEN--.---FILE(file_ref)-+------------------+----+---------------+----+---- ; ----><
+                            |                  |    |               |
+                            +-|stream-options|-+    +-<a href="#t">TITLE(string)</a>-+  
+                            |                  |
+                            +-|record-options|-+
+
+
+|stream-options| 
+
+              +-INPUT ---------------------------+
+              |                                  |   
+|----STREAM---+----------------------------------+-+-------------+-----|
+              |                                  | |             |                  
+              +OUTPUT ---+-----------------------+ +-LINESIZE(m)-+                                   
+                         |                       |                           
+                         +-PRINT-+-------------+-+                           
+                                 |             |                  
+                                 +-PAGESIZE(n)-+                  
+
+|record-options|
+
+              +-INPUT -+
+              |        |
+|---RECORD----+--------+-+------------+-+-------+------| 
+              |        | |            | |       |                    
+              +-OUTPUT-+ +-BUFFERED---+ +-KEYED-+   
+              |        | |            |                                      
+              +-UPDATE-+ +-UNBUFFERED-+                                      
+                
+</tt></pre>
+<p>"file-ref" identifies a PL/I file, the reference may be subscripted or qualified, but cannot represent an 
+aggregate such as an array of file variables.
+<p>
+<a name="t">
+The <b>TITLE(string)</b> option provides the operating system "filespec" of the file to be read or written.
+"String" is any valid character string expression.
+If the <b>TITLE</b> is omitted, the file name used by the system will be the declared PL/I filename
+in uppercase, except for SYSIN and SYSPRINT which default to stdin and stdout.  
+The TITLE may be a full filespec [TITLE('C:/test.dat')], a device name 
+[TITLE('LPT1:') TITLE('/dev/nul')], a relative filespec, or the name of
+an environment variable containing the filespec as "DD_ddname".  To reference an environment
+variable, the "DD_" is required. "DD_ddname", where "ddname" is any valid value,
+will be the name of the environment variable, and the value of the variable
+will be interpreted as the filespec.<br> 
+<i>Unlike IBM OS/2 PL/I, file attributes <u>may not</u> be specified in the title string.</i>
+<p>
+
+<dt><b>CLOSE</b> statement.         
+<dd>
+<pre><tt>
+          +----- , ---------+
+          v                 |
+>>-CLOSE--.--FILE(file_ref)-+-- ; --><
+</tt></pre>
+</dl>
+
+<p>
+<hr width="15%" align="left">
+<p>
+<a name="stmtstrm">
+<b>STREAM Input/Output</b>
+<p>
+<dl>
+<dt><b>GET</b> statement.
+<dd>
+<pre><tt>
+>>-GET-FILE(file_ref)-+-----------------+-+----------------------+- ; --><
+                      |                 | |                      |
+                      +-<a href="#skip">SKIP</a>----------+-+ +-|<a href="#data">data_specification</a>|-+
+                             |        |
+                             +-(expr)-+ 
+</tt></pre>
+<dt><b>PUT</b> statement.
+<dd>
+<pre><tt>
+>>-PUT-FILE(file_ref)-+---------------------+-+----------------------+- ; --><
+                      |                     | |                      |
+                      +-<a href="#page">PAGE</a>-+------------+-+ +-|<a href="#data">data_specification</a>|-+
+                      |      |            | |
+                      |      +-LINE(expr)-+ |
+                      |                     |
+                      +-<a href="#skip">SKIP</a>-+--------+-----+
+                      |      |        |     |
+                      |      +-(expr)-+     |
+                      |                     |
+                      +-<a href="#line">LINE(expr)</a>----------+
+</tt></pre>
+</dl>
+<p>
+<a name="data">
+<b>Data Specification</b><br>
+<pre><tt>
+|--+------+---( |data-list| )---------------------+----|
+   |      |                                       |           
+   +-LIST-+                                       |
+   |                                              |
+   +-DATA---+-----------------+-------------------+
+   |        |                 |                   |
+   |        +-( |data-list| )-+                   |
+   |                                              |
+   |        +-----------------------------------+ | 
+   |        v                                   | |
+   +-EDIT---.-( |data-list| )-( |format-list| }-+-+  
+
+</tt></pre>
+<p>
+<a name="skip">
+The <b>SKIP</b> option causes a new line to be started  
+in the data stream prior to transmitting any data from the current or subsequent <b>GET</b> or <b>PUT</b> statement.
+The <i>(expr)</i> is converted to an integer <i>n</i>.  On output, <i>n</i> newlines (linefeed or
+carriage-return/linefeed) are inserted.  On input the remainder of the current line and the n-1 following
+lines are skipped.
+If <i>(expr)</i> is omitted or not greater than zero, 1 is used for the value of <i>n</i>.
+For <b>PRINT</b> files, the ENDPAGE condition may be raised if <b>PAGESIZE</b> is exceeded.
+<p>
+<a name="page">
+The <b>PAGE</b> option is valid only for <b>PRINT</b> files.  It causes a page eject (ASCII '0C'x) 
+to be inserted in the output stream prior to transmitting any data from the current or subsequent
+<b>PUT</b> statement.  If both <b>PAGE</b> and <b>LINE</b> are present, the PAGE option is
+applied first.
+<p>
+<a name="line">
+The <b>LINE</b> option is valid only for <b>PRINT</b> files.  It  causes a new line to be started  
+in the output stream prior to transmitting any data from the current or subsequent <b>PUT</b> statement.
+The <i>(expr)</i> is converted to an integer <i>n</i>.  If <i>n</i> or more lines have been written on the
+current page, or if <i>n</i> exceeds <b>PAGESIZE</b>, a new page is started.  newlines are inserted in
+the output strean to position the next data written at line <i>n</i>.
+If <i>(expr)</i> is less than or equal to zero, 1 is used for the value of <i>n</i>.
+<p>
+
+<a name="stream">
+<b>GET EDIT compatibility</b><br>
+STREAM INPUT data for Linux or OS/2 normally consists of variable-length 
+lines with LF or CRLF delimiters.
+Many existing IBM mainframe PL/I programs make the assumption that these records 
+are fixed card images, 80 characters long. Therefore you may see code like the following:
+<pre><tt>    DECLARE card CHARACTER(80);
+    GET EDIT(card)(A(80));</tt></pre>
+With this code Iron Spring PL/I will attempt to read 80 characters from SYSIN,
+ignoring record boundaries, and will garble the input stream.
+<p>
+To ensure that record boundaries are observed, code the GET statement as:
+<pre><tt>    GET EDIT(card)(A);</tt></pre>
+WITHOUT the length specification. In this case a maximum of one record will 
+be read for each GET, and the resulting data assigned to "card" left-justified 
+and space-filled, which is probably what the program expects.
+<p>
+Alternatively, a program "encard" is supplied in the "samples" directory which 
+will expand a text file to 80-byte records with blank padding, so that standard
+Linux or OS/2 files can be used with unmodified PL/I programs expecting card
+ images. 
+You can use "encard" run your program with a command simular to:
+<pre><tt>encard&lt;YOUR.DATASET|YOUR.PROGRAM</pre></tt> 
+"encard" should point to the directory where you have placed the compiled program, 
+for esample "/usr/local/bin/encard", or "~/bin/encard" (if in your home
+directory). replace YOUR.DATASET and YOUR.PROGRAM with the name of the input dataset
+and the full pathname of the program you want to run, respectively.
+<p> 
+
+<a name="plitabs">
+<p>
+The <b>PLITABS</b> structure provides a description of a printed page used by the I/O routines. 
+A definition of this structure is provided in "lib\include\plitabs.inc."  This defines the pagesize 
+and linesize used for PRINT files, and the tab positions for list-directed and data-directed output.
+If PLITABS is not used the defaults are PAGESIZE(60) LINESIZE(120) and four tabs at columns 
+25, 49, 73, and 97, the same as the defaults for the IBM compilers.  To change these values include
+the PLITABS structure in your program and set the desired values before opening any PRINT files.
+Space is reserved for up to 255 tab values.
+<hr width="15%" align="left">
+<p>
+
+<a name="stmtrec">
+<b>RECORD Input/Output</b>
+<p>
+<dt><b>READ</b> statement.
+<dd>
+<pre><tt>
+>>-READ-FILE(file_ref)-+-----------------------------------+----------- ; --><
+                       |                                   |          
+                       +-INTO(ref)-+-------------+---------+
+                       |           |             |         |
+                       |           +-KEY(expr)---+         |
+                       |           |             |         |
+                       |           +-KEYTO(ref)--+         |
+                       |                                   | 
+                       +-SET(pointer-ref)-+-------------+--+
+                       |                  |             |  |
+                       |                  +-KEY(expr)---+  |
+                       |                  |             |  |
+                       |                  +-KEYTO(ref)--+  | 
+                       |                                   |
+                       +-IGNORE(expr)----------------------+
+
+</tt></pre>
+<dt><b>WRITE</b> statement.
+<dd>
+<pre><tt>
+>>-WRITE-FILE(file_ref)--FROM(ref)--+-------------------------+----------- ; --><
+                                    |                         |
+                                    +-KEYFROM(expr)-----------+
+                                    |                         |
+                                    +-KEYTO(ref)--------------+
+
+</tt></pre>
+<dt><b>LOCATE</b> statement.
+<dd>
+<pre><tt>
+>>-LOCATE--based-variable--FILE(file-ref)--+------------------+-------------------+---- ; --><
+                                           |                  |  |                |
+                                           +-SET(pointer-ref)-+  +-KEYFROM(expr)--+             
+
+</tt></pre>
+<dt><b>REWRITE</b> statement.
+<dd>
+<pre><tt>
+>>-REWRITE-FILE(file_ref)--+-----------+--+-----------+----------- ; --><
+                           |           |  |           |
+                           +-FROM(ref)-+  +-KEY(expr)-+
+
+</tt></pre>
+</dl>
+<p>
+
+<a name="stmtindx">
+<b>INDEXED Input/Output</b>
+<p>
+See <a href="Iron-SpringUsingIndexedFiles.pdf">Using Indexed Files</a> for information
+about indexed (ISAM) files. (currently Linux only)
+<p>
+
+<hr width="25%">
+
+<!------ DISPLAY statement ----->
+<a name="dsp">
+<p>
+<h4>DISPLAY statement</h4>
+The DISPLAY statement writes text to stderr and optionally accepts a reply.
+<pre><tt>
+>>-DISPLAY (expression)--+----------------------------------------+----------- ; --><
+                         |                                        |
+                         +-REPLY(char-ref)-+-------------------+--+
+                                           |                   |
+                                           +-EVENT(event-ref)--+
+</tt></pre>
+"expression" is converted to a character string and written to stderr.  If the "reply" option
+is not specified, this is followed by a newline.  If the "reply" option
+is specified it must be a character reference which will receive the 
+response from stderr.<p>
+The "event" option is currently ignored, and the 
+statement is executed synchronously; control does not return until the
+response has been read.
+
+If the "display" expression ends with a '$' neither the '$' nor the newline 
+will be displayed. This allows output from multiple display statements to 
+appear on one line.
+
+<p>
+<hr width="25%">
+
+<!------ Multitasking ----->
+<a name="mt">
+<p>
+<h4>Multitasking</h4>
+The Compiler currently supports the "multitasking" API <u>similar to</u> IBM PL/I
+for MVS and VM.  "Multithreading", as supported by IBM Enterprise PL/I,
+will be implemented in a future release.  Iron Spring PL/I will then 
+continue to support both feature sets.
+<p>
+The multitasking API adds a TASK data attribute, the
+TASK, EVENT, and PRIORITY options of the CALL statement, and the
+PRIORITY builtin function and pseudovariable.  The EVENT attribute and
+the builtins/pseudovariables COMPLETION and STATUS, and the WAIT
+statement, which IBM does not consider part of the multitasking
+feature, are also documented here.
+<ul>
+<li>The multitasking CALL is indicated by the appearance of one or more
+of the following options on a call statement:
+<pre><tt>
+  TASK (task reference)
+  EVENT (event reference)
+  PRIORITY (expression)
+</tt></pre>
+The task priority is currently determined by the operating system, so the TASK and
+PRIORITY options are otherwise ignored.  If the EVENT option is coded, the
+event variable referenced will be set to incomplete (COMPLETION='0'b) by the  
+call, and will be set to complete (COMPLETION='1'b) when the subtask terminates.
+<li>COMPLETION builtin function and pseudovariable:<br>
+An event variable may be in one of two states, incomplete or complete.  The COMPLETION
+pseudovariable is used to set the state, assigning an expression to it which 
+evaluates to '0'b for incomplete or '1'b for complete.  The COMPLETION builtin
+function returns the state of the event as a bit(1) value.  assigning
+COMPLETION(e)='1'b will wake up any tasks waiting on event e.
+<li>The WAIT statement will cause the current task to wait for completion of
+an event.<br>
+The syntax of the WAIT statement is
+<pre><tt>
+>>-WAIT (event reference)-- ; --><
+</tt></pre>
+IBM PL/I will allow a task to wait for completion of multiple events.  Iron
+Spring PL/I currently allows waiting for one.  It the event is complete, the wait
+statement is a no-operation.  If the event is incomplete, the task will be
+suspended until completion.<p>
+EVENT variables are always initialized to COMPLETION='0'b and STATUS=0. (exception, for EVENT variables in an array
+of structures only the first occurrence will be initialized). If event variables
+are reused they must be reinitialized prior to use.
+</ul> 
+Tasks constitute a hierarchical structure with the initial task of the procedure,
+the "major task", at the root.  If the major task "A" attaches tasks "B" and "C",
+these are then subtasks of "A".  If subtask "B" attaches task "D", "D" is 
+then a subtask of "B" and so on.  When a task terminates, any subtasks which
+are not complete will be terminated.  Otherwise a task will terminate when
+any of the following occurs:
+<ul>
+<li>Control reaches a RETURN or END for the initial procedure of the task.
+<li>The task executes an EXIT statement.
+<li>Implicit action for the ERROR condition or normal return from an
+ERROR On-unit in the task.
+<li>The block in which the task was attached terminates.
+</ul>
+Execution of a STOP statement in any task will terminate the major task 
+and all subtasks.
+<p>
+<b>Multitasking considerations:</b>
+<ul>
+<li>IBM PL/I frees all storage allocated by a subtask and closes all files 
+opened by the subtask when the subtask terminates.  Currently Iron Spring
+PL/I does not do this, although that will be implemented in a future
+release.  In the meantime a task should close its own files if desired and free any 
+storage it allocates.
+<li>Access to memory shared between tasks should be controlled by mutex 
+semaphores unless the memory is truely read-only by all tasks.
+See <a href="#lib">User-callable library procedures</a> for mutex semaphore procedures.
+<li>Memory caching and
+cache coherence is handled differently by various CPUs and PL/I multitasking 
+has been tested on only a small number.  To report bugs related to multitasking 
+please include CPU information such as can be obtained from Linux 
+"About this Computer."  
+<li>All PL/I library procedures should be <i>thread-safe</i>.  If a subtask calls 
+subroutines written in other languages, it is the programmer's responsibility to
+insure that they are thread-safe.
+</ul>
+
+<p>
+<hr width="25%">
+
+<!------ IBM-format packed decimal data ----->
+<a name="ibm">
+<p>
+<h4>IBM-format packed decimal data</h4>
+IBM mainframe PL/I stores FIXED DECIMAL data as"packed decimal", 
+big-endian two digits per byte with a trailing sign.  Signs 'A'x, 'C'x, 'E'x 
+and 'F'x indicate positive numbers; 'B'x and 'D'x are negative.  Packed
+decimal numbers can be up to 16 digits.
+<p>
+Iron Spring PL/I supports this format for compatibility purposes, for 
+data transfer to and from mainframe systems.  To declare a packed decimal
+field the attributes are <tt>FIXED DECIMAL(p[,q]) OPTIONS(IBM)</tt> where 
+p and q are the precision and scale as usual. The field will occupy ceil((p+1)/2) bytes
+with byte alignment only. OPTIONS(IBM) may be specified on a major or minor
+structure to indicate that all FIXED DECIMAL data in the structure is in packed format.
+<p>
+Use of IBM-format packed decimal data for other than input and output is 
+<u><b>not recommended</b></u>, because this data is converted by a library procedure 
+each time it is used. Move packed decimal data to and from standard FIXED DECIMAL fields
+(without "OPTIONS(IBM)") before using in computations.
+<p>
+<b>Example</b>:<br>
+<pre><tt>DECLARE x FIXED DEC(7) STATIC INIT( 443322 ) OPTIONS(IBM);</tt></pre>
+will generate a four byte field containing '0443322C'x.
+
+<p>
+<hr width="25%">
+
+<!------ Builtin functions ----->
+<a name="bif">
+<p>
+<h3>Builtin Functions and Pseudovariables</h4>
+<p>Iron Spring PL/I implements the following builtin functions.  Functions 
+flagged with an '*' are described below, all others are as described in the
+IBM PL/I for MVS and VM PL/I Language Reference. Some builtins may have temporary 
+restrictions on arguments which are not documented here. Aggregate arguments are
+not allowed.
+<table border=0>
+<th><td colspan=4><b>Arithmetic builtins</b></td></th>
+<tr><td>ABS</td><td>DECIMAL</td><td>IMAG</td><td>PRECISION</td></tr>
+<tr><td>ADD</td><td>DIVIDE</td><td>MAX</td><td>REAL</td></tr>
+<tr><td>BINARY</td><td>FIXED</td><td>MIN</td><td>*ROUND</td></tr>
+<tr><td>CEIL</td><td>FLOAT</td><td>MOD</td><td>SIGN</td></tr>
+<tr><td>COMPLEX</td><td>FLOOR</td><td>MULTIPLY</td><td>TRUNC</td></tr>
+<tr><td>CONJG</td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>String-handling builtins</b></td></th>
+<tr><td>*AFTER&nbsp;</td><td>*CENTRERIGHT&nbsp;</td><td>LOW&nbsp;</td><td>*SEARCH&nbsp;</td></tr>
+<tr><td>*BEFORE&nbsp;</td><td>CHAR&nbsp;</td><td>*LTRIM&nbsp;</td><td>*STRING&nbsp;</td></tr>
+<tr><td>BIT&nbsp;</td><td>*COPY&nbsp;</td><td>MAXLENGTH&nbsp;</td><td>TRANSLATE&nbsp;</td></tr>
+<tr><td>BOOL&nbsp;</td><td>HIGH&nbsp;</td><td>REPEAT&nbsp;</td><td>*TRIM&nbsp;</td></tr>
+<tr><td>*CENTERLEFT&nbsp;</td><td>INDEX&nbsp;</td><td>*REVERSE&nbsp;</td><td>UNSPEC&nbsp;</td></tr>
+<tr><td>*CENTERRIGHT&nbsp;</td><td>*LEFT&nbsp;</td><td>*RIGHT&nbsp;</td><td>VERIFY&nbsp;</td></tr>
+<tr><td>*CENTRELEFT&nbsp;</td><td>LENGTH&nbsp;</td><td>*RTRIM&nbsp;</td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Mathematical builtins</b></td></th>
+<tr><td>ACOS&nbsp;</td><td>COS&nbsp;</td><td>EXP&nbsp;</td><td>SIND&nbsp;</td></tr>
+<tr><td>ASIN&nbsp;</td><td>COSD&nbsp;</td><td>LOG&nbsp;</td><td>SQRT&nbsp;</td></tr>
+<tr><td>ATAN&nbsp;</td><td>COSH&nbsp;</td><td>LOG10&nbsp;</td><td>TAN&nbsp;</td></tr>
+<tr><td>ATAND&nbsp;</td><td>ERF&nbsp;</td><td>LOG2&nbsp;</td><td>TAND&nbsp;</td></tr>
+<tr><td>ATANH&nbsp;</td><td>ERFC&nbsp;</td><tr><td colspan=2> </td></tr>
+d><td>SIN&nbsp;</td><td>TANH&nbsp;</td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Array-handling builtins</b></td></th>
+<tr><td>ALL</td><td>HBOUND</td><td>PROD</td><td></td></tr>
+<tr><td>ANY</td><td>LBOUND</td><td>SUM</td>
+<tr><td>DIM</td><td>*POLY</td>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Condition-handling builtins</b></td></th>
+<tr><td>ONCHAR</td><td>ONCOUNT</td><td>ONSOURCE</td><td> </td></tr>
+<tr><td>ONCODE</td><td>ONFILE</td> <td>ONLOC</td>   <td> </td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Storage control builtins</b></td></th>
+<tr><td>ADDR</td><td>CURRENTSTORAGE</td><td>POINTERVALUE</td><td></td></tr>
+<tr><td>*ALLOCATE</td><td>ENTRYADDR</td><td>SIZE</td><td></td></tr>
+<tr><td>ALLOCATION</td><td>NULL</td><td>STORAGE</td><td></td></tr>
+<tr><td>BINARYVALUE</td><td>POINTER</td><td>SYSNULL</td><td></td></tr>
+<tr><td>CURRENTSIZE</td><td>POINTERADD</td><td></td><td></td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Event builtins</b></td></th>
+<tr><td>COMPLETION</td><td>STATUS</td><td></td><td></td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Input-output builtins</b></td></th>
+<tr><td>COUNT</td><td>LINENO</td><td></td><td></td></tr>
+
+<th><td colspan=4><b>Integer manipulation builtins</b></td></th>
+<tr><td>*IAND</td><td>*INOT</td><td>*ISLL</td></tr>
+<tr><td>*IEOR</td><td>*IOR</td><td>*ISRL</td></tr>
+<tr><td>*IBSW</td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Miscellaneous builtins</b></td></th>
+<tr><td>*BYTE&nbsp;</td>   <td>*CS&nbsp;</td>     <td>*HEXIMAGE&nbsp;</td> <td>*SIGNED&nbsp;</td></tr>
+<tr><td>*COLLATE&nbsp;</td><td>*DATE&nbsp;</td>    <td>PLIRETV&nbsp;</td>  <td>*TIME&nbsp;</td></tr>
+<tr><td>*COMPARE&nbsp;</td><td>*DATETIME&nbsp;</td><td>*RANDOM&nbsp;</td>  <td>*UNSIGNED&nbsp;</td></tr>
+<tr><td colspan=2> </td></tr>
+
+<th><td colspan=4><b>Builtin subroutines</b></td></th>
+<tr><td>PLIDUMP</td><td>*PLIFREE</td><td>PLIRETC</td><td></td></tr>
+<tr><td>*PLIFILL</td><td>*PLIMOVE</td><td>*PLISRTD</td><td></td></tr>
+<tr><td colspan=2> </td></tr>
+
+</table>
+
+<p>
+<h4>Additional Builtin Functions and Pseudovariables</h4>
+This section lists only builtins in Iron Spring PL/I either not present in 
+IBM PL/I for MVS and VM or implemented differently.  
+The definitions are taken from IBM PL/I for OS/2 [OS2], IBM Enterprise PL/I [ENT], VAX PL/I [VAX], 
+Multics PL/I [Multics], or ANSI PL/I [ANSI].
+<p>
+<table border=0>
+
+  <tr valign=top><td><b>AFTER(s,c)&nbsp;</b></td><td>AFTER returns a nonvarying string containing all
+  the characters or bits in the string value of "s" that follow the first occurrence of the string
+  value of "c".
+  If "c" does not occur within "s", if "s" is the null string, or if no 
+  characters or bits in "s" follow "c", the result is the null string. 
+  If "c" is the null string the result is "s". 
+  In the current version "s" and "c" must be or convert to character strings.
+   [Multics][ANSI]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>ALLOCATE(n)&nbsp;</b></td><td>ALLOCATE allocates n bytes of storage and returns a pointer to
+    the first byte. [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>BEFORE(s,c)&nbsp;</b></td><td>BEFORE returns a nonvarying string containing all
+  the characters or bits in the string value of "s" that precede the first occurrence of the string
+  value of "c".
+  If "c" does not occur within "s", if "s" is the null string, or if no 
+  characters or bits in "s" precede "c", the result is the null string.  
+  If "c" is the null string the result is the null string. 
+  In the current version "s" and "c" must be or convert to character strings.
+   [Multics][ANSI]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>BYTE(n)&nbsp;</b></td><td>BYTE returns a character string of length one equivalent to the
+    following:<br> <tt>SUBSTR( COLLATE(), MOD(n,256)+1, 1 )</tt>  [ENT][VAX]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>CENTERLEFT(x,y[,z])&nbsp;</b>
+    </td><td>
+    CENTERLEFT returns a character string of length y, with character
+    string x centered (or one position to the left of center), 
+    padded on the ends with the character z as needed. 
+    Y must be able to be converted to a FIXED BINARY value. Z should be
+    a single character.
+    If z is omitted, a space will be used. [OS2][ENT]<br>
+    CENTRELEFT is a synonym for CENTERLEFT.
+    <br>&nbsp;
+    </td></tr> 
+
+  <tr valign=top><td><b>CENTERRIGHT(x,y[,z])&nbsp;</b>
+    </td><td>
+    CENTERRIGHT returns a character string of length y, with character
+    string x centered (or one position to the right of center), 
+    padded on the ends with the character z as needed. 
+    Y must be able to be converted to a FIXED BINARY value. Z should be
+    a single character.
+    If z is omitted, a space will be used. [OS2][ENT]<br>
+    CENTRERIGHT is a synonym for CENTERRIGHT.
+    <br>&nbsp;
+    </td></tr> 
+
+  <tr valign=top><td><b>COLLATE&nbsp;</b></td><td>COLLATE Returns a character string of length 256 containing all 256 possible 
+    character values. [OS2][ENT][VAX]
+    <br>&nbsp;
+    </td></tr> 
+
+  <tr valign=top><td><b>COMPARE(x,y,z)&nbsp;</b></td><td>COMPARE compares "z" bytes at locations pointed to by "x" and "y". 
+    It returns 0 if the strings are identical, &lt;0 if x&lt;y, and &gt;0 if x&gt;y.
+    [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>COPY(x,y)&nbsp;</b></td><td>COPY returns a string consisting of "y" concatenated copies of string "x".
+    [OS2][ENT][VAX] 
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>CS(p,q,x)&nbsp;</b></td><td>CS executes a hardware "CMPXCHG" instruction and returns a 
+    FIXED BINARY(31) value indicating whether or not the exchange was accomplished.
+    q is a pointer expression which yields the address of a FIXED BINARY(31) variable q' 
+    to be set by the exchange,
+    p is a pointer expression which yields the address of a FIXED BINARY(31) variable p' 
+    which is to be compared with q',
+    and x is an expression which yields the new FIXED BINARY(31) <u>value</u> to be set.  
+    If p' and q' are equal x replaces q',  and the CS builtin returns 0 (success). 
+    If they are unequal q' replaces p' [to set up for another call to CS] and the builtin 
+    returns 1 (failure).  
+    This provides an atomic "compare and swap" operation for thread or process synchronization. 
+    [ENT] 
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>DATE, DATETIME, TIME&nbsp;</b></td><td>IBM PL/I for 
+    MVS &amp; VM 2.3 states "The time zone and accuracy are system dependent."
+    These builtins return the system date and time as determined by the    
+    operating system, usually either UTC or local time.
+    <br>&nbsp;
+    </td></tr>    
+
+  <tr valign=top><td><b>HEXIMAGE(x,y[,z])&nbsp;</b></td><td>HEXIMAGE returns a character string that is the hexadecimal 
+    representation of 'y' bytes of storage at location 'x'.  If 'z' is omitted, the length of the returned
+    string is 2*y.  If 'z' is present it must be CHARACTER(1) nonvarying, and the value of 'z' is inserted 
+    between every set of eight characters in the output string.  In this case the length of the returned
+    string is (2*y) + floor((y-1)/4). [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>    
+
+  <tr valign=top><td><b>IAND(x,y...)&nbsp;</b></td><td>IAND returns a FIXED BINARY(31) value representing 
+    the logical AND of its arguments.  All arguments are converted to FIXED BINARY(31).                 
+    [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>IBSW(n)&nbsp;</b></td><td>IBSW returns a FIXED BIN(32) UNSIGNED value obtained
+    by swapping the bytes in its argument, n. The argument is converted to UNSIGNED FIXED BINARY(32) 
+    using the normal rules of PL/I and the bytes are swapped to reverse the endianness. This builtin is 
+    not available with any other PL/I compiler.
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>IEOR(x,y)&nbsp;</b></td><td>IEOR returns a FIXED BINARY(31) value representing 
+    the logical EXCLUSIVE OR of its arguments.  All arguments are converted to FIXED BINARY(31).                 
+    [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>INOT(x)&nbsp;</b></td><td>INOT returns a FIXED BINARY(31) value representing 
+    the logical NOT of its argument.  The argument is converted to FIXED BINARY(31).                 
+    [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>IOR(x,y...)&nbsp;</b></td><td>IOR returns a FIXED BINARY(31) value representing 
+    the logical OR of its arguments.  All arguments are converted to FIXED BINARY(31).                 
+    [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>ISLL(x,n)&nbsp;</b></td><td>ISLL returns a FIXED BINARY(31) value representing 
+    x logically shifted left n bits.  All arguments are converted to FIXED BINARY(31).
+    The result is undefined if n is greater than 31 or less that 0.                 
+    [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>ISRL(x,n)&nbsp;</b></td><td>ISRL returns a FIXED BINARY(31) value representing 
+    x logically shifted right n bits.  All arguments are converted to FIXED BINARY(31).
+    The result is undefined if n is greater than 31 or less that 0.                 
+    [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>    
+
+  <tr valign=top><td><b>LEFT(x,y[,z])&nbsp;</b>
+    </td><td>
+    LEFT returns a character string of length y, with character
+    string x left-justified and 
+    padded on the right with the character z as needed. 
+    Y must be able to be converted to a FIXED BINARY value. Z should be
+    a single character.
+    If z is omitted, a space will be used. [OS2][ENT]
+    <br>&nbsp;
+    </td></tr> 
+
+  <tr valign=top><td><b>LTRIM(x[,y])&nbsp;</b></td><td>LTRIM returns the character value
+    of 'x' with all leading characters in the character value of 'y' trimmed.  If 'y' 
+    is omitted a string consisting of a single blank character is used.  If 'y' is the
+    null string no trimming occurs.  If 'x' is the null string a null string is returned.
+    [Multics][VAX]
+    <br>&nbsp;
+    </td></tr>    
+
+  <tr valign=top><td><b>MAXLENGTH(x)&nbsp;</b></td><td>MAXLENGTH returns the maximum length of the
+    string value of "x".  "x" must be computational; if it is not a string it is
+    converted to a <u>CHARACTER</u> string before the length is calculated.  This is different 
+    from the LENGTH builtin that converts BINARY arguments to <u>BIT</u> strings, but is
+    consistent with IBM Enterprise PL/I. [OS2][ENT][VAX]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>PLIFILL(x,y,z)&nbsp;</b></td><td>PLIFILL moves "z" copies of a single byte "y" to a
+    location pointed to by "x" with no conversion, padding, or truncation. 
+    No checking is done. [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+ 
+  <tr valign=top><td><b>PLIFREE(p)&nbsp;</b></td><td>PLIFREE frees storage at location "p" allocated by the ALLOCATE builtin.
+    No checking is done as to the validity of the area being freed. [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>PLIMOVE(x,y,z)&nbsp;</b></td><td>PLIMOVE moves "z" bytes to the location pointed to by "x" 
+    from the location pointed to by "y". No checking is done. [OS2][ENT]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>POLY(x,y)&nbsp;</b></td><td>POLY forms a polynomial expansion from its arguments.
+    x must be a one-dimensional array (vector), y may be a vector or a scalar element.
+    the result is x1 + x2*y1 + x3*(y1*y2)... <br>
+    If y is a scalar, its value is reused, giving x1 + x2*y + x3*y**2 ...<br>
+    If there are more elements in y than x, the excess will be ignored. If there
+    are fewer, the last element will be reused as needed.
+    x and y must be computational, and will be converted to FLOAT. The result is FLOAT with the
+    base and mode determined by the rules for expression evaluation, and the
+    precision of the longest argument.
+    <p>
+    This is an IBM-only builtin function, and various IBM compilers function
+    differently; in particular, several only allow y to be a scalar.
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>RANDOM[(s)]&nbsp;</b></td><td>RANDOM returns a pseudo-random number
+    between 0e0 and 1e0 as a FLOAT BINARY(52) value.  "s" is an optional 
+    <i>seed</i> to start or restart the
+    sequence. The value of "s" will be converted to FIXED BINARY(31). If "s" is omitted the number returned is based on the seed 
+    generated by the previous call, or 1 if a seed was never specified.  "s" must be
+    greater than zero and less than 2,147,483,646 or the ERROR condition will be
+    raised. RANDOM maintains one seed per program, regardless of the number of tasks.
+    <br>
+    RANDOM uses the "multiplicative congruential method" (compatible with IBM
+    Enterprise PL/I) to generate values:<br><tt>
+    &nbsp;&nbsp;&nbsp;seed(x)   = mod( 950706376 * seed(x-1), 2147483647 )<br>
+    &nbsp;&nbsp;&nbsp;random(x) = seed(x) / 2147483647</tt><br>
+    [OS2][ENT] 
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>RANK(c)&nbsp;</b></td><td>RANK returns a FIXED BINARY(15) result.  "c" is a 
+    character string of length one.  RANK(c) is equivalent to the following:<br><tt>
+    INDEX( COLLATE(), c ) - 1</tt>  [ENT][VAX]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>REVERSE(s)&nbsp;</b></td><td>REVERSE returns a nonvarying string containing all
+    the characters or bits in the string value of "s" in reverse order.  In the
+    current version "s" must be or convert to a character string.[OS2][ENT][Multics][ANSI][VAX]
+    <br>&nbsp;
+    </td></tr>
+
+  <tr valign=top><td><b>RIGHT(x,y[,z])&nbsp;</b>
+    </td><td>
+    RIGHT returns a character string of length y, with character
+    string x right-justified and 
+    padded on the left with the character z as needed. 
+    Y must be able to be converted to a FIXED BINARY value. Z should be
+    a single character.
+    If z is omitted, a space will be used. [OS2][ENT]
+    <br>&nbsp;
+    </td></tr> 
+
+  <tr valign=top><td><b>ROUND(x,y)&nbsp;</b>
+    </td><td>
+    ROUND returns the value of x rounded in the y'th digit.
+    If y is zero the last digit is rounded. The result has
+    the same base, scale, and mode as x.
+    <p>
+    If x is FLOAT, ROUND functions the same as in IBM Enterprise PL/I
+    with the option "USAGE(ROUND(IBM))", that is, it is a no-op, and
+    x is returned.
+    <br>&nbsp;
+    </td></tr> 
+
+  <tr valign=top><td><b>RTRIM(x[,y])&nbsp;</b></td><td>RTRIM returns the character value
+    of 'x' with all trailing characters in the character value of 'y' trimmed.  If 'y' 
+    is omitted a string consisting of a single blank character is used.  If 'y' is the
+    null string no trimming occurs.  If 'x' is the null string a null string is returned.
+    [Multics][VAX]
+    <br>&nbsp;
+    </td></tr>    
+
+  <tr valign=top><td><b>SEARCH(x,y)&nbsp;</b></td><td>'x' and 'y' are converted to character strings.
+    SEARCH returns the position in the
+    character value of of 'x' of the first matching character in the 
+    character value of 'y'. Characters in 'y' are taken left to right, 
+    and the position of the first match in 'x' is returned.  
+    If 'x' or 'y' is the null string or if none
+    of the characters in 'y' occurs in 'x', zero is returned.
+    [ENT][Multics][OS/2][VAX]
+    <br>&nbsp;
+    </td></tr>
+  
+  <tr valign=top><td><b>SIGNED(x[,p[,q]])&nbsp;</b></td><td>'x' is converted to 
+    SIGNED FIXED BINARY(p,q). If p is omitted it defaults to the maximum
+    size of a signed fixed binary value. If q is omitted it
+    defaults to zero. [ENT][OS2]
+    <br>&nbsp;
+    </td></tr>  
+  
+  <tr valign=top><td><b>STRING(x)&nbsp;</b></td><td>The STRING <u>builtin function</u> returns a string that is the
+      concatenation of all elements of 'x'. Note that this is <b>not</b> identical to the STRING builtin from IBM PL/I 
+      for MVS&VM 2.3 for all arguments.
+      <p>
+      'x' is reference to a variable that is suitable for bit-string or character-string
+       overlay defining. A variable is suitable if it consists entirely of
+       characters or bits, and these characters or bits are packed into adjacent
+       storage locations, without gaps.
+       <p>
+
+       The STRING <u>pseudovariable</u> assigns a string to 'x' as if 'x' were a string scalar.
+       'x' must be a reference to a variable that is suitable for character-string (or bit-string)
+       overlay defining.
+
+       'x' must designate one of the following:
+       <ul>
+         <li>A scalar string variable.
+         <li>An aggregate variable whose components are all string variables of one
+            type (either 'character' or 'bit', but not a mixture of 'character'
+            and 'bit')</ul>
+            If the total number of bytes or bits occupied by the variable designated
+            by 'x' is m, then the pseudovariable is interpreted as follows:
+            <p>
+     The value assigned to the pseudovariable is converted to
+     'bit(m)' or 'char(m)', depending on the type of 'x'. If 'x' is a 
+     scalar varying string, the result is varying, otherwise it is a 
+     fixed-length string.<br>
+     The converted value is then assigned directly to 'x'.
+</ul> 
+    [Multics][VAX]
+    <br>&nbsp;
+ </td></tr>
+
+  <tr valign=top><td><b>TRIM(x[,y[,z]])&nbsp;</b></td><td>TRIM returns the character value
+    of 'x' with all leading characters in the character value of 'y' and all
+    trailing characters in the character value of 'z' trimmed.  If 'y' and/or 'z' 
+    are omitted a string consisting of a single blank character is used.  If 'y'
+    or 'z' is the null string no trimming at the corresponding end occurs.  
+    If 'X' is the null string a null string is returned. [OS2][ENT][VAX]
+    <br>&nbsp;
+    </td></tr>    
+  
+  <tr valign=top><td><b>UNSIGNED(x[,p[,q]])&nbsp;</b></td><td>'x' is converted to 
+    UNSIGNED FIXED BINARY(p,q). If p is omitted it defaults to the maximum
+    size of an unsigned fixed binary data value. If q is omitted it
+    defaults to zero. [ENT][OS2]
+    </td></tr>  
+  
+</table> 
+
+<!-- ---- PLISRTx --- -->
+<a name="srt">
+<p>
+<h4>The PLISRTx builtins</h4>
+Iron Spring PL/I provides builtin functions to perform a sort function.
+These are similar, but not exactly identical, to the corresponding routines
+supplied by IBM PL/I.  <b>Only the function PLISRTD is currently available</b> to 
+perform a sort of data supplied by a user-written procedure and passing
+ sorted data to a second user-written procedure.  Iron Spring PLISRTD
+ performes an in-memory sort, so sufficient storage must be available.
+ Full documentation of PLISRTD is available in the document 
+ <a href="Iron-SpringSortRoutine.pdf">Iron-SpringSortRoutine.pdf</a>. 
+<p>
+<hr width="25%">
+
+<!------ Library ----->
+<a name="lib">
+<p>
+<h4>User-callable PL/I Library Procedures</h4>
+
+Most of the procedures in the PL/I runtime library (prf.lib or libprf.a) are for use by the compiler
+and are not user-callable.  The following, however, may be useful:
+<ul>
+<li><a href="#gmtime">gmtime</a>
+<li><a href="#mktime">mktime</a>
+<li><a href="#osdelete">osdelete</a>
+<li><a href="#osgetenv">osgetenv</a>
+<li><a href="#osgetproc">osgetprocinfo</a>
+<li><a href="#oskillthread">oskillthread</a>
+<li><a href="#syscall">syscall</a> [Linux].
+<li><a href="#sysid">sysid</a>
+<li><a href="#tempnam">tempnam</a>
+<li><a href="#mutex">Mutex semaphore procedures</a>
+<li><a href="#hexdump">hexdump</a>
+</ul>
+
+<p>
+<a name="gmtime"><b><u>gmtime</u></b> converts a calendar time
+     (seconds since January 1, 1970)
+     to date and time in a tm structure. 
+<pre><tt>DECLARE gmtime ENTRY( PTR, PTR )
+               RETURNS( PTR )
+               EXT( '_pli_GMTime' );
+DECLARE pTm   PTR;
+DECLARE pTime PTR;
+pTm = gmtime( addr(time), addr(tm) );</tt></pre>
+<dl>
+<dt>time<dd> a fixed bin(31) field containg the calendar time.
+<dt>tm<dd> a tm structure which will contain the result.
+<dt>pTm<dd> a pointer which will contain the address of the tm
+field as passed, or sysnull if an error occurred.
+</dl>
+
+The definition of tm can be found in the library include directory 
+as "tm.inc".<br>
+No check is made that the
+area supplied is long enough to contain all the data.
+<br>
+Note that this procedure is the equivalent of unix' gmtime_r. 
+
+<p>
+<a name="mktime"><b><u>mktime</u></b> converts time and date from a
+     tm structure to calendar time.
+<pre><tt>DECLARE mktime ENTRY( PTR )
+               RETURNS( FIXED BIN(31) )
+               EXT( '_pli_MKTime' );
+DECLARE pTm   PTR;
+DCL     time  FIXED BIN(31);
+time = mktime( addr(tm) );</tt></pre>
+<dl>
+<dt>time<dd> a fixed bin(31) field which will contain the calendar time, 
+             or -1 if an error occurred.
+<dt>pTm<dd> The address of a tm structure containg the date to be converted.
+</dl>
+
+The definition of tm can be found in the library include directory 
+as "tm.inc".<br>
+The last three fields- wday, yday, and isdst- are ignored.
+
+<p>
+<a name="osdelete"><b><u>osdelete</u></b> deletes a file by name. 
+<pre><tt>DECLARE osdelete ENTRY( CHAR(*) VAR )
+                 RETURNS( FIXED BIN(31) )
+                 EXT( '_pli_OSDelete' );
+DECLARE rc FIXED BIN(31);
+RC = osdelete( filename );</tt></pre>
+<dl>
+<dt>filename<dd> a character string variable or constant containing
+the name of the file to be deleted.
+<dt>rc<dd> a FIXED BIN(31) data element which will contain the
+error code from DosDelete.<br>
+0 indicates no error.<br>
+2 indicates that the file was not found.<br>
+for other errors see the <i>OS/2 Operating System Control Program
+Guide and Reference</i>.
+</dl>
+
+<p>
+<a name="osgetenv"><b><u>osgetenv</u></b> returns the address of the value
+of a system environment variable. 
+<pre><tt>DECLARE osgetenv ENTRY( PTR )
+                 RETURNS( PTR ) )
+                 OPTIONS( LINKAGE(SYSTEM) )
+                 EXT( '_pli_OSGetEnv' );
+DECLARE (p,q) PTR;
+DECLARE EnvVarName char(16);
+EnvVarName = 'TZ' || '00'x;
+q = addr(EnvVarName);
+p = osgetenv( q );</tt></pre>
+<dl>
+<dt>q<dd> a pointer to the null-terminated nonvarying name of an environment
+variable whose value is to be returned.
+<dt>p<dd> a pointer which will contain the address of the null-terminated
+nonvarying value of the named environment variable, or sysnull() if the 
+variable was not found;
+</dl>
+
+<p>
+<a name="osgetproc"><b><u>osgetprocinfo</u></b> returns information about
+ the current process and thread.
+<pre><tt>DECLARE osgetprocinfo ENTRY( PTR )
+                 RETURNS( FIXED BIN(31) )
+                 OPTIONS( LINKAGE(SYSTEM) )
+                 EXT( '_pli_OSGetProcInfo' );
+DECLARE ret_len FIXED BIN(31);
+DECLARE pProcInfo PTR;
+ret_len = osgetprocinfo( pProcInfo );</tt></pre>
+A structure PLIProcInfo.inc is declared in lib/include/pliprocinfo.inc  
+for use with this procedure. Note that the structure is declared BASED, 
+the caller should declare a STATIC or AUTO structure "like" PLIProcInfo.<p>
+before calling osgetprocinfo, the caller should set pi_len to the length
+of the data to be returned, from 4 to 40 bytes. pProcInfo in the call may be 
+ADDR(your_procinfo_structure), or a pointer to the structure. On return, the 
+structure will be filled in up to the value of pi_len, and the length of data
+supplied will be returned.<p>
+pi_pid and pi_tid will be available for both Linux and OS/2. pi_uid and
+pi_gid will be available only for Linux.
+<tt><pre>
+ dcl    1 PLIProcInfo         based,
+          5 pi_len            fixed bin(31),      /* Size of area    00*/
+	  5 pi_pid            fixed bin(31),      /* Process id      04*/
+	  5 pi_tid            fixed bin(31),      /* Thread id       08*/
+	  5 fil1              char(20),           /* Reserved        0C*/
+	  5 pi_uid            fixed bin(31),      /* User id         20*/
+	  5 pi_gid            fixed bin(31);      /* Group id        24*/
+</pre></tt>
+
+<p>
+<a name="oskillthread"><b><u>oskillthread</u></b>
+Kills a thread using DosKillThread [OS/2] or SIGTERM [Linux]. 
+<pre><tt>DECLARE tid FIXED BINARY(31);
+         DECLARE kill_thread ENTRY( FIXED BINARY(31) )
+                             OPTIONS( LINKAGE(SYSTEM) ) 
+                             EXT( '_pli_OSKillThread' ); 
+         CALL kill_thread(tid);                       
+</tt></pre>
+<dl>
+<dt>tid<dd>the thread id of the thread to be terminated.
+</dl>
+
+<p>
+<a name="syscall"><b><u>syscall</u></b> performs a Linux system call.<br>
+<pre><tt>DECLARE syscall ENTRY
+                RETURNS( FIXED BINARY(31) )
+                EXT( '_pli_Syscall' );
+</tt></pre>
+<p>
+Syscall is called with a variable number of arguments, and returns either a
+FIXED BINARY(31) value or a POINTER, depending on the specific call.  The first 
+argument is always the call number.  A description of Linux system calls is
+beyond the scope of this <i>Guide</i>.  Zero to six additional arguments for
+the call may be provided, all either FIXED BINARY(31) or POINTER.  The kernel
+returns a single result or an errno.  If the call returns an error, the result 
+is the negative value of "errno".
+If a POINTER result is expected use the PTRVALUE builtin to convert from 
+FIXED BINARY to POINTER.  
+
+<p>
+<a name="sysid"><b><u>sysid</u></b> returns a pointer to a varying string indicating
+the operating system the caller is currently running on.<br>
+<pre><tt>DECLARE sysid ENTRY
+                RETURNS( POINTER )
+                OPTIONS( LINKAGE(SYSTEM) )
+                EXT( '_pli_Sysid' );
+</tt></pre>
+<p>
+The returned value points to a varying character string that may have any declared length.  This
+The string is guaranteed contain <ul>at least "<b><tt>OS/2</tt></b>" or 
+"<b><tt>Linux</tt></b>" (without the quotes).  Additional
+information may follow, but this is currently undefined.</ul>
+
+<p>
+<a name="tempnam"><b><u>tempnam</u></b> generates a unique name for a temporary file.<br>
+<pre><tt>DECLARE tempnam ENTRY( CHAR(*) VAR, CHAR(*) VAR, CHAR(*) VAR )
+                RETURNS( CHAR(260) VARYING )
+                EXT( '_pli_Tempnam' );
+DECLARE temp_filename CHAR(260) VARYING;
+temp_filename = tempnam( sDir, sPfx, sSfx );</tt></pre>
+<dl>
+<dt>sDir<dd>a VARYING CHARACTER string identifying the directory in which the
+file is to be located.  If this is the null string the file will be located
+in the current working directory.
+<dt>sPfx, sSfx<dd>VARYING CHARACTER strings containing the prefix (sPfx) and
+the suffix (sSfx) to be attached to the generated name.  Either or both may
+be the null string.  The generated name will be:<br>
+<pre><tt>   'sPfxpppppppp-tttttttt-uuuuuuuusSfx'</tt></pre>
+where 'pppppppp' is the hex value of the current process id (pid), 
+'tttttttt' is the hex value of the current thread id (tid), and 'uuuuuuuu'
+is a unique number within this process.  If another file with this name
+already exists, the unique number is incremented until the generated name
+does not confilct with an existing file.
+<dt>temp_filename<dd>In the example this represents a VARYING CHARACTER 
+string which will contain the generated unique name.
+</dl>
+
+<p>
+<a name="mutex"><b><u>Mutex semaphore procedures.</b></u> The following procedures
+implement "mutex" ( mutual exclusion) semaphores:  
+<dl>
+<dt><b>_pli_mutex_init</b><dd>Initialize a mutex.  calling sequence is
+<pre>declare &lt;name&gt; entry(pointer, fixed bin(31)) 
+             options( linkage(system) ) 
+	     external( '_pli_mutex_init' );
+call &lt;name&gt;(phMutex,init);</pre> where &lt;name&gt; is the declared name 
+of the entry whose external environment name is '_pli_mutex_init'. 'phMutex'
+is a pointer to a FIXED BINARY(31) data item where the handle assigned to this
+mutex is to be returned, and 'init' is a fixed bin(31) initial value for the mutex.  
+'init' is currently ignored for OS/2.  For Linux 'init' should be 0 for an unowned 
+mutex and 1 for owned.  A mutex must be initialized before it can be used.
+<p>
+<dt><b>_pli_mutex_destroy</b><dd>Free a mutex.  The calling sequence is
+<pre>declare &lt;name&gt; entry(pointer) options( linkage(system) ) external( '_pli_mutex_destroy' );
+call &lt;name&gt;(phMutex);</pre> where &lt;name&gt; is the declared name 
+of the entry and 'phMutex'
+is a pointer to a FIXED BINARY(31) data item where the handle assigned to this
+mutex is stored.  A mutex should be destroyed when it is no longer needed.  
+The mutex should not be active when destroyed.
+<p>
+<dt><b>_pli_mutex_wait</b><dd>Acquire a mutex.  The calling sequence is
+<pre>declare &lt;name&gt; entry(pointer) options( linkage(system) ) external( '_pli_mutex_wait' );
+call &lt;name&gt;(phMutex);</pre> where &lt;name&gt; is the declared name 
+and 'phMutex'is a pointer to a FIXED BINARY(31) data item where the handle 
+assigned to this mutex is stored.  If the mutex is not owned by another caller 
+this task is given ownership and continues execution.  If it is owned, this
+task waits until the mutex is posted.  An attention interrupt will also terminate
+the wait and raise the ATTENTION condition.
+<p>
+<dt><b>_pli_mutex_timedwait</b><dd>Acquire a mutex but only wait a specified time.  
+The calling sequence is
+<pre>declare &lt;name&gt; entry(pointer,pointer) options( linkage(system) ) external( '_pli_mutex_timedwait' );
+call &lt;name&gt;(phMutex,pTimespec);</pre> where &lt;name&gt; is the 
+declared name, 'phMutex'is a pointer to a FIXED BINARY(31) data item where the handle 
+assigned to this mutex is stored, and 'pTimespec' is a pointer to a structure defined by
+'timespec.inc'.  If the mutex is not owned by another caller 
+this task is given ownership and continues execution.  If it is owned, this
+task waits until the mutex is posted.  If the time expires while waiting the wait
+is terminated; an attention interrupt will terminate the wait and raise the ATTENTION condition.
+<p>
+<dt><b>_pli_mutex_post</b><dd>Release a mutex.  The calling sequence is
+<pre>declare &lt;name&gt; entry(pointer) options( linkage(system) ) external( '_pli_mutex_post' );
+call &lt;name&gt;(phMutex);</pre> where &lt;name&gt; is the declared name 
+and 'phMutex'is a pointer to a FIXED BINARY(31) data item where the handle 
+assigned to this mutex is stored.  Post is called  by the task owning
+the mutex to release ownership and wake up any waiting tasks.
+</dl>
+</p>
+
+<p>
+<a name="hexdump"><b><u>hexdump</b></u> generates a hex/character
+dump of a selected area of storage.
+<pre><tt>DECLARE hexdump ENTRY( PTR, FIXED BIN(31), CHAR(80) VAR )
+                EXT( '_pli_Hexdump' );
+call hexdump( pArea, lArea, sTitle );</tt></pre>
+<dl>
+<dt>pArea<dd> a pointer to the area to be dumped.</dd>
+<dt>lArea<dd> the length of the area to be dumped, may be STG(area) if the area
+is a structure.</dd>
+<dt>sTitle<dd> the title to be used to identify this snapshot. sTitle="abc" will
+use the heading "DUMP OF AREA 'abc'".</dd>
+<p>
+<hr width="25%">
+
+<!------ Preprocessor Facilities ----->
+<a name="pre">
+<p>
+<h4>Preprocessor Facilities</h4>
+<i>This section describes the preprocessor facilities currently built in
+to the compiler. The beta version of the full preprocessor is described
+elsewhere.</i><p>
+The current built-in preprocessor is limited to a subset of the IBM preprocessor statements.
+The listing control statements %PAGE, %SKIP, %PRINT, and %NOPRINT, the %INCLUDE statement,
+and the %REPLACE statement are described below.<p>
+<table>
+<tr><td valign="top">%INCLUDE:</td>
+<td>The %INCLUDE statement instructs the compiler to read an external file of text and insert its
+    contents in place of the %INCLUDE.  The syntax is: "%INCLUDE &lt;filespec&gt;;".<br>
+    &lt;filespec&gt; is any valid file specification.  If no file extension is coded the
+    compiler will search for files having the extensions ".cpy", ".inc", or no extension.  The
+    search path for the file is specified on the PLIC command (see <a href="#run">Running the compiler</a>).
+<p>
+    When running on Linux, the compiler will first search for an exact case match; if not found the first
+    matching file in any case will be included.
+    Examples of the %INCLUDE statement are:<pre><tt>
+    %INCLUDE ABC; [will include "ABC", "ABC.CPY", or "ABC.INC" in your search path -
+               on Linux, if no file ABC[.x] is found, will include the first
+               found of Abc[.x], abc[.x], etc.]
+    %INCLUDE "def.pli"; [will include "DEF.PLI" in your search path]
+    %INCLUDE "c:\pli\includes\ghi.pl1"; [will include the named file only]
+</tt></pre>
+<p>
+    Nested includes are allowed, that is, the included file may itself contain %INCLUDE statements.
+    The maximum depth of nesting is four levels.
+<p>
+</td></tr>
+<tr><td valign="top">%REPLACE:</td>
+<td>The %REPLACE preprocessor statement provides limited text substitution
+    capability.  The syntax is "%REPLACE &lt;identifier&gt; BY &lt;constant&gt;;".<br>
+    &lt;identifier&gt; is any word which would be valid as an identifier in a PL/I program.
+    <u>PL/I keywords are not allowed</u>.  Multiple %REPLACE statements may 
+    specify the same identifier, with the most recently-occurring one being in effect.
+    &lt;constant&gt; is any valid character-string, bit-string, or arithmetic constant. 
+    The scope of the %REPLACE statement is between its occurrence in the input stream and
+    the end of the source program, including any included files.  The effect is to substitute
+    the value of &lt;constant&gt; in the program anywhere &lt;identifier&gt; appears. <p>
+    For example, the following sequence of statements:
+    <pre><tt> %REPLACE abc by 1;
+put edit(3+abc)(f(5));</tt></pre>
+    will result in the value 4 being output by the PUT statement.<p>            
+    The %REPLACE statement above is equivalent to the following, but does not require a 
+    full preprocessor scan:
+    <pre><tt> %DECLARE abc CHARACTER;
+%abc = '1';</tt></pre>
+    To use a atring a replacement text, it must be enclosed in double quotation-marks.
+    For example, %REPLACE some_string by "'ABC'", or %REPLACE some_string by '''ABC'''.
+<p>
+</td></tr>
+<tr><td valign="top">%PRINT:</td>
+<td>The %PRINT statement turns on (enables) printing of the source listing.  The %PRINT statement itself
+    will not be printed if the listing was previously disabled.<p></td></tr>
+<tr><td valign="top">%NOPRINT:</td>
+<td>The %NOPRINT statement turns off (disables) printing of the source listing.  The %NOPRINT statement
+    itself will be printed if the listing was previously enabled.<p></td></tr>
+<tr><td valign="top">%PAGE:</td>
+<td>The %PAGE statement causes a page eject in the source listing after printing of the
+    %PAGE statement, if the listing is enabled.<p></td></tr>
+<tr><td valign="top">%SKIP:</td>
+<td>The %SKIP[(n)] statement will print 'n' blank lines (n=1 to 9) in the source listing following
+    the printing of the %SKIP statement, if the listing is enabled.  If 'n' is omitted, the default
+    is one line.<p></td></tr> 
+<tr><td valign="top">%CONTROL:</td>
+<td>%CONTROL is a listing control statement from the IBM PL/I 
+    Checkout compiler. It is recognized and ignored.</td></tr>
+</table><tr>
+<p>
+<hr width="25%">
+
+<!------ Runtime ----->
+<a name="rt">
+<p>
+<h4>Run-time considerations</h4>
+
+<!------ Accessing unprocessed command arguments ----->
+<a name="argc">
+<p>
+<h5>Accessing unprocessed command arguments</h5>
+Iron Spring PL/I converts command-line arguments passed by the Linux shell into a varying 
+character string for compatibility with other PL/I compilers. To access the 
+unprocessed argc and argv information include the member "argc.inc" from the
+PL/I runtime library. For OS/2, COMMAND.EXE provides only the program name and
+the unparsed argument string only as arguments.
+<pre>     /* %include argc.inc includes the following declarations */
+     dcl 1 argc_s             ext( '_pli_argc' ),
+          5 argc              fixed bin(31),      /* Arg count        */
+          5 ppargv            ptr,                /* **argv           */
+          5 ppenv             ptr;                /* **envp           */
+         
+     dcl arg_addr        (0:1)ptr        based;   /* *argv[]          */
+</pre>
+
+
+<h5>Run-time messages</h5>
+All run-time messages are written to stderr:
+<ul>
+<li><tt>cccc condition raised at address aaaa<br>
+&nbsp;&nbsp;in procedure with entry eeee<br>
+&nbsp;&nbsp;[at line number nnnn in compile unit pppppppp]<br>
+&nbsp;&nbsp;Thread =           tttt<br>
+&nbsp;&nbsp;[variable information]</tt><br>
+Issued by: _pli_SIG<br>
+Cause: Condition "cccc" was raised, either by a PL/I SIGNAL statement or by
+the occurrence of an error. "aaaa" is the address where the error occurred,
+"eeee" is the name of the active entry in the procedure in which
+the error occurred.
+<br>
+The next line is displayed only if the program was compiled with the "-N" 
+option. "nnnn" is the source line number where the error occurred, and "pppppppp"
+is the external procedure or package name .
+<br>
+"tttt" is the id of the thread in which the error occurred.<p>
+The "variable information" differs depending on the condition and the
+operating system.<br>
+<ul>
+<li><tt>condition=xxxx</tt><br>
+If the condition was CONDITION(name), xxxx is the 
+name of the user-defined condition.
+<li><tt>ONFILE=ffff</tt><br>
+If the error is associated with an
+input-output statement, "ffff" is the name of the file.
+<li><tt>System Code=hhhhhhhh tttttttt</tt><br>
+For OS/2 system exceptions, "hhhhhhhh" and "tttttttt" are the hexadecimal value
+and the description of the exception respectively.<br>
+For Linux signals "hhhhhhhh" is the signal number, and "tttttttt" is the text description
+of the signal.<p>
+</ul> 
+<li><tt>No WHEN clause selected in SELECT statement<br>
+and no OTHERWISE clause present</tt><br>
+Issued by: _pli_OTH<br>
+Cause: User error.  None of the conditions specified in a
+SELECT-statement were satisfied and the statement did not include an OTHERWISE.<p>
+<li><tt>Unrecognized intrinsic function call</tt><br>
+Issued by: _pli_IIC<br>
+Cause: Either a compiler error or a mismatch between
+the compiled program and the version of the runtime library used.<p>
+</ul>
+<p>
+See <a href="#dbg">Debugging</a> for SNAP and PLIDUMP output.
+<p>
+
+<h5>The MAIN Procedure</h5>
+The symbol '_pli_Main' is an alias for the first entry point of the main procedure.
+The actual entry point of a PL/I program is the runtime library function '_pli_Start', which has
+the alias 'main' for compatibility with C.<p>
+The MAIN procedure is called with one argument: a <tt>CHARACTER(*) VARYING</tt> string containing
+the [possibly edited] image of the command line that invoked the program.  Since a
+"command line" as such doesn't exist for Linux, this parameter is manufactured by
+concatenating all of the "argv" values, separated by spaces.
+<p>
+The sample program 'numwrd.pli' is an example of a program that uses the command-line.
+<p>
+
+<h5>Memory utilization</h5>
+Generated PL/I code does not modify STATIC storage except during program initialization.
+All code is <i>reentrant</i> unless the user program modifies STATIC storage in such
+a way as to invalidate this.
+<p>
+PL/I programs use the stack for activation records for procedures and BEGIN-blocks, including
+all AUTOMATIC storage.  The <i>heap</i> is used for all allocated BASED and CONTROLLED storage, for
+control information for error-handling, and for file information and buffers.  
+<p>
+For OS/2 the stack size is taken
+from the value stored with the executable, either by the linker, by EXEHDR, or a default minimal
+value of 16K bytes.  Stack storage is allocated when the program is loaded, but is not <i>committed</i>
+until actually used.  <i>Stack probes</i> are employed to prevent traps when more than 4K is requested
+at one time.  Linux allows all available memory below the address where the program is loaded
+to be used for stack, and doesn't require stack probes.
+<p>For OS/2 the heap size is currently fixed at 1MB (1024K), although a future release will allow this value
+to be respecified at run time.  In the interim, if a larger heap is required, the library procedure
+INIT can be re-assembled specifying a larger value for the data item 'def_heap_size'.  Linux allows
+all available memory above the end of the BSS section to be used for the heap.
+<p>
+The layout of the stack frame for one procedure or Begin-block is illustrated below.
+<pre><tt>
+                    ^
+                    | |                                          |
+                  +08 |  Arguments (see program linkage below)   |  Higher addresses
+                      +------------------------------------------+        |
+                  +04 |  Calling procedure's EIP                 |        |
+                      +------------------------------------------+        |
+               EBP+00 |  Calling procedure's EBP                 |        |
+                      +------------------------------------------+        |
+                  -04 |  PL/I control information                |        |
+                    | |  [see library include file 'dsa.inc'     |        |
+                    v |   for layout (subject to change)]        |        |
+                      |           ...                            |        v
+                      +------------------------------------------+  Lower addreses
+                      |  AUTOMATIC non-adjustable data           |
+                      |  for this block                          |
+                      |           ...                            |
+                      +------------------------------------------+
+                      |  AUTOMATIC adjustable data               |
+                      |           ...                            |
+                      +------------------------------------------+
+                      |  Temporaries, argument lists             |
+                                  ...
+</tt></pre>
+<p>
+<h5>Program Linkage</h5>
+The standard PL/I calling sequence passes all arguments <i>by reference</i>, that is by
+passing their addresses and, optionally, the addresses of their <i>descriptors</i>.  
+This means that changes to the values of parameters in the called procedure are reflected back 
+to the caller.
+Descriptors are passed for structure, array, and string arguments;  
+normally descriptors are not passed for arithmetic 
+arguments, although PL/I runtime procedures may require a descriptor.  The library include
+file 'desc.inc' shows the layout of descriptors for various types of data [subject to change 
+in future releases].  When the argument is a constant, an expression, or
+the data type doesn't match the corresponding parameter, a <i>dummy argument</i> is created
+and placed on the stack; the called procedure is passed the address of the dummy. In this case,
+changes to the values of parameters change the dummy argument and don't modify the actual argument.
+<p>
+Descriptors for non-adjustable data are normally stored in STATIC storage, descriptors for adjustable
+data are created during block initialization and stored in the current stack frame.  Descriptors for
+expressions whose attributes are not known at compile-time (e.g. SUBSTR(s,1,j) will be created on the
+stack as required.
+<p>
+All arguments are pushed on the stack right to left (leftmost arguments in lower addresses).  
+The last [highest-addressed] argument passed points to an area on the stack to receive a possible 
+result.    The caller cleans up the argument list following return.<p>
+The <i>called</i> program is responsible for saving registers EBP, and 
+EBX, ESI, and EDI.  It is the <i>caller's</i> responsibility to save any other registers used.
+If the called entry is specified with OPTIONS(ASM), the caller saves and restores the 80x87
+FPU control register.  The calling program passes the size of the argument list in DWORDs
+in AL.
+<p>
+Arguments for 'SYSTEM' and "OPTLINK' are passed <i>by value</i>.  
+All arguments, normally limited
+to arithmetic data, pointers, and nonvarying strings, are evaluated and the <i>values</i> are
+passed to the called procedure; descriptors are not used. 
+Changes to the values of parameters do not cause changes in
+the values of the corresponding arguments.
+Returned values from function procedures may be returned on the stack or in EAX or ST(0).
+<p>
+Two other pieces of information are also passed to a called PL/I procedure.  The <i>static backchain</i>
+is passed in ESI, and the address of the <i>Program Global Table (PGT)</i> is passed in EDI.
+These are passed for both "system" and PL/I linkage unless the called entry is specified with OPTIONS(ASM).
+The PGT is a vector table containing the addresses of some required runtime routines.  The <i>static
+backchain</i> is the EBP value of the block which <u>lexically</u> contains the called procedure.
+This allows the called procedure to reference automatic data belonging to containing blocks.  This is
+<u>not</u> necessarily the same as the EBP value of the caller.  For example, consider the following:
+<pre><tt>
+  A: PROC;
+    CALL B;
+    B: PROC;
+      CALL B;
+      C: BEGIN;
+         END;
+      END B;
+    END A;
+</tt></pre>
+A is always the 'containing' block of B, regardless of whether B is called from A or from itself recursively.
+B is the containing block of block C.  Using the <i>static backchain</i>, C can address AUTOMATIC data from
+B and A, and so on.
+
+<p>
+The stack layout for a standard PL/I call is illustrated below.
+<pre><tt> 
+
+                      +--------------//--------------------------+                  Higher addresses
+                      |  Storage for returned value              |                        |
+                      +------------------------------------------+ &lt;--------+             |
+                                                                            |             |
+ (optional, locator/  +------------------------------------------+          |             |
+  descriptor pair     |  Address of descriptor                   | ---&gt;     |             |
+  for returned value) +------------------------------------------+          |             |
+                      |  Address of data                         | ---------+             |
+                      +------------------------------------------+                        |
+                                                                                          |
+ (optional)           +-------------//---------------------------+                        |
+                      |  Dummy arguments                         |                        |
+                      |            ...                           |                        v
+                      +------------------------------------------+                  Lower addreses
+
+ (optional, locator/  +------------------------------------------+
+  descriptor pair     |  Address of descriptor                   | ---&gt;
+  for arguments       +------------------------------------------+
+  requiring a         |  Address of data                         | ---&gt;
+  descriptor -        +------------------------------------------+ &lt;------+
+  one per argument)                                                       |
+                                                                          |
+ (optional)           +-------------//---------------------------+        |
+                      |  Saved values of 'live' registers        |        |
+                      |  not saved by the called procedure       |        |
+                      |             ...                          |        |
+                      +------------------------------------------+        |
+                                                                          |
+                      +------------------------------------------+        |
+                      | Argument list, one address per argument. |        |
+                      | This address points to either the data   |        |
+                      | or the address of the locator/           | -------+
+                      | descriptor pair for the data.            |
+                      | The last (highest addressed) argument    |   -or-  
+                      | identifies the returned value.           | -------&gt; argument
+         ESP -----&gt;   +------------------------------------------+
+         
+</tt></pre>
+<p>
+EXTERNAL <i>data</i> (not EXTERNAL ENTRY) is not shared between executable and DLL code, nor
+among procedures in different DLLs.  For example, data declared 
+<tt>DECLARE a EXTERNAL POINTER;</tt> will identify different "a"s in
+procedures linked into in the executable, in DLL "1", and DLL "2".  <i>Within</i> the executable 
+or any one of the DLLs all occurrences of that declaration will identify the same "a".
+Each level-1 external data declaration generates a segment for the linker.
+
+<p>
+<hr width="25%">
+
+<!------ ONCODES ----->
+
+<a name="oncode">
+
+<h5>Oncodes</h5>
+<p>
+<pre><tt>
+                  Oncode
+Condition         Value   
+finish              4
+error               9
+name               10
+record             20
+transmit           40
+key                50
+endfile            70
+undefinedfile      80
+endpage            90
+pending           100
+stringsize        150
+overflow          300
+fixedoverflow     310
+zerodivide        320
+underflow         330
+size              340
+stringrange       350
+area              360
+attention         400
+storage           450
+condition         500
+check             510
+subscriptrange    520
+conversion        600
+</tt></pre>
+<p>
+<hr width="25%">
+
+<!------ Efficient Programming ----->
+<a name="eff">
+<p>
+<h4>Efficient Programming</h4>
+
+<ol>
+<li>Avoid use of the ENTRY statement.  The PACKAGE statement is a more efficient way of grouping
+multiple externally-callable entry points in a single compile unit.
+If you do have a procedure with multiple entries, try to minimize the number of RETURN statements.
+<li>Avoid use of data declared FIXED DECIMAL OPTIONS(IBM).
+<li>Any use of the GET and PUT statements, including GET STRING and PUT STRING,
+in a statically-linked program causes library conversion and format-processing 
+code to be included.  If there are only have one or two GET or PUT statements, 
+consider using record I/O and formatting the data yourself.  
+The PL/I runtime library itself does not use any stream I/O.
+<li>Read and write as much data as possible with a single GET or PUT statement.
+Instead of:<br><pre><tt>
+  PUT LIST(a);
+  PUT LIST(b);
+use:
+  PUT LIST(a,b);
+</tt></pre>
+<li>Use "adjustable" strings and arrays only when necessary.
+<li>The SUBSCRIPTRANGE condition is intended for debugging and it's use in a 
+    production program is discouraged.
+<li>Use the SIZE and STRINGSIZE prefixes only when necessary as they
+    can generate a lot of code.
+    Apply the prefix to the smallest piece of code necessary (procedure, block, or single statement).
+<li>When possible provide your own checks to prevent computational conditions such as
+    FIXEDOVERFLOW for FIXED DECIMAL data rather than relying on an ON-unit.
+<li>Aggregate asssignment to very large AUTOMATIC arrays, with the initial 
+    attribute or in an assignment statement, may exceed the compiler's
+    available storage.  Use the "PLIFILL" builtin if possible or initialize them in a loop.
+<li>The compiler "-N" option (statement offset table) requires 8 bytes per 
+    executable statement plus 10 bytes, plus the length of the external procedure 
+    or package name.
+<li>Array assignments by default generate inline code. For large arrays it is 
+    more storage-efficient to code a loop and assign the elements individually. 
+    Note the the compiler -O option will use a single block move instruction to 
+    assign an entire array if the source and target attributes match.
+<li>Minimize references to self-defining structures (REFER option) and 
+    iSub-defined arrays, since each reference involves a subroutine call.
+</ol>
+<hr width="25%">
+
+<!-- ---- Debugging --- -->
+<a name="dbg">
+<p>
+<h4>Debugging PL/I programs</h4>
+
+<h5>Debuggers</h5>
+PL/I code has no special requirements for a debugger.  On OS/2, the WATCOM&reg; debugger 
+may be used to debug PL/I programs;  on Linux gdb works well.<br>
+Source-level debugging is not yet available, but since the
+compiler can generate assembly-language output, debugging
+at the assembly level is straightforward.
+<p>
+Sometimes it may be desirable to compile-in a breakpoint
+to be activated when a specific location is reached or
+condition occurs.  The following statement inserted in your
+source will activate a breakpoint when it is reached when running
+under control of a debugger:
+<pre><tt> *PROCESS DBG(INT3); </tt></pre>
+If the resulting executable is <u>not</u> run under a debugger, the
+interrupt will be ignored.  Nevertheless, INT3 traps should not be
+left in a production program.
+<p>
+<h5>SNAP traceback</h5>
+The PL/I statement "ON CONDITION(xxx) SNAP..." will generate a traceback
+on stderr when the specified condition is raised.  Beginning with the procedure
+generating the traceback (_pli_Trace) and working backwards, the trace
+lists the address of the active entry point of the procedure, the address
+of the statement in the calling procedure that called that entry, and
+the name of the entry point if available.
+<p>
+<h5>PLIDUMP</h5>
+The PL/I statement "CALL PLIDUMP( "&lt;options&gt;", "&lt;title&gt;" );
+will generate debugging output on stderr when executed.<br>
+"title" is a character string used as the <a href="#dmpt">title</a> of the dump.<br>
+"options" provide one or more dump options:<br>
+'S' = terminate after dump<br>
+'C' = continue after dump<br>
+'T' = print <a href="#trc">traceback</a><br>
+'B' = dump automatic storage.<br>
+'H' = dump static storage (not yet implemented).<br>
+'F' = dump opened file information (not yet implemented).<p>
+Options may be combined and may appear in
+any order, for example "TCB" means: print trace, continue after snap, and dump
+all automatic storage. Case is not significant. Unrecognized options are ignored.<p>
+The stack is dumped from the current procedure (_pli_Dump) [lowest address] to
+the PL/I startup code (_pli_Init) [highest address].  Storage for each procedure is 
+dumped in three sections (see sample segment of PLIDUMP output below): 
+<a href="#tmp">Temporaries</a> (argument lists
+and storage used during expression evaluation), 
+<a href="#dat">Data</a> (AUTOMATIC variables and other non-temporary user data in
+the stack frame), 
+and <a href="#dsa">DSA</a> (system data in stack frame).  The layout of the DSA is 
+given in lib\include\dsa.inc.  This is subject to change in future releases.<p>
+If the dump is issued as result of a system exception or trap, <a href="#trp">trap information</a>
+will appear immmediately before the DSA of the procedure in which the exception occurred.  The 
+line beginning "System Code" will display the system error code and description.
+<p> 
+Each data line includes the
+actual address of the first byte, the hex offset (&#177;EBP for DSA and data, +ESP 
+for temporaries), up to sixteen bytes of data in hex as actually stored in memory 
+(no byte-swapping), and the ASCII representation of the same data.<p>
+The DSA display provides additional formatted information regarding the ON-conditions
+enabled for this block and identifies runtime-library procedures.
+<h5>Sample PLIDUMP output</h5>
+<pre><tt>
+<a name="dmpt">***error dump***</a>
+
+<a name="trc">Address  Caller   Entry name</a>
+           ... omitted from the example ...
+
+<a name="trp">OS/2 System Trap Information</a>
+  System Code=C0000005 XCPT_ACCESS_VIOLATION
+  Exception Address=000100D7
+  EAX 44000B00  EBX 00020000  ECX 00000000  EDX 44000B00
+  ESI 00000000  EDI F8070200
+  DS  0053      ES  0053      FS  150B      GS  0000    
+  CS:EIP 005B:000100D7  SS:ESP 0053:00048600  EBP 00048628
+  EFLAGS 00012216
+
+0001868A 00027402 FTPRO
+ 
+<a name="tmp">Temporaries at 003C80C4</a>
+003C80C4 ( 000000) 74823C00 5C863C00 98823C00 3C813C00 |t.<.\.<...<.<.<.|
+003C80D4 ( 000010) 53003C00 F4803C00 5C863C00 A8A2021C |S.<...<.\.<.....|
+           ... omitted from the example ...
+003C83B4 ( 0002F0) 3C843C00 00000000 3C843C00 C4833C00 |<.<.....<.<...<.|
+003C83C4 ( 000300) 64140500                            |d...|            
+
+<a name="dat">Data at 003C83C8</a>
+003C83C8 (-000074) 786D0500 00843C00 3E350400 E4C34300 |xm....<.>5....C.|
+003C83D8 (-000064) 00000000 30823C00 0083E180 B8813C00 |....0.<.......<.|
+003C83E8 (-000054) 0000E181 E4C34300 00000000 B5570400 |......C......W..|
+003C83F8 (-000044) 31000000 10843C00 786D0500 80853C00 |1.....<.xm....<.|
+003C8408 (-000034) 12720200 600F3C00 01001500 00001B00 |.r..`.<.........|
+003C8418 (-000024) E0320500                            |.2..|            
+
+<a name="dsa">DSA at 003C841C</a>
+Enabled: CONV FOFL OFL UFL ZDIV 
+003C841C (-000020) C8833C00 0000E180 E4C34300 00000000 |..<.......C.....|
+003C842C (-000010) 8A860100 31000000 48843C00 786D0500 |....1...H.<.xm..|
+003C843C ( 000000) 80853C00 02740200                   |..<..t..|        
+
+00026C79 00010123 PH10
+ 
+<a name="#tmp">Temporaries at 003C8444</a>
+003C8444 ( 000000) 48843C00 11000000 42000000          |H.<.....B...| 
+           ... omitted from the example ...
+
+</tt></pre> 
+
+<h5>Using the procedure map</h5>
+The <a name="off">procedure map</a> can be used in conjunction with a runtime
+error message, SNAP output, or PLIDUMP to determine the line in the program causing 
+the error.
+<p>
+If the error occurs in your PL/I program the runtime error message will identify the
+source line causing the error, if the procedure map was generated at compile time.
+If the error occurs in a library procedure this information is less meaningful [in a
+ future release the message will identify the source line where the library
+procedure was invoked]. Given the SNAP output or corresponding PLIDUMP information
+and the link map the offset in your code that called the library procedure can be 
+computed. This offset can then be used with the procedure map to determine the
+line number which originally caused the error.  The <i>offset</i> in the map is the 
+offset in the program of the <u>first</u> machine-language instruction for the
+source line identified by <i>line</i>. The computed offset between that shown
+in the map and the offset for the next line will identify the appropriate line number. 
+Program initialization code is included in a separate area of code labeled
+"Initialization" following the END statement of the procedure or BEGIN-Block  for which
+the initialization is being performed.
+<pre>  Offset  Line Statement type             Offset  Line Statement type             Offset  Line Statement type           
+    3261  1187 PROCEDURE                B2D
+    3276  1192 IF                           3285  1192 RETURN                       3294  1193 Assignment               
+    329D  1194 IF                           32AA  1194 DO                           32AA  1195 Assignment               
+    32AE  1196 Assignment                   32B7  1197 END                          32B7  1198 DO                       
+    32ED  1199 IF                           3304  1199 LEAVE                        330C  1200 END                      
+    3311  1201 IF                           331B  1201 Assignment                   3324  1202 RETURN                   
+    3332  1203 END                          3337  1203 Initialization               3347  1214 END                      
+
+</pre>
+
+<p>
+<hr width="25%">
+
+version 1.4.0, 26 May, 2025<br>
+<a href="http://www.iron-spring.com">http://www.iron-spring.com</a>
+
+</body>
+</html>

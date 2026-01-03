@@ -1,0 +1,51 @@
+ /* _pli_OSKillThread                                                */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_OSKillThread (PL/I runtime)             */
+ /*      Version:       1.0                                          */
+ /*      Date:          Dec, 2010                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSKillThread                            */
+ /*                                                                  */
+ /*      Function:      Operating system-dependent code to stop      */
+ /*                     a thread.                                    */
+ /*                                                                  */
+ /*                     LINUX: Sends a SIGTERM signal to the thread. */
+ /*                     OS/2: DosKillThread.                         */
+ /*                                                                  */
+ /*      Dependencies: None                                          */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DECLARE tid    FIXED BINARY(31);             */
+ /*                     DECLARE kill_thread ENTRY( FIXED BINARY(31) )*/
+ /*                                       OPTIONS( LINKAGE(SYSTEM) ) */
+ /*                                       EXT( '_pli_OSKilThread' ); */
+ /*                     CALL kill_thread(tid);                       */
+ /*                                                                  */
+ /*                     tid is the thread id of the thread to be     */
+ /*                     terminated.                                  */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ kill_thread: proc(tid)
+              options( linkage(system) )
+	      ext( '_pli_OSKillThread' );
+   dcl    tid        	      fixed bin(31);
+   dcl    RC		      fixed bin(31);
+ 
+ %replace SIGTERM    by  15; 
+ %replace SYS_TKILL  by 238;
+    dcl    syscall	     entry
+ 			     returns( fixed bin(31) )
+			     options( asm linkage(system) )
+			     ext( '_pli_Syscall' );
+			     
+   RC  = syscall( SYS_TKILL, tid, SIGTERM );
+   if RC^=0 then signal error;                              			     
+   end kill_thread;

@@ -1,0 +1,108 @@
+ /* _pli_ReadDir                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_ReadDir (PL/I Runtime)                  */
+ /*      Version:       1.0                                          */
+ /*      Date:          Sep, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_ReadDir                                 */
+ /*                                                                  */
+ /*      Function:      This is the PL/I analog of the C 'ReadDir'   */
+ /*                     function.  It returns a pointer to one       */
+ /*                     directory entry to the caller, or sysnull    */      
+ /*                     if no more entries.                          */
+ /*                                                                  */
+ /*                     The directory must have been opened by       */
+ /*                     _pli_OpenDir before use, and should be       */
+ /*                     closed by _pli_CloseDir after use.           */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Linux System Call interface.                 */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> PL/I 'dir' structure              |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        addr(next_entry) or sysnull() in eax.        */
+ /*                                                                  */
+ /*      Called from:   anywhere                                     */
+ /*                                                                  */
+ /*      Errors:        none                                         */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2023-07-26: Switch to getdents64                   1.1.1*/
+ /*          2017-07-23: Return sysnull() if err or end of dir 0.9.10*/
+ /*                                                                  */
+ /********************************************************************/
+
+ ReadDir: proc(pDir)  
+          returns( ptr )                         
+          external( '_pli_ReadDir' )
+          options( LINKAGE(SYSTEM) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pDir                ptr;      /* ->'dir' structure          */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+ dcl     pEnt                ptr;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ 	  
+ /* PL/I 'dir' structure                         */
+ dcl    1 dir                 based(pDir),
+          5 dir_hdr,
+            10 dir_fd         fixed bin(31),
+	    10 dir_bufsz      fixed bin(31),
+	    10 dir_pLast      ptr,
+	    10 dir_pNext      ptr,
+	  5 dir_buffer        char(0);
+
+ %include dirent64;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ %replace SYS_GETDENTS   by 141;
+ %replace SYS_GETDENTS64 by 220;
+ 
+ dcl      syscall	      entry
+ 		              returns( fixed bin(31) )
+		              options( linkage(system) )
+		              ext( '_pli_Syscall' );
+
+ dcl    (addr,mod,string,substr) builtin;
+ %page;
+
+ /*------------------------------------------------------------------*/
+ /*                                                                  */
+ /*------------------------------------------------------------------*/
+ if dir_pNext>=dir_pLast then do;       /* Need more directory ent.  */
+   dir_pNext = addr(dir_buffer);        /* Reset buffer pointer      */
+   RC = syscall( SYS_GETDENTS64, dir_fd,/* Read some entries    1.1.1*/
+                 dir_pNext, dir_bufsz );/* Read as much as fits      */
+   dir_pLast = dir_pNext+RC;            /* Set 'last' address        */
+   if RC<=0 then return( sysnull() );   /* End of directory    0.9.10*/
+   end;
+
+ pEnt = dir_pNext;                      /* ->Curr directory entry    */
+ dir_pNext = pEnt + pEnt->d_reclen;     /* ->Next entry              */
+ return( pEnt );                        /* Return entry address      */ 
+
+ end ReadDir;    

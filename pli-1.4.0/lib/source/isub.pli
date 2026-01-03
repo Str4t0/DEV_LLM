@@ -1,0 +1,118 @@
+ /* _pli_iSub                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.10        */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_iSub  (PL/I runtime)                    */
+ /*      Version:       1.2.1                                        */
+ /*      Date:          Feb, 2024                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_iSub                                    */
+ /*                                                                  */
+ /*      Function:      This procedure is a shim to call a           */
+ /*                     compiler-generated thunk which computes      */
+ /*                     the offset of an element of an iSub defined  */
+ /*                     array.                                       */
+ /*                                                                  */
+ /*      Access to iSub-defined variables:                           */
+ /*        Once the subscripts for an iSub-defined array are         */
+ /*        determined, the "iSub thunk" is called to translate       */
+ /*        them to the address of an element in the base array.      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*        offset = iSub(pDesc,pEntry,pSublist);                     */
+ /*                                                                  */
+ /*        * pDesc is the address of the descriptor for the          */
+ /*          base array.                                             */
+ /*        * pEntry is the address of an entry variable for the iSub */
+ /*          thunk for this array                                    */
+ /*        * pSublist is the address of a list subscripts for this   */
+ /*          referenced, prefixed by a count of subscripts           */
+ /*          (all fixed bin(31)                                      */
+ /*        * offset is the returned value of the offset of this      */
+ /*          element in the base array                               */
+ /*                                                                  */
+ /*      Library routines:                                           */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ iSub: proc( pDesc, pEntry, pSublist )
+              returns( fixed bin(31) )
+              options( linkage(system) )
+              ext( '_pli_iSub' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pDesc               ptr;      /* -> Descript for base array */
+ dcl     pEntry              ptr;      /* -> iSub Thunk entry   1.2.1*/
+ dcl     pSublist            ptr;      /* -> Subscript list          */
+
+ /*-------------------------*/
+ /* Automatic data          */
+ /*-------------------------*/
+ dcl      off              fixed bin(31);     
+ dcl    1 thunk_parms      aligned,
+          5 pOutlist       ptr,
+          5 pInlist        ptr,
+          5 pDsc           ptr,
+          5 EBP            ptr;
+ dcl    1 outlist          aligned,
+          5 num_osubs      fixed bin(31), 
+          5 osubscript (16)fixed bin(31); 
+
+ dcl      iSub_Entry      entry     variable  based
+                          returns( fixed bin(31) )
+                          options( linkage(system) );
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     pVoid               ptr           based;
+ dcl     pFB31               fixed bin(31) based;
+ dcl     VarStr              char(0)       varying     based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl      GetDSA              entry                           /*1.2.1*/
+                              external( '_pli_GetDSA' )       /*1.2.1*/
+                              returns( ptr )                  /*1.2.1*/
+                              options( LINKAGE(SYSTEM) );     /*1.2.1*/
+%page;
+
+
+ /*------------------------------------------------------------------*/
+ /*     Get offset of element in iSub defined array                  */
+ /*                                                                  */
+ /* The iSub thunk is called with a pointer to a list with           */
+ /* four arguments:                                                  */
+ /*  addr(output sub list)                                           */
+ /*  addr(input sub list)                                            */
+ /*  addr(base var desc)                                             */
+ /*  caller's (my) EBP                                               */
+ /* return value in EAX = offset of this element                     */
+ /*------------------------------------------------------------------*/
+
+ /* Build argument list for iSub thunk */
+ pOutlist = addr(outlist);              /* Outlist not used          */
+ pInlist  = pSublist;
+ pDsc     = pDesc;
+ EBP      = GetDSA();                   /* Get addr(my_stack_frame)  */
+
+ off = pEntry->iSub_entry( addr(thunk_parms) );
+
+ return(off);
+
+ end iSub;      

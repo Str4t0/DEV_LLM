@@ -1,0 +1,61 @@
+ /* _pli_OSSleep                                                     */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.8           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        OSSleep (PL/I runtime)                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          Dec, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_OSSleep                                 */
+ /*                                                                  */
+ /*      Function:      This is the operating-system dependent code  */
+ /*                     for the PL/I 'DELAY' statement.              */
+ /*                                                                  */
+ /*      Dependencices: Linux syscall: SYS_NANOSLEEP.                */
+ /*                     OS/2: DosSleep                               */
+ /*                                                                  */
+ /*      Called From:   _pli_Delay                                   */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL msec fixed bin(31);                      */
+ /*                     DCL _pli_OSSleep entry( fixed bin(31) )      */
+ /*                         options( linkage(system) );              */
+ /*                     CALL _pli_OSSleep(msec)                      */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_OSSleep: proc(msec) external( '_pli_OSSleep' )
+                   options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     msec                fixed bin(31);           /* unsigned    */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     RC                  fixed bin(31);
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     DosSleep            entry( fixed bin(31) )   /* msec        */
+                             external( 'DosSleep' )
+                             returns( fixed bin(31) ) /* APIRET      */
+                             options( asm linkage(system) );
+
+ /*------------------------------------------------------------------*/
+ /* Delay: Suspend current thread for 'msec' milliseconds            */
+ /*------------------------------------------------------------------*/
+ RC = DosSleep( msec );
+ return;
+
+ end pli_OSSleep;
+

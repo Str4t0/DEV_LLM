@@ -1,0 +1,581 @@
+ /* _pli_Cnvt                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Cnvt (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2009                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Cnvt                                    */
+ /*                                                                  */
+ /*      Function:      Convert a numeric value to another base,     */
+ /*                     scale, mode and/or precision and scale.      */
+ /*                     Source and target attributes are defined     */
+ /*                     by descriptors.                              */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     PL/I Descriptor format.                      */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +C | -> Target descriptor                 |  */
+ /*                        +--------------------------------------+  */
+ /*                     +8 | -> Target data                       |  */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Source descriptor                 |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Source data                       |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Errors:                                                     */
+ /*        The following conditions shold be raised if they occur    */
+ /*        and the caller has them enabled:                          */
+ /*          OVERFLOW, UNDERFLOW, FIXEDOVERFLOW, SIZE                */
+ /*                                                                  */
+ /*      Called from:   Various runtime procedures.                  */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2014-10-23: Bad conversion of imag component         0.9.6*/
+ /*        2014-10-21: Fix conversion table,                    0.9.6*/
+ /*                    add FIXED DEC OPTIONS(IBM),              0.9.6*/
+ /*                    set condition flags.                     0.9.6*/
+ /*        2014-01-10: Fix FLOAT DECIMAL sizes.                 0.9.4*/
+ /*                                                                  */
+ /********************************************************************/
+
+ (nooverflow,nounderflow,nosize,nofixedoverflow):
+
+ pli_Cnvt: proc(pSrc,pSDesc,pTgt,pTDesc)
+           external( '_pli_Cnvt' )
+           options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pSrc                ptr;
+ dcl     pSDesc              ptr;
+ dcl     pTgt                ptr;
+ dcl     pTDesc              ptr;
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     i                   fixed bin(31);
+ dcl     conv_type           fixed bin(31);
+ dcl    (ps,pt,qs,qt)        fixed bin(7);
+ dcl    (cs,ct)              bit(1);
+ dcl     bSize               bit(1)              init( '0'b );
+ dcl    (srcpd,tgtpd)        bit(1)              init( '0'b );/*0.9.6*/
+ 
+ %include condmask;
+
+ /*-------------------------*/
+ /* Static data             */
+ /*-------------------------*/
+ dcl     data_type            char(8)       static            /*0.9.6*/
+                   init('4142434400000048'x);                 /*0.9.6*/
+ dcl     zero                 fixed dec(18) static    init(0);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     FB7                 fixed bin(7)        based;
+ dcl     FB15                fixed bin(15)       based;
+ dcl     FB31                fixed bin(31)       based;
+ dcl     FD18                fixed dec(18)       based;
+ dcl     LD07                float dec(7)        based;
+ dcl     LD15                float dec(15)       based;
+ dcl     LD20                float dec(20)       based;
+ dcl     LB23                float bin(23)       based;
+ dcl     LB49                float bin(49)       based;
+ dcl     LB64                float bin(64)       based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetFlags            entry
+                             external( '_pli_GetFlags' )
+                             returns( bit(16) )
+                             options( LINKAGE(SYSTEM) );
+ dcl     SetFlags            entry( bit(16) )                 /*0.9.6*/
+                             ext( '_pli_SetFlags' )           /*0.9.6*/
+                             options( linkage(system) );      /*0.9.6*/
+ dcl     F2I                 entry( ptr, ptr, ptr )
+                             options( linkage(system) )
+                             external( '_pli_F2I' );
+ dcl     FIBM                entry( ptr, ptr )                /*0.9.6*/
+                             returns( fixed dec(18) )         /*0.9.6*/
+			     options( linkage(system) )       /*0.9.6*/
+			     external( '_pli_FrIBMDec' );     /*0.9.6*/
+ dcl     TIBM                entry( ptr, ptr, ptr )           /*0.9.6*/
+			     options( linkage(system) )       /*0.9.6*/
+			     external( '_pli_ToIBMDec' );     /*0.9.6*/
+
+ dcl    (ADDR,FLOOR,MAX,MIN,MOD,NULL,PLIFILL,PLIMOVE)
+                             builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Procedure Entry                                                  */
+ /*------------------------------------------------------------------*/
+ string(cond_mask) = GetFlags();       /* Get caller's condition mask*/
+ M_LibMod = '1'b;                      /* Indicate 'Library'    0.9.6*/
+ call SetFlags( string(cond_mask) );   /* Set for called rtns   0.9.6*/
+ i = index(data_type,pSDesc->XB_id);   /* Source type index          */
+ if i=0 then signal error;
+ if i=8 then do;                       /* OPTIONS(IBM)          0.9.6*/
+   i = 2;                                                     /*0.9.6*/
+   srcpd = '1'b;                                              /*0.9.6*/   
+   end;                                                       /*0.9.6*/
+ conv_type=(i-1)*8;                                                    
+ i = index(data_type,pTDesc->XB_id);   /* Target type index          */
+ if i=0 then signal error;
+ if i=8 then do;                       /* OPTIONS(IBM)          0.9.6*/
+   i = 2;                                                     /*0.9.6*/
+   tgtpd = '1'b;                                              /*0.9.6*/
+   end;                                                       /*0.9.6*/
+ conv_type=conv_type+i-1;
+ ps = pSDesc->XB_prec;                 /* Get precisions and scales  */
+ qs = pSDesc->XB_scale;
+ pt = pTDesc->XB_prec;
+ qt = pTDesc->XB_scale;
+ cs = (pSDesc->XB_flgs&'80'bx)ª='00'bx; /* COMPLEX attribute         */
+ ct = (pTDesc->XB_flgs&'80'bx)ª='00'bx;
+
+ call store;
+ if ªct |                              /* REAL result                */
+    /* COMMENT: float_to_fixed calls F2I, which will itself          */
+    /*          handle complex operands, so there's no need to       */
+    /*          process twice.                                       */
+    (conv_type=2  | conv_type=3  |                            /*0.9.6*/
+     conv_type=10 | conv_type=11)                             /*0.9.6*/
+ then /*continue*/ ;
+ else do;
+   if ªcs then pSrc=addr(zero);        /* Zero imag if src not cplx  */
+   call store;
+   end;
+ if bSize then goto signal_SIZE;       /* Raise SIZE if desired      */
+
+ return;
+
+ store: proc;
+   select( conv_type );
+     when(0)  do;                      /* FIXED BIN->FIXED BIN       */
+       call fb_to_fb;
+       end; /* 0 */
+     when(1)  do;                      /* FIXED BIN->FIXED DEC       */
+       call fb_to_fd;
+       end; /* 1 */
+     when(2,3)  do;                    /* FIXED BIN->FLOAT BIN       */
+       call fb_to_float;
+       end; /* 2 */
+     when(8)  do;                      /* FIXED DEC->FIXED BIN  0.9.6*/
+       call fd_to_fb;
+       end; /* 8 */
+     when(9)  do;                      /* FIXED DEC->FIXED DEC  0.9.6*/
+       call fd_to_fd;
+       end; /* 9 */
+     when(10,11)  do;                  /* FIXED DEC->FLOAT BIN  0.9.6*/
+       call fd_to_float;
+       end; /* 10 */
+     when(16,17,24,25)  do;            /* FLOAT->FIXED          0.9.6*/
+       call float_to_fixed;
+       end; /* 16 */
+     when(18,19,26,27) do;             /* FLOAT->FLOAT          0.9.6*/
+       call float_to_float;
+       end; /* 18 */
+     otherwise signal ERROR;
+     end; /* select */
+ end store;
+
+ /*-----------------------------------*/
+ /* Raise the SIZE condition          */
+ /*-----------------------------------*/
+ signal_SIZE:
+   if M_Size then (size): signal SIZE;
+   return;
+ /* Need to do likewise for OFL, FOFL, UFL if enabled */
+%page;
+
+ /*------------------------------------------------------------------*/
+ /* Conversion Routines.  Some do-nothings included for completeness.*/
+ /*------------------------------------------------------------------*/
+
+ /*-----------------------------------*/
+ /* FIXED BIN to FIXED BIN            */
+ /* Precision and/or Scale conversion */
+ /*-----------------------------------*/
+ fb_to_fb: proc;
+   dcl   tmp                 fixed dec(18);
+   dcl   s                   fixed bin(31);
+   tmp = getfb(pSrc,ps);
+   s = qt-qs;
+   if s>0 then tmp=tmp*dec(2**s);
+   if s<0 then tmp=tmp/dec(2**-s);
+   call putfb(tmp,pTgt,pt);
+   end fb_to_fb;
+
+ /*-----------------------------------*/
+ /* FIXED BIN to FIXED DEC            */
+ /*-----------------------------------*/
+ fb_to_fd: proc;
+   dcl  (tmp,int,frac)       fixed dec(18);
+   dcl   s                   fixed bin(31);
+   tmp = getfb(pSrc,ps);
+   if qs<0 then do;                    /* Split int and frac parts   */
+     frac = tmp;                       /* Fraction                   */
+     int  = 0;                         /* Integer                    */
+     end;
+   else do;
+     int  = tmp/twopower(qs);
+     frac = mod(tmp,twopower(qs));
+     end;
+   int = int * tenpower(qt);
+   s = B2D(qs);
+   if s>qt then frac = frac / tenpower(s-qt-1);
+   if qt>=0 then int = int + frac;
+   call putfd(tmp,pTgt,pt);
+   end fb_to_fd;
+
+ /*-----------------------------------*/
+ /* FIXED BIN to FLOAT BIN            */
+ /* FIXED BIN to FLOAT DEC            */
+ /*-----------------------------------*/
+ fb_to_float: proc;
+   dcl   tmp                 float bin(64);
+   tmp = getfb(pSrc,ps);
+   if qs>0 then tmp=tmp/twopower(qs);
+   if qs<0 then tmp=tmp*twopower(-qs);
+   if pTDesc->XB_id='43'x
+   then call putlb(tmp,pTgt,pt);       /* FLOAT BIN target           */
+   else call putld(tmp,pTgt,pt);       /* FLOAT DEC target           */
+   end fb_to_float;
+
+ /*-----------------------------------*/
+ /* FIXED DEC to FIXED BIN            */
+ /*-----------------------------------*/
+ fd_to_fb: proc;
+   dcl  (tmp,int,frac)       fixed dec(18);
+   dcl   f                   fixed bin(31);
+   dcl   s                   fixed bin(31);
+   tmp = getfd(pSrc,ps);               /* Get decimal source value   */
+   if qs<0 then do;                    /* Split int and frac parts   */
+     frac = tmp;                       /* Fraction                   */
+     int  = 0;                         /* Integer                    */
+     end;
+   else do;
+     int  = tmp/tenpower(qs);
+     frac = mod(tmp,tenpower(qs));
+     end;
+   f = int * twopower(qt);
+   s = D2B(qs);
+   /* Adjust fractional digits        */
+   if s>qt then frac = frac / twopower(s-qt-1);
+   if qt>=0 then f = f + frac;
+   call putfb(f,pTgt,pt);
+   end fd_to_fb;
+
+ /*-----------------------------------*/
+ /* FIXED DEC to FIXED DEC            */
+ /* Precision and/or Scale conversion */
+ /*-----------------------------------*/
+ fd_to_fd: proc;
+   dcl   tmp                 fixed dec(18);
+   dcl   s                   fixed bin(31);
+   tmp = getfd(pSrc,ps);
+   s = qt-qs;
+   if s>0 then tmp=tmp*tenpower(s);
+   if s<0 then tmp=tmp/tenpower(-s);
+   call putfd(tmp,pTgt,pt);
+   end fd_to_fd;
+
+ /*-----------------------------------*/
+ /* FIXED DEC to FLOAT BIN            */
+ /* FIXED DEC to FLOAT DEC            */
+ /*-----------------------------------*/
+ fd_to_float: proc;
+   dcl   tmp                 float bin(64);
+   tmp = getfd(pSrc,ps);
+   if qs>0 then tmp=tmp/tenpower(qs);
+   if qs<0 then tmp=tmp*tenpower(-qs);
+   if pTDesc->XB_id='43'x
+   then call putlb(tmp,pTgt,pt);       /* FLOAT BIN target           */
+   else call putld(tmp,pTgt,pt);       /* FLOAT DEC target           */
+   end fd_to_float;
+
+ /*-----------------------------------*/
+ /* FLOAT (any) to FIXED (any)        */
+ /*-----------------------------------*/
+ float_to_fixed: proc;
+   dcl 1 tmp              (2)like IntFlt;  
+   dcl   t                   fixed bin(31);
+   /* Get target scale in decimal     */
+   if pTDesc->XB_id='41'x              /* FIXED BIN target?          */
+   then t = B2D(qt);
+   else t = qt;
+   call F2I( pSrc, pSDesc, addr(tmp) );/* Get source value           */
+   /* COMMENT: Notice that the converted result is not rounded.      */
+   call ff(1);
+   /* COMMENT: float_to_fixed calls F2I, which will itself           */
+   /*          handle complex operands, so there's no need to        */
+   /*          process twice.                                        */
+   if ct then call ff(2);
+   return;
+
+ ff: proc(n);
+   dcl   n                   fixed bin(7);
+   dcl   s                   fixed bin(31);
+   s = 17 - tmp.IF_exp(n);
+   s = qt - s;                         /* Compute scale difference   */
+   if s<-17 | s>17 then do;            /* Overflow/Underflow         */
+     if pTDesc->XB_id='41'x
+     then call putfb(0,pTgt,pt);       /* FIXED BINARY target        */
+     else call putfd(0,pTgt,pt);       /* FIXED DECIMAL "            */
+     return;
+     end;
+   if s>0 then tmp.IF_frac(n)=tmp.IF_frac(n)*tenpower(s);
+   if s<0 then tmp.IF_frac(n)=tmp.IF_frac(n)/tenpower(-s);
+   if pTDesc->XB_id='41'x              /* FIXED BIN target?          */
+   then call putfb(tmp.IF_frac(n),pTgt,pt);
+   else call putfd(tmp.IF_frac(n),pTgt,pt);
+   end ff;
+
+   end float_to_fixed;
+
+ /*-----------------------------------*/
+ /* FLOAT (any) to FLOAT (any)        */
+ /* Precision change only             */
+ /*-----------------------------------*/
+ float_to_float: proc;
+   dcl  tmp                  float bin(64);
+   dcl  s                    fixed bin(31);
+   if pSDesc->XB_id='43'x              /* FLOAT BIN source?          */
+   then tmp = getlb(pSrc,ps);
+   else tmp = getld(pSrc,pt); 
+   if pTDesc->XB_id='43'x              /* FLOAT BIN target?          */
+   then call putlb(tmp,pTgt,pt);
+   else call putld(tmp,pTgt,pt);
+   end float_to_float;
+%page;
+
+ /*------------------------------------------------------------------*/
+ /* Operand fetch/store routines                                     */
+ /*------------------------------------------------------------------*/
+ getfb: proc(pSrc,prec) returns( fixed dec(18) );
+   dcl   pSrc                ptr;
+   dcl   prec                fixed bin(31);
+   dcl   tmp                 fixed dec(18);
+   select;
+     when(prec<=7)  do;
+       tmp=pSrc->FB7;
+       pSrc = pSrc+stg(null()->FB7);
+       end;
+     when(prec<=15) do;
+       tmp=pSrc->FB15;
+       pSrc = pSrc+stg(null()->FB15);
+       end;
+     otherwise      do;
+       tmp=pSrc->FB31;
+       pSrc = pSrc+stg(null()->FB31);
+       end;
+     end;
+   return(tmp);
+   end getfb;
+
+ putfb: proc(val,pTgt,prec);
+   dcl   val                  fixed bin(31);
+   dcl   pTgt                 ptr;
+   dcl   prec                 fixed bin(31);
+   select;
+     when(prec<=7)  do;
+       pTgt->FB7=val;
+       pTgt = pTgt+stg(null()->FB7);
+       end;
+     when(prec<=15) do;
+       pTgt->FB15=val;
+       pTgt = pTgt+stg(null()->FB15);
+       end;
+     otherwise      do;
+       pTgt->FB31=val;
+       pTgt = pTgt+stg(null()->FB31);
+       end;
+     end;
+   if prec>=31 then return;
+   if abs(val)>=twopower(prec) then bSize='1'b;
+   end putfb;
+
+ getfd: proc(pSrc,prec) returns( fixed dec(18) );;
+   dcl   pSrc                ptr;
+   dcl   prec                fixed bin(31);
+   dcl   tmp                 fixed dec(18);
+   /* NOTE: What abour COMPLEX? */
+   if srcpd then do;                                          /*0.9.6*/
+     tmp = FIBM( pSrc, pSDesc );                              /*0.9.6*/
+     pSrc = pSrc + pdsize(prec);                              /*0.9.6*/
+     end;                                                     /*0.9.6*/
+   else do;                                                   /*0.9.6*/
+     tmp=pSrc->FD18; 
+     pSrc = pSrc+stg(null()->FD18);
+     end;                                                     /*0.9.6*/
+   return(tmp);
+   end getfd;
+
+ putfd: proc(val,pTgt,prec);
+   dcl   val                  fixed dec(18);
+   dcl   pTgt                 ptr;
+   dcl   prec                 fixed bin(31);
+   if tgtpd then do;                                          /*0.9.6*/
+     call TIBM( addr(val), pTDesc, pTgt );                    /*0.9.6*/ 
+     return;                                                  /*0.9.6*/
+     end;                                                     /*0.9.6*/
+   pTgt->FD18=val;
+   pTgt = pTgt+stg(null()->FD18);
+   if abs(val)>=tenpower(prec) then bSize='1'b;
+   end putfd;
+
+ getlb: proc(pSrc,prec) returns( float bin(64) );
+   dcl   pSrc                 ptr;
+   dcl   prec                 fixed bin(31);
+   dcl   tmp                  float bin(64);
+   select;
+     when(prec<=23) do;
+       tmp=pSrc->LB23;
+       pSrc = pSrc+stg(null()->LB23);
+       end;
+     when(prec<=53) do;
+       tmp=pSrc->LB49;
+       pSrc = pSrc+stg(null()->LB49);
+       end;
+     otherwise      do;
+       tmp=pSrc->LB64;
+       pSrc = pSrc+stg(null()->LB64);
+       end;
+     end; 
+   return(tmp);
+   end getlb;
+
+ putlb: proc(val,pTgt,prec);
+   dcl   val                  float bin(64);
+   dcl   pTgt                 ptr;
+   dcl   prec                 fixed bin(31);
+   select;
+     when(prec<=23) do;
+       pTgt->LB23=val;
+       pTgt = pTgt+stg(null()->LB23);
+       end;
+     when(prec<=49) do;
+       pTgt->LB49=val;
+       pTgt = pTgt+stg(null()->LB49);
+       end;
+     otherwise      do;
+       pTgt->LB64=val;
+       pTgt = pTgt+stg(null()->LB64);
+       end;
+     end; 
+   end putlb;
+
+ getld: proc(pSrc,prec) returns( float bin(64) );
+   dcl   pSrc                 ptr;
+   dcl   prec                 fixed bin(31);
+   dcl   tmp                  float bin(64);
+   select;
+     when(prec<=7)  do;
+       tmp=pSrc->LD07;
+       pSrc = pSrc+stg(null()->LD07);
+       end;
+     when(prec<=15) do;
+       tmp=pSrc->LD15;
+       pSrc = pSrc+stg(null()->LD15);
+       end;
+     otherwise      do;
+       tmp=pSrc->LD20;
+       pSrc = pSrc+stg(null()->LD20);
+       end;
+     end; 
+   return(tmp);
+   end getld;
+
+ putld: proc(val,pTgt,prec);
+   dcl   val                  float bin(64);
+   dcl   pTgt                 ptr;
+   dcl   prec                 fixed bin(31);
+   select;
+     when(prec<=7)  do;
+       pTgt->LD07=val;
+       pTgt = pTgt+stg(null()->LD07);
+       end;
+     when(prec<=15) do;
+       pTgt->LD15=val;
+       pTgt = pTgt+stg(null()->LD15);
+       end;
+     otherwise      do;
+       pTgt->LD20=val;
+       pTgt = pTgt+stg(null()->LD20);
+       end;
+     end; 
+   end putld;
+
+ /*------------------------------------------------------------------*/
+ /* B2D: Convert Binary to Decimal digits                            */
+ /*------------------------------------------------------------------*/
+ B2D: proc(n) returns( fixed bin(7) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   do i=1 to 33;
+     if w<n_3dot32(i) then leave;                            /*0.9.3*/
+     end;
+   if neg then i=-i;
+   return(i);
+   end B2D;
+
+ /*------------------------------------------------------------------*/
+ /* Table lookup - CEIL(n*3.32) table Decimal to Binary digits       */
+ /*------------------------------------------------------------------*/
+ D2B: proc(n) returns( fixed bin(15) );
+   dcl   n                   fixed bin(7);
+   dcl   w                   fixed bin(7);
+   dcl   i                   fixed bin(7);
+   dcl   neg                 bit(1)              init( '0'b );
+   if n=0 then return(0);
+   w = n;
+   if w<0 then do;
+     neg='1'b;
+     w = -w;
+     end;
+   if w<1 | w>hbound(n_3dot32,1) then return(0);
+   i = n_3dot32(w);
+   if neg then i=-i;
+   return(i);
+   end D2B;
+
+ /*-------------------------------------------------------------0.9.6*/
+ /* Compute size of FIXED DECIMAL OPTIONS(IBM)                  0.9.6*/
+ /*-------------------------------------------------------------0.9.6*/
+ pdsize: proc(prec) returns( fixed bin(7) );                  /*0.9.6*/
+   dcl    prec                fixed bin(7);		      /*0.9.6*/
+   dcl    size                fixed bin(7);		      /*0.9.6*/
+   size = (prec+1)/2;
+   if mod(prec,2)=0 then size = size+1;
+   return(size);     
+   end;                                                       /*0.9.6*/
+
+ %include desc;
+ %include n3dot32;
+ %include intflt;
+ %include tenpower;
+ %include twopower;
+
+ end pli_Cnvt;

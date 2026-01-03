@@ -1,0 +1,741 @@
+ /* _pli_Open                                                        */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Open (PL/I runtime)                     */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2003                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Open                                    */
+ /*                                                                  */
+ /*      Function:      Open performs an implicit or explicit        */
+ /*                     open of a file.                              */
+ /*                                                                  */
+ /*      Open is called by the I/O router (IOR) to open an FCB.      */
+ /*      IOR has created, chained, and locked the FCB, and calls     */
+ /*      Open with the addresses of the IORB and the FCB.            */
+ /*                                                                  */
+ /*      Open may also be called by the ISAM routine for             */
+ /*      ENV(INDEXED) files to set up the FCB,                       */
+ /*      but return to ISAM to perform the actual open.              */
+ /*                                                                  */
+ /*                                                                  */
+ /*      The file attributes from the declaration (DCLCB) in the     */
+ /*      scope of the calling procedure are merged in, followed      */
+ /*      by the OPEN parameters if this is an explicit open.         */
+ /*      Uses: IORB, DCLCB, FCB.                                     */
+ /*                                                                  */
+ /*      UNDEFINEDFILE is signalled if the declared attributes and   */
+ /*      the implied attributes from the I/O statement conflict.     */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                     Control block formats:                       */
+ /*                       FILE, FCB, IORB, DCLCB.                    */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     Address of FCB, Address of IORB.             */
+ /*                                                                  */
+ /*      To Do:       . Change declarations to 'unsigned' as         */
+ /*                     indicated once this is implemented.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*          2022-04-06: Move FCNTL and STAT                  0.9.10e*/
+ /*          2017-08-19: INDEXED file open                     0.9.10*/
+ /*          2014-04-11: PAGESIZE=0 is default for INTERACTIVE  0.9.5*/
+ /*          2014-03-30: LINESIZE=RECSIZE if LS=0 and RS>0      0.9.5*/
+ /*          2012-09-14: Create UPDATE file if it doesn't exist.0.9.4*/
+ /*          2012-07-08: ENV(INTERACTIVE).                      0.9.3*/
+ /*          2012-03-27: Added environment check for filename.  0.9.3*/
+ /*          2011-06-13: PAGESIZE(0) now means no pagination.   0.9.2*/
+ /*	     2011-04-02: Change default permissions for files.  0.9.2*/
+ /*          2011-04-01: Fix reference to PLITABS               0.9.2*/
+ /*          2010-06-23: Changed to use new OSOpen and OSSeek.  0.9.1*/
+ /*	     2009-12-04: Add 'error_code' for possible debugging 0.8d*/
+ /*          2009-11-20: TEXT->LF|CRLF, use PLITABS for default  0.8d*/
+ /*                      PAGESIZE and LINESIZE.                  0.8d*/
+ /*          2008-04-17: STREAM files default to ENV(CRLF)           */
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_Open: proc(pIORB,pFCB)
+               ext( '_pli_Open' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pIORB               ptr;
+ dcl     pFCB                ptr;
+			     
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     fun                 fixed bin(31);
+ dcl     RC                  fixed bin(31);
+ dcl     keylen              fixed bin(31);                  /*0.9.10*/
+ dcl     pDCLCB              ptr;
+ dcl     pTitle              ptr            init( SYSNULL );
+ dcl     title_len           fixed bin(31);                   /*0.9.1*/
+ dcl     pF                  ptr;
+ dcl     pN                  ptr;
+ dcl     implied_attr        bit(32)        init( '00000000'bx );
+ dcl     conflict_attr       bit(32)        init( '00000000'bx );
+ dcl     bFileMode           bit(32)        init( '00000000'bx );
+ dcl     error_code          fixed bin(31)  init(0);          /*LINUX*/
+ dcl     pagesize_specified  bit(1)         init( '0'b );     /*0.9.2*/
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+ dcl     Default_BLKSIZE     fixed bin(31)  static    init( 16384 );
+
+ /* Default_PAGESIZE and Default_LINESIZE replaced by PLITABS    0.8d*/
+ /*      Default_PAGESIZE    fixed bin(31)  static    init(    60 ); */
+ /*      Default_LINESIZE    fixed bin(31)  static    init(   120 ); */
+ dcl     dummy_string        char(0)   varying   static;
+ dcl     sSYSIN              char(5)   static    init( 'SYSIN' );
+ dcl     sSYSPRINT           char(8)   static    init( 'SYSPRINT' );
+ dcl     sSTDIN              char(6)   static    init( 'stdin:' );
+ dcl     sSTDOUT             char(7)   static    init( 'stdout:' );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     zStr                char(1024)     based;
+ dcl     this_file           file           based;
+ dcl     var_str             char(0)        based varying;   /*0.9.10*/
+
+ dcl     PGT          (0:127)ptr            based;
+
+ dcl     tab_addr	     ptr;			     /*0.9.10*/
+ dcl  1  plitabs             based(tab_addr),		      /*0.9.2*/
+         5 offset            fixed bin(15), /* Offset of tab count 00*/
+         5 pagesize          fixed bin(15), /* Default page size   02*/
+         5 linesize          fixed bin(15), /* Default line size   04*/
+         5 pagelength        fixed bin(15), /* Default page length 06*/
+         5 fill1             fixed bin(15), /* (reserved)          08*/
+         5 fill2             fixed bin(15), /*    "                0A*/
+         5 fill3             fixed bin(15), /*    "                0C*/
+         5 no_of_tabs        fixed bin(15), /* Num of occ's of tab 0E*/
+         5 tab          (255)fixed bin(15), /* First tab position  10*/
+	 5 fil               fixed bin(15); /* Alignment        0.9.2*/
+
+ %include FCNTL;                                              /*0.9.1*/
+ %include STAT;						      /*0.9.1*/
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl     GetDSA              entry                           /*0.9.10*/
+                             external( '_pli_GetDSA' )       /*0.9.10*/
+                             returns( ptr )                  /*0.9.10*/
+                             options( LINKAGE(SYSTEM) );     /*0.9.10*/
+ dcl     OSOpen              entry( ptr, bit(32), bit(32) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSOpen' );
+ dcl     OSSeek              entry( fixed bin(31), fixed bin(31),
+                                    fixed bin(31) )
+                             returns( fixed bin(31) )
+                             options( linkage(system) )
+                             external( '_pli_OSSeek' );
+ dcl     SysId               entry returns( ptr )              /*0.8d*/
+                             options( linkage(system) )        /*0.8d*/
+                             external( '_pli_Sysid' );         /*0.8d*/
+ dcl     getenv              entry(ptr)                       /*0.9.3*/
+                             returns( ptr )                   /*0.9.3*/
+			     options( linkage(system) )       /*0.9.3*/
+			     ext( '_pli_OSGetEnv' );          /*0.9.3*/			     
+ dcl	 tabaddr	     entry			      /*0.9.2*/
+			     returns(ptr)		      /*0.9.2*/
+ 			     options( linkage(system) )	      /*0.9.2*/
+			     ext( '_pli_Tabs' );	      /*0.9.2*/	     
+
+ dcl    ( addr,allocate,length,null,plifill,
+          plimove,stg,string,substr,sysnull
+        )                    builtin;
+ 
+ fun = pIORB->IOR_Func;                /* I/O Statement type         */
+ pF  = pIORB->IOR_pFile;               /* A(FILE)                    */
+ pN  = pF->FC_pName;                   /* A(File_Name)               */
+ tab_addr = tabaddr();		       /* A(PLITABS)		0.9.2*/
+
+ /*-------------------------------------------------------*/
+ /* Merge declared attributes into FCB.  The DCLCB struct */
+ /* and its copy in the FCB *MUST* be kept in sync.       */
+ /*-------------------------------------------------------*/
+ pDCLCB = pIORB->IOR_pDCLCB;           /* Get addr of DCLCB from IORB*/
+ call plimove( addr(pFCB->FCB_DCLCB), pDCLCB, STG(NULL->DCLCB) );
+
+ /* NOTE: IBM PL/I allows BLKSIZE and RECSIZE to be STATIC FIXED     */
+ /*       BINARY(31) (SC26-3113-01, p.115-116).  We could set flags  */
+ /*       in the DCLCB and store the address of the value rather     */
+ /*       then the value in the DCLCB.  Then at open time we can     */
+ /*       pick up the value and store it in the FCB.                 */
+
+ /*-------------------------------------------------------*/
+ /* Build bit string indicating attributes specified or   */
+ /* implied by the I/O statement, and a string of         */
+ /* conflicting attributes.                               */
+ /* The parser prevents keyword conflicts within a        */
+ /* single statement.                                     */
+ /*-------------------------------------------------------*/
+ select( fun );
+   when(  1 ) do;                      /* OPEN                      */
+     call explicit_open;
+     end; /* OPEN */
+   when(  2 ) do;                      /* CLOSE                     */
+     /* CLOSE, may cause implicit OPEN, followed by CLOSE.          */
+     implied_attr  = '00020200'bx;     /* RECORD INPUT              */
+     conflict_attr = '00208000'bx;     /* STREAM OUTPUT             */
+     end; /* CLOSE */
+   when( 10 ) do;                      /* READ                      */
+     implied_attr  = '00020200'bx;     /* RECORD INPUT              */
+     conflict_attr = '00208000'bx;     /* STREAM OUTPUT             */
+     end; /* READ */
+   when( 11 ) do;                      /* WRITE                     */
+     implied_attr  = '00028000'bx;     /* RECORD OUTPUT             */
+     conflict_attr = '00200200'bx;     /* STREAM INPUT              */
+     end; /* WRITE */
+   when( 12 ) do;                      /* REWRITE                   */
+     implied_attr  = '02020000'bx;     /* RECORD UPDATE             */
+     conflict_attr = '00208200'bx;     /* STREAM OUTPUT INPUT       */
+     end; /* REWRITE */
+   when( 13 ) do;                      /* LOCATE                    */
+     implied_attr  = '00028000'bx;     /* RECORD OUTPUT             */
+     conflict_attr = '00200200'bx;     /* STREAM INPUT              */
+     end; /* LOCATE */
+   when( 14 ) do;                      /* DELETE                    */
+     implied_attr  = '02020000'bx;     /* RECORD UPDATE             */
+     conflict_attr = '00208200'bx;     /* STREAM OUTPUT INPUT       */
+     end; /* DELETE */
+   when( 15 ) do;                      /* UNLOCK                    */
+     implied_attr  = '02020000'bx;     /* RECORD UPDATE             */
+     conflict_attr = '00208200'bx;     /* STREAM OUTPUT INPUT       */
+     end; /* UNLOCK */
+   when( 20 ) do;                      /* GET                       */
+     implied_attr  = '00300200'bx;     /* SEQL STREAM INPUT   0.9.10*/
+     conflict_attr = '02028010'bx;     /* RECORD OUTPUT UPDATE DIR  */
+     end; /* GET */
+   when( 21 ) do;                      /* PUT                       */
+     implied_attr  = '00308000'bx;     /* STREAM OUTPUT             */
+     conflict_attr = '02020210'bx;     /* RECORD INPUT UPDATE DIR   */
+     end; /* PUT */
+   otherwise do;
+     /* continue */ ;
+     end; /* Otherwise */
+   end; /* select */
+
+ /*-------------------------------------------------------*/
+ /* Set KEYED option if KEY, KEYTO, or KEYFROM specified  */
+ /* on data transmission statement.                       */
+ /*-------------------------------------------------------*/
+ if fun>=10 & fun<=19  &
+    (pIORB->IOR_bOpt&'0000000E'bx)ª='00000000'bx /* KEY, KEYTO, etc. */
+ then do;
+   implied_attr  = implied_attr  | '00000400'bx; /* KEYED            */
+   /* No conflicts */
+   end; /* key options */
+
+ /*-------------------------------------------------------*/
+ /* Test for conflicts                                    */
+ /*-------------------------------------------------------*/
+ if (pFCB->FCB_attrib&conflict_attr)ª='00000000'bx then do;/*20091204*/
+   error_code = 1;                                         /*20091204*/
+   goto UNDF_error;                    /* UNDEFINEDFILE              */
+   end;                                                    /*20091204*/
+
+ /*-------------------------------------------------------*/
+ /* Set FCB attributes                                    */
+ /*-------------------------------------------------------*/
+ pFCB->FCB_attrib =
+   pFCB->FCB_attrib|implied_attr;      /* Set implied attributes     */
+
+ /* --- Set PAGESIZE attribute ---    */
+ if (pFCB->FCB_attrib&'00010000'bx)ª='00000000'bx     /* PRINT       */
+ then do;
+   if pFCB->FCB_pagesize=0 &           /* Set PAGESIZE if unspecified*/
+      ^pagesize_specified  &           /* pagesize(0)=no breaks 0.9.2*/
+      substr(pFCB->FCB_envflags,6,1)='0'b /* Not interactive  /*0.9.5*/   
+   then pFCB->FCB_pagesize = plitabs.pagesize;                 /*0.8d*/
+   end; /* PRINT */
+
+ /* --- Set LINESIZE attribute ---                                   */
+ /* COMMENT: Technically LINESIZE applies only to PRINT files.       */
+ if (pFCB->FCB_attrib&'00200000'bx)ª='00000000'bx     /* STREAM      */
+ then do;
+   if pFCB->FCB_linesize<=0 then do;   /* Set LINESIZE if unspec0.9.5*/
+     if pFCB->FCB_recsize>0                                   /*0.9.5*/
+     then pFCB->FCB_linesize = pFCB->FCB_recsize;             /*0.9.5*/
+     else pFCB->FCB_linesize = plitabs.linesize;               /*0.8d*/
+     end;                                                     /*0.9.5*/
+   /* Validate LINESIZE               */
+   if pFCB->FCB_linesize<=0 | pFCB->FCB_linesize>32767 then do;/*1204*/
+     error_code = 2;                                       /*20091204*/
+     GOTO UNDF_error;
+     end;                                                  /*20091204*/
+   pFCB->FCB_lnsize=pFCB->FCB_linesize;/* Stream linesize            */
+   end; /* STREAM */
+
+ /* BLKSIZE and RECSIZE for indexed files                            */
+ if (pFCB->fcb_envflags&'02000000'bx)^='00000000'bx          /*0.9.10*/
+ then do;                                                    /*0.9.10*/
+   pFCB->FCB_blksize = 1024;           /* Max ISAM rec size    0.9.10*/
+   if pFCB->FCB_recsize<=0             /* Set RECSIZE if not sp0.9.10*/
+   then pFCB->FCB_recsize = 1024;                            /*0.9.10*/
+   end; /* INDEXED */                                        /*0.9.10*/
+
+ /* --- Set record format ---         */
+ /*   if unspecified, make it 'V'     */
+ if (pFCB->FCB_envflags&'000007FF'bx)='00000000'bx
+ then do;
+   pFCB->FCB_envflags = pFCB->FCB_envflags|'00000080'bx;
+   end; /* Record Format */
+
+ /* --- VARLS/CR/CRLF attributes---   */
+ call set_record_type;
+   
+ /* --- Set RECSIZE attribute ---     */
+ if pFCB->FCB_recsize<=0               /* Set RECSIZE if unspecified */
+ then do;
+   if pFCB->FCB_linesizeª=0            /* LINESIZE overrides RECSIZE */
+   then pFCB->FCB_recsize = pFCB->FCB_linesize;
+   if pFCB->FCB_recsize<=0             /* RECSIZE not specified      */
+   then pFCB->FCB_recsize = plitabs.linesize;                  /*0.8d*/
+   end; /* RECSIZE */
+ 
+ /*------------------------------------------------------------------*/
+ /* ENV(INTERACTIVE) This is copied from Multics, so there is no     */
+ /* expected behavior.  Force 'UNBUFFERED'.                          */
+ /*------------------------------------------------------------------*/
+ if substr(pFCB->FCB_envflags,6,1) then do;                   /*0.9.3*/
+   substr(pFCB->FCB_attrib,31,1)='0'b; /* Turn off BUFFERED     0.9.3*/
+   substr(pFCB->FCB_attrib,08,1)='1'b; /* Turn on UNBUFFERED    0.9.3*/
+   end;
+ 
+ /* --- Set BLKSIZE attribute ---     */
+ if pFCB->FCB_blksize<=0               /* Set BLKSIZE if unspecified */
+ then call compute_blksize;
+
+ /* Validate RECSIZE and BLKSIZE      */
+ if pFCB->FCB_recsize<=0  | pFCB->FCB_recsize>32767  |
+    pFCB->FCB_blksize<=0
+ then do;                                                  /*20091204*/
+   error_code = 3;                                         /*20091204*/
+   GOTO UNDF_error;
+   end;                                                    /*20091204*/
+
+ /* Allocate buffer(s)                */
+ pFCB->FCB_aBuf = allocate(pFCB->FCB_blksize);                /*0.9.2*/
+ pFCB->FCB_pBuf = pFCB->FCB_aBuf;                             /*0.9.2*/
+
+ /* Allocate a one-line buffer for STREAM files                      */
+ if substr(pFCB->FCB_attrib,11,1)='1'b /* STREAM                     */
+ then do;
+   pFCB->FCB_LineNo=0;                 /* Starting LINENO for str0.8d*/
+   pFCB->FCB_aLine,pFCB->FCB_pLine = allocate(pFCB->FCB_lnsize);
+   /* If INPUT, set col=linesize to force a read of the first        */
+   /* record; otherwise col=0.                                       */
+   if substr(pFCB->FCB_attrib,23,1)    /* INPUT              20070402*/
+   then pFCB->FCB_col = pFCB->FCB_linesize;                /*20070402*/
+   end;
+
+ /* Allocate a record buffer + key for RECORD files                  */
+ /* to support READ SET() and LOCATE                                 */
+ if substr(pFCB->FCB_attrib,15,1)='1'b /* RECORD                     */
+ then do;
+   keylen = stg(NULL()->KEY);                                /*0.9.10*/
+   /* IF V[B] add storage for prefix                           0.9.10*/
+   if (pFCB->FCB_envflags&'00000780'bx)^='00000000'bx        /*0.9.10*/
+   then keylen = keylen + 8;                                 /*0.9.10*/
+   /* IF INDEXED key is provided by user */
+   if (pFCB->fcb_envflags&'02000000'bx)^='00000000'bx        /*0.9.10*/
+   then keylen = 8;                                          /*0.9.10*/
+   pFCB->FCB_aLine = allocate( pFCB->FCB_recsize+keylen );   /*0.9.10*/
+   pFCB->FCB_pLine = pFCB->FCB_aLine;
+   end;
+   
+ /*-------------------------------------------------------*/
+ /* Save title string                                     */
+ /*-------------------------------------------------------*/
+ if pTitle=SYSNULL then do;            /* Title not supplied         */
+   title_len = length(pN->File_Name);  /* Length of name             */
+   pTitle = pN+stg(dummy_string);      /* -> FileName text           */
+   if title_len=length(sSYSIN)
+   then if substr(pTitle->zStr,1,5) = sSYSIN
+     /* NOTE: LENGTH(x) doesn't generate length       */
+     /*       as a constant for fixed-length string.  */
+     /* if substr(pTitle->zStr,1,length(sSYSIN)) = sSYSIN */
+        then do;
+          title_len = length(sSTDIN);
+          pTitle = addr(sSTDIN);
+          end;
+   if title_len=length(sSYSPRINT)
+   then if substr(pTitle->zStr,1,8) = sSYSPRINT
+        then do;
+          title_len = length(sSTDOUT);
+          pTitle = addr(sSTDOUT);
+          end;
+   end; /* no title */
+ else do;                              /* Title supplied             */
+   pN  = pTitle->pDesc;                /* -> Title descriptor        */
+   pTitle = pTitle->pData;             /* -> Title string            */
+   if pN->ST_idª='10'x & pN->ST_idª='11'x/* Check for character stri */
+   then do;                                                   /*0.9.3*/
+     error_code = 4;                                          /*0.9.3*/
+     goto UNDF_error;
+     end;                                                     /*0.9.3*/
+   title_len = pN->ST_len;             /* Fixed or Max length        */
+   if pN->ST_id = '11'x then do;       /* VARYING string?            */
+     title_len = length(pTitle->File_Name);/* Length of name         */
+     pTitle = pTitle+stg(dummy_string);/* -> FileName text           */
+     end; /* varying string */
+   end; /* title */
+ /* Allocate storage for title       */
+ call check_env( addr(pN->File_Name), pTitle, title_len );
+ if title_len<1
+ then do;                                                     /*0.9.3*/
+   error_code = 5;                                            /*0.9.3*/
+   goto UNDF_error;
+   end;
+ RC = title_len + stg(dummy_string);
+ pN = allocate(RC);
+ call plifill(pN,'00'x,RC);
+ pFCB->FCB_pTitle = pN;
+ pN->File_Name = substr(pTitle->zStr,1,title_len);            
+ pTitle = pN;
+
+ /*------------------------------------------------------------0.9.10*/
+ /* INDEXED file open                                          0.9.10*/
+ /*------------------------------------------------------------0.9.10*/
+ if (pFCB->fcb_envflags&'02000000'bx)^='00000000'bx          /*0.9.10*/
+ then return;                                                /*0.9.10*/
+
+ /*-------------------------------------------------------*/
+ /* Now that the FCB is complete, open the file           */
+ /*-------------------------------------------------------*/
+ bFileMode = (4)'00'bx;                     /* Set the file mode     */
+ if substr(pFCB->FCB_attrib,23,1)='1'b      /* INPUT                 */
+ then do;
+   bFileMode = O_RDONLY;
+   end;
+ else if substr(pFCB->FCB_attrib,17,1)='1'b /* OUTPUT                */
+ then do;
+   if substr(pFCB->FCB_envflags,2,1)='1'b   /* ENV(APPEND)           */
+   /* Open Flags for OUTPUT ENV(APPEND) are the same as for UPDATE.  */
+   then bFileMode = O_CREAT  | O_APPEND | O_WRONLY;         /*0.9.10b*/     
+   else bFileMode = O_CREAT  | O_WRONLY | O_TRUNC;
+   /* KEYED access necessitates reading a buffer of data after       */
+   /* setting the file position, implying read/write access.         */
+   if substr(pFCB->FCB_attrib,22,1)='1'b    /* KEYED?           0.9.1*/
+   then do;                                                   /*0.9.1*/
+     bFileMode = bFileMode & ^O_WRONLY;                       /*0.9.1*/
+     bFileMode = bFileMode | O_RDWR;                          /*0.9.1*/
+     end;                                                     /*0.9.1*/
+   end;
+ else do;                                   /* UPDATE                */
+   bFileMode = O_RDWR | O_CREAT;                              /*0.9.4*/                     
+   end;
+ if substr(pFCB->FCB_attrib,26,1)='1'b      /* EXCLUSIVE             */
+ then bFileMode  = bFileMode | O_EXCL; 
+ if substr(pFCB->FCB_attrib,28,1)='1'b /* DIRECT                     */
+ then bFileMode = bFileMode | O_RANDOM;                       /*0.9.1*/
+ pN = pFCB->FCB_pFileName;
+
+ RC = OSOpen( pTitle, bFileMode, 			      /*0.9.2*/
+ 	S_RUSR|S_WUSR|S_RGRP|S_WGRP|S_ROTH|S_WOTH );          /*0.9.2*/
+ if RC<0 then do;                      /* Open was unsuccessful 0.9.1*/
+   pFCB->FCB_LastSt = -RC;                                    /*0.9.1*/
+   error_code = RC; /*%%%*/                                   /*0.9.3*/
+   goto UNDF_error;
+   end;                                                       /*0.9.1*/
+ pFCB->FCB_HFILE = RC;                 /* Open was successful   0.9.1*/
+ substr(pFCB->FCB_status,1,1)='1'b;    /* Indicate file now open     */
+
+ /*-------------------------------------------------------*/
+ /* For OUTPUT or UPDATE files with ENV(APPEND),          */
+ /* seek to end-of-file.                                  */
+ /*-------------------------------------------------------*/
+ if substr(pFCB->FCB_envflags,2,1)='1'b &/* ENV(APPEND)              */
+    substr(pFCB->FCB_attrib,23,1)='0'b   /* and Not INPUT            */
+ then do;
+   RC = OSSeek( pFCB->FCB_HFILE, 0, 2 ); /* Seek to EOF              */
+   if RC<0 then do;                      /* Seek was unsuccessfu0.9.1*/
+     pFCB->FCB_LastSt = -RC;                                  /*0.9.1*/
+     signal ERROR;    
+     end;                                                     /*0.9.1*/
+   pFCB->FCB_CurrPos = RC;               /* Record new pos.          */             
+   end; 
+
+ return;
+
+ /*-------------------------------------------------------*/
+ /* Raise the UNDEFINEDFILE condition for open errors     */
+ /*-------------------------------------------------------*/
+ UNDF_error:
+   /* It would be nice if this message were selectable at run time.  */
+   /* Perhaps a global flag which can be set by command-line?        */
+   /* For debugging, display the reason for raising UNDEFINEDFILE.   */
+   /* 'error-code' is our code.  If error-code=4, we got an error    */
+   /* from OSOpen, in which case 'RC' is the system error code.      */
+       
+     display( 'UNDEFINEDFILE RC=' || error_code ); 
+     if error_code=4 then display( 'Open return code is' || RC );
+     display( 'ONFILE="' || pTitle->file_name || '"' );
+     display( 'File=' || pFCB->FCB_pFileName->file_name );
+          
+   signal UNDEFINEDFILE( pF->this_file );
+   /* NOTE: This leaves a zombie FCB. */
+   return;
+
+ /*------------------------------------------------------------------*/
+ /* If the file has variable-length records,                         */
+ /* if the file is SYSIN or has the STREAM attribute             0.5e*/
+ /* the default is TEXT unless VARLS, CRLF, or CR is specified.  0.8d*/
+ /* Otherwise variable files default to VARLS.                       */
+ /*------------------------------------------------------------------*/
+ set_record_type: proc;
+   dcl   pF                  ptr;
+   dcl   pN                  ptr;
+   dcl   pS                  ptr;                              /*0.8d*/
+   dcl   sys_id              char(64)  varying   based;        /*0.8d*/
+   pF = pFCB;                          /* Optimize references to FCB */
+   /* This code moved to start 2012-04-11                       0.9.3*/
+   pS = SysId();                            /* Get system id     0.8d*/
+   /* Translate 'TEXT' to 'LF' or 'CRLF' at runtime.             0.8d*/
+   if (pF->FCB_envflags&'08000000'bx)ª='00000000'bx   /* TEXT    0.8d*/
+   then do;                                                    /*0.8d*/
+     if substr(pS->sys_id,1,1)='L'          /* System=Linux?     0.8d*/
+     then substr(pF->FCB_envflags,3,1)='1'b;/* Yes, set LF       0.8d*/
+     else substr(pF->FCB_envflags,4,1)='1'b;/* No, set CRLF      0.8d*/
+     return;                                                   /*0.8d*/
+     end; /* TEXT */                                           /*0.8d*/
+   if (pF->FCB_envflags&'00000780'bx)='00000000'bx |  /* Not var     */
+      (pF->FCB_envflags&'02000000'bx)ª='00000000'bx   /* INDEXED.9.10*/
+   then return;
+   if (pF->FCB_envflags&'B0000000'bx)ª='00000000'bx   /*VARLS,CR,CRLF*/
+   then return;      
+   pN = pF->FCB_pFileName;                  /* addr(FileName)        */
+   if pN->FCB_FileName = 'SYSIN' |          /* Is this SYSIN?        */
+      substr(pF->FCB_attrib,11,1)='1'b      /*   or STREAM?      0.5e*/
+   then do;                              ;  /* Yes, set LF/CRLF  0.8d*/
+     if substr(pS->sys_id,1,1)='L'          /* System=Linux?     0.8d*/
+     then substr(pF->FCB_envflags,3,1)='1'b;/* Yes, set LF       0.8d*/
+     else substr(pF->FCB_envflags,4,1)='1'b;/* No, set CRLF      0.8d*/
+     end;                                                      /*0.8d*/
+   else substr(pF->FCB_envflags,1,1)='1'b;  /*   else set VARLS      */
+   end set_record_type;
+
+ /*------------------------------------------------------------------*/
+ /* The BLKSIZE attribute is the unit of transfer for                */
+ /* DosRead/DosWrite.  If the UNBUFFERED or DIRECT attribute is      */
+ /* specified for the file, RECSIZE is used.                         */
+ /* Otherwise a value of approximately Default_BLKSIZE               */
+ /* is computed depending on file attributes.                        */
+ /*------------------------------------------------------------------*/
+ compute_blksize: proc;
+   dcl   recsize             fixed bin(31);
+   dcl   pF                  ptr;
+
+   pF = pFCB;                          /* Optimization               */
+
+   /* Compute the actual record size including control information   */
+   recsize = pF->FCB_recsize;          /* Get 'recsize'              */
+   if (pF->FCB_envflags&'20000000'bx)ª='00000000'bx   /* ENV(LF)     */
+   then recsize = recsize+1;
+   if (pF->FCB_envflags&'10000000'bx)ª='00000000'bx   /* ENV(CRLF)   */
+   then recsize = recsize+2;
+   if (pF->FCB_envflags&'80000000'bx)ª='00000000'bx   /* ENV(VARLS)  */
+   then recsize = recsize+2;
+
+   /* If the file is UNBUFFERED or DIRECT, BLKSIZE=record_size       */
+   if (pF->FCB_attrib&'01000010'bx)ª='00000000'bx     /* UNBUF, DIR  */
+   then do;
+     pF->FCB_blksize = recsize;
+     return;
+     end; /* UNBUFFERED */
+
+   /* If the file is V or U, BLKSIZE=Default_BLKSIZE or record_size  */
+   /* rounded up to 4k boundary.                                     */
+   if (pF->FCB_envflags&'000007C0'bx)ª='00000000'bx   /* V, U        */
+   then do;
+     if recsize<=Default_BLKSIZE
+     then pF->FCB_blksize = Default_BLKSIZE;
+     else do;
+       recsize = (recsize+4095)/4096;
+       recsize = recsize*4096;
+       pF->FCB_blksize = recsize;
+       end; /* else */
+     return;
+     end; /* V | U */
+
+   /* Otherwise (F | D), BLKSIZE is multiple of record_size          */
+   /* rounded up to 4k boundary.                                     */
+   recsize = (recsize+4095)/4096;
+   recsize = recsize*4096;
+   pF->FCB_blksize = recsize;
+
+   end compute_blksize;
+
+ /*-------------------------------------------------------*/
+ /* Option processing for explicit open                   */
+ /* (Parse has prevented mutually-exclusive options)      */
+ /*-------------------------------------------------------*/
+ explicit_open: proc;
+   dcl   implied_attrx       bit(32)        init( '00000000'bx );
+   dcl   conflict_attx       bit(32)        init( '00000000'bx );
+   dcl   bOpt                bit(32);
+   dcl   pOpt                ptr;
+   dcl   j                   fixed bin(31);
+
+ /*-------------------------------------------------------*/
+ /* IOR_bOpt values for OPEN statement                    */
+ /*-------------------------------------------------------*/
+   dcl   bF              (17)bit(32)   aligned   static    init(
+            '00000004'bx,              /* RECORD                   1 */
+            '00000008'bx,              /* STREAM                   2 */
+            '00000010'bx,              /* INPUT                    3 */
+            '00000020'bx,              /* OUTPUT                   4 */
+            '00000040'bx,              /* UPDATE                   5 */
+            '00000080'bx,              /* BACKWARDS                6 */
+            '00000100'bx,              /* DIRECT                   7 */
+            '00000200'bx,              /* SEQUENTIAL               8 */
+            '00000400'bx,              /* TRANSIENT                9 */
+            '00000800'bx,              /* EXCLUSIVE               10 */
+            '00001000'bx,              /* BUFFERED                11 */
+            '00020000'bx,              /* LINESIZE                12 */
+            '00004000'bx,              /* KEYED                   13 */
+            '00002000'bx,              /* UNBUFFERED              14 */
+            '00040000'bx,              /* PAGESIZE                15 */
+            '00080000'bx,              /* PRINT                   16 */
+            '00000000'bx );            /* End of table            17 */
+ /*-------------------------------------------------------*/
+ /* FCB_attrib values implied by IOR_bOpt values above    */
+ /* (same order as sequence of bF)                        */
+ /*-------------------------------------------------------*/
+   dcl   bImp            (17)bit(32)   aligned   static    init(
+            '00020000'bx,              /* record                   1 */
+            '00300000'bx,              /* stream SEQUENTIAL        2 */
+            '00000200'bx,              /* input                    3 */
+            '00008000'bx,              /* output                   4 */
+            '02020000'bx,              /* update RECORD            5 */
+            '00120201'bx,              /* SEQL RECORD INPUT backwar6 */
+            '00020010'bx,              /* RECORD direct            7 */
+            '00100000'bx,              /* sequential               8 */
+            '00800000'bx,              /* transient                9 */
+            '00020040'bx,              /* RECORD exclusive        10 */
+            '00020002'bx,              /* RECORD buffered         11 */
+            '00310000'bx,              /* STREAM SEQL PRINT linesi12 */
+            '01020400'bx,              /* UNBUFFERED RECORD keyed 13 */
+            '01020000'bx,              /* unbuffered RECORD       14 */
+            '00310000'bx,              /* STREAM SEQL PRINT pagesi15 */
+            '00310000'bx,              /* STREAM SEQL PRINT print 16 */
+            '00000000'bx );            /* End of table            17 */
+ /*-------------------------------------------------------*/
+ /* FCB_attrib values conflicting with IOR_bOpt values    */
+ /* (same order as sequence of bF)                        */
+ /*-------------------------------------------------------*/
+   dcl   bConf           (17)bit(32)   aligned   static    init(
+            '00210000'bx,               /*  1 RECORD               1 */
+            '02820050'bx,               /*  2 STREAM               2 */
+            '02008000'bx,               /*  3 INPUT                3 */
+            '02000201'bx,               /*  4 OUTPUT               4 */
+            '00008201'bx,               /*  5 UPDATE               5 */
+            '02A18010'bx,               /*  6 BACKWARDS            6 */
+            '00910001'bx,               /*  7 DIRECT               7 */
+            '00800010'bx,               /*  8 SEQUENTIAL           8 */
+            '00310010'bx,               /*  9 TRANSIENT            9 */
+            '00210000'bx,               /* 10 EXCLUSIVE           10 */
+            '00210000'bx,               /* 11 BUFFERED            11 */
+            '03820203'bx,               /* 12 LINESIZE            12 */
+            '00210000'bx,               /* 13 KEYED               13 */
+            '00210000'bx,               /* 14 UNBUFFERED          14 */
+            '03820203'bx,               /* 15 PAGESIZE            15 */
+            '02820250'bx,               /* 16 PRINT               16 */
+            '00000000'bx );             /* 17 End of table        17 */
+
+   bOpt = pIORB->IOR_bOpt;             /* Get option flags           */
+   /* Determine attributes implied by OPEN and any attributes        */
+   /* that would conflict.                                           */
+   do j=1 by 1 while( bF(j)ª='00000000'bx );
+     if (bOpt&bF(j))ª='00000000'bx then do;
+       implied_attrx = implied_attrx | bImp(j);
+       conflict_attx = conflict_attx | bConf(j);
+       end;
+     end; /* do j */
+
+   /* Check for conflicts with declared attributes        */
+   if (pFCB->FCB_attrib&conflict_attx)ª='00000000'bx then do;/*091204*/
+     error_code = 6;                                          /*0.9.3*/
+     goto UNDF_error;
+     end;                                                  /*20091205*/
+   /* Pick up declared attributes from FCB                */
+   implied_attrx = implied_attrx | pFCB->FCB_attrib;
+
+   /* Complete any unspecified required attributes        */
+   /* STREAM or RECORD                                    */
+   if (implied_attrx&'00220000'bx)='00000000'bx       /* STREAM|REC  */
+   then implied_attrx = implied_attrx|'00200000'bx;   /* DFT=STREAM  */
+   /* INPUT OUTPUT or UPDATE                              */
+   if (implied_attrx&'02008200'bx)='00000000'bx       /* INP|OUT|UPD */
+   then implied_attrx = implied_attrx|'00000200'bx;   /* DFT=INP     */
+
+   /* Pick up any specified attribute values              */
+   /* Values will be in order: TITLE,LINESIZE,PAGESIZE    */
+   /* (option present only if specified and bit set)      */
+   pOpt = pIORB->IOR_pOpt;             /* -> OPEN variable options   */
+   if (bOpt&'00010000'bx)ª='00000000'bx then do;      /* TITLE       */
+     /* pOpt points to a locator/descriptor for the title string     */
+     pTitle = pOpt->IOR_optP;          /* Save A(title loc/desc)     */
+     pOpt = pOpt+stg(null()->IOR_optP);/* -> Next option             */
+     end; /* TITLE */
+   if (bOpt&'00020000'bx)ª='00000000'bx then do;      /* LINESIZE    */
+     pFCB->FCB_linesize = pOpt->IOR_optF;
+     pOpt = pOpt+stg(null()->IOR_optF);/* -> Next option             */
+     end; /* LINESIZE */
+   if (bOpt&'00040000'bx)ª='00000000'bx then do;      /* PAGESIZE    */
+     pFCB->FCB_pagesize = pOpt->IOR_optF;
+     pagesize_specified = '1'b;                               /*0.9.2*/
+     pOpt = pOpt+stg(null()->IOR_optF);/* -> Next option             */
+     end; /* PAGESIZE */
+
+   implied_attr  = implied_attrx;
+   conflict_attr = conflict_attx;
+
+   end explicit_open;
+   
+ /*-------------------------------------------------------------0.9.3*/
+ /* Look for an envronment in the form DD_<filename> to supply  0.9.3*/
+ /* the filename for the title.                                 0.9.3*/
+ /*-------------------------------------------------------------0.9.3*/
+ check_env: proc( pName, pTitle, title_len );                 /*0.9.3*/
+   dcl    pName               ptr;      /* ->Filename           0.9.3*/
+   dcl    pTitle              ptr;      /* ->New name (maybe)   0.9.3*/
+   dcl    title_len           fixed bin(31);                  /*0.9.3*/
+   dcl    env_name            char(72);                       /*0.9.3*/
+   dcl    title               char(64)  varying   based;      /*0.9.3*/
+   dcl    pEnv                ptr;                            /*0.9.3*/
+   dcl    C                   char(1)   based;                /*0.9.3*/
+   env_name = 'DD_' || substr(pTitle->zstr,1,title_len) || '00'x;                 /*0.9.3*/
+   pEnv = addr(env_name);                                     /*0.9.3*/
+   pEnv = getenv(pEnv);                 /* 'DD_<name> in env?   0.9.3*/
+   if pEnv=sysnull() then return;       /* Not Found            0.9.3*/
+   pTitle = pEnv;                       /* Found - use it       0.9.3*/
+   do title_len=0 by 1 while(pEnv->C^='00'x);                 /*0.9.3*/
+     pEnv = pEnv+1;                                           /*0.9.3*/
+     end;                                                     /*0.9.3*/
+   end check_env;                                             /*0.9.3*/
+ 
+ %page;
+
+ %include IORB;
+ %include FCB;
+ %include DCLCB;
+ %include FILE;
+ %include KEY;
+ %include LOCDESC;
+ %include DESC;
+ %include ENTRY;                                             /*0.9.10*/
+
+ end pli_Open;

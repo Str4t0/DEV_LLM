@@ -1,0 +1,144 @@
+ /* _pli_Str                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.10e       */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_Str (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Apr, 2022                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_Str  [CENTERLEFT BIF]                   */
+ /*                               [CENTERRIGHT BIF]                  */
+ /*                               [LEFT BIF]                         */
+ /*                               [RIGHT BIF]                        */
+ /*                                                                  */
+ /*      Function:      Implement CENTERLEFT, CENTERRIGHT,           */
+ /*                               LEFT, RIGHT builtins               */
+ /*                                                                  */
+ /*      Note:          STRINGSIZE is not raised in this procedure   */
+ /*                     per IBM PL/I.                                */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL Str entry(func,pSource,pTarget,fill)     */
+ /*                                ext( '_pli_Str' )                 */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     call Str( func,                              */
+ /*                               addr(source loc/desc),    x        */
+ /*                               addr(target loc/desc),    y'       */
+ /*                               addr(fill_char);          z        */
+ /*                                                                  */
+ /*                     target and source are both character-string  */
+ /*                     expressions. Fill_char is a single char.     */
+ /*                                                                  */
+ /*                     Compiled code is responsible for converting  */
+ /*                     arguments. The target length (y) is used to  */
+ /*                     generate a nonvarying adjustable or          */
+ /*                     nonadjustable character field (y') of length */
+ /*                     y to contain the result. If present, the     */
+ /*                     argument z is converted to a character       */
+ /*                     string and the first character is passed.    */
+ /*                     If z is omitted a single space is passed.    */
+ /*                                                                  */
+ /*                     The argument func is s fixed bin(31) value   */
+ /*                     defining the function to be performed:       */
+ /*                       394 = centerleft                           */
+ /*                       395 = centerright                          */
+ /*                       396 = left                                 */
+ /*                       397 = right                                */
+ /*                     (These are the internal builtin function ids)*/
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ Str: proc( func, pSource, pTarget, fill )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_Str' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     func                 fixed bin(31);
+ dcl     pSource              ptr;
+ dcl     pTarget              ptr;
+ dcl     fill                 char(1);            
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl      pS                  ptr;           /* ->Source string      */
+ dcl      lS                  fixed bin(31); /* Source length        */
+ dcl      pDs                 ptr;           /* ->Source desc        */
+ dcl      pT                  ptr;           /* ->Target string      */
+ dcl      lT                  fixed bin(31); /* Target length        */
+ dcl      pDt                 ptr;           /* ->Target desc        */
+ dcl      pos                 ptr;           /* Output position      */
+ dcl      len                 fixed bin(31); /* Length to move       */
+ dcl      n                   fixed bin(31);
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl      VarStr              char(0) varying     based;
+
+ %page;
+ /*-----------------------------------*/
+ /*                                   */
+ /*-----------------------------------*/
+ pS  = pSource->pData;
+ pDs = pSource->pDesc;
+ pT  = pTarget->pData;
+ pDt = pTarget->pDesc;
+ lS  = pDs->ST_len;                          /* Max source length     */
+ lT  = pDt->ST_len;                          /* Target length         */
+
+ if pDs->ST_id = '11'x then do;              /* Is source VARYING?    */
+   lS = length(pS->VarStr);
+   pS = pS+stg(null->VarStr);
+   end; /* Varying */
+ /* Target is always nonvarying */
+ len = min(lS,lT);                           /* Number char to move   */
+  
+ call plifill(pT,fill,lT);                   /* Init target string    */
+ if len=0 then return;                       /* Nothing else to do    */
+ n = lT-len;
+
+ select(func);
+   when(394) do;                              /* CENTERLEFT           */
+     n = n/2;
+     pos = pT+n;
+     end; /* 394 */
+   when(395) do;                              /* CENTERRIGHT          */
+     n = (n+1)/2;
+     pos = pT+n;
+     end; /* 395 */
+   when(396) do;                              /* LEFT                 */
+     pos = pT;
+     end; /* 396 */
+   when(397) do;                              /* RIGHT                */
+     /* If source is longer than target, take rightmost characters    */
+     if lS>lT
+     then pS = pS + (lS-lT);
+     pos = pT + n;                            /* Justify output       */
+     end; /* 397 */
+   /* COMMENT: OTHER should not occur, just raise ERROR if so         */
+   end; /* select */
+
+ call plimove(pos,pS,len);                   /* And we're done        */
+
+ return;
+
+ %page;
+ %include DESC;
+ %include LOCDESC;
+
+ end Str;

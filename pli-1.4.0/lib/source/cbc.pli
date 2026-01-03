@@ -1,0 +1,118 @@
+ /* _pli_CBC                                                         */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_CBC (PL/I runtime)                      */
+ /*      Version:       1.0                                          */
+ /*      Date:          Jul, 2004                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_CBC                                     */
+ /*                                                                  */
+ /*      Function:      Convert bit string to character string.      */
+ /*                                                                  */
+ /*      Dependencices:                                              */
+ /*                     Descriptor formats                           */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                                                                  */
+ /*      Input:                                                      */
+ /*                        +--------------------------------------+  */
+ /*                     +4 | -> Character string locator/desc     |  */
+ /*                        +--------------------------------------+  */
+ /*                     +0 | -> Bit string locator/descriptor     |  */
+ /*        Parameters->    +--------------------------------------+  */
+ /*                                                                  */
+ /*      Output:        Converted value returned to caller           */
+ /*                                                                  */
+ /*      Errors:        None.                                        */
+ /*                                                                  */
+ /*      Called from:   Compiled code.  Not in PGT because hopefully */
+ /*                     will not be needed in all programs.          */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                     Change to convert 4-bit nibbles.  This will  */
+ /*                     require a static table of 4*16 or 64 bytes   */
+ /*                     but should greatly speed up conversion.      */
+ /*                     The first and last nibbles can be converted  */
+ /*                     with extraneous data and the desired         */
+ /*                     characters extracted with SUBSTR.            */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*        2018-01-03: Conversion of bit fields w/offset^=0   0.9.10b*/
+ /*                                                                  */
+ /********************************************************************/
+
+ pli_CBC: proc(pBits,pChar)
+          external( '_pli_CBC' )
+          options( linkage(system) );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pBits               ptr;                     /* -> Bit L/D  */
+ dcl     pChar               ptr;                     /* -> Char L/D */
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl     pB                  ptr;                     /* -> Bit str  */
+ dcl     pC                  ptr;                     /* -> Char str */
+ dcl     pD                  ptr;                     /* -> Descript */
+ dcl     lBits               fixed bin(31);           /* Bit str len */
+
+ dcl    (f,t)                fixed bin(31);
+
+ dcl     bConv               bit(1)              init( '0'b );
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     bStr         (32760)bit(1)              based(pB);
+ dcl     cStr                char(1)             based(pC);
+ dcl     vStr                char(0)   var       based;
+ dcl     FB15                fixed bin(15)       based;
+
+ /*-------------------------*/
+ /* External Entries        */
+ /*-------------------------*/
+ dcl    (length,null,stg)    builtin;
+
+ /*------------------------------------------------------------------*/
+ /* Begin Procedure                                                  */
+ /*------------------------------------------------------------------*/
+
+ pB = pBits->pData;                    /* -> Source bit string       */
+ pD = pBits->pDesc;                    /* -> Source descriptor       */
+ f = pD->ST_bo;                        /* Bit offset                 */
+ if pD->ST_id = '20'x                  /* Fixed-length source?       */
+ then lBits = pD->ST_len;              /* Yes, use that              */
+ else do;                              /* Otherwise -                */
+   lBits = length(pB->vStr);           /*   Length from prefix       */
+   pB = pB + stg(NULL()->vStr);        /*   Adjust addr of string    */
+   end;
+
+ pC = pChar->pData;                    /* -> Target character string */
+ pD = pChar->pDesc;                    /* -> Target descriptor       */
+ if pD->ST_id ª= '10'x                 /* Varying target?            */
+ then do;                              /* Yes -                      */
+   pC->FB15 = lBits;                   /*   Set length               */
+   pC = pC + stg(NULL()->vStr);        /*   Adjust addr of string    */
+   end;
+
+ /*------------------------------------------------------------------*/
+ /* Convert.  Makes no assumptions about source alignment            */
+ /* The caller guarantees that the target is big enough for          */
+ /* conversion with no truncation.                                   */
+ /*------------------------------------------------------------------*/
+ do t=f+1 to f+lbits;                                       /*0.9.10b*/
+   if bStr(t)='1'b then cStr='1';
+   else                 cStr='0';
+   pC = pC+1;
+   end; /* do t */
+
+ %include desc;
+ %include locdesc;
+
+ end pli_CBC;

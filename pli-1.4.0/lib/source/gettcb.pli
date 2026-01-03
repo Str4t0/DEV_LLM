@@ -1,0 +1,120 @@
+ /* GetTCB - Locate a Thread Control Block                           */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.9.2         */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        GetTCB                                       */
+ /*      Version:       1.0                                          */
+ /*      Date:          March, 2011                                  */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Function:      GetTCB locates a TCB by thread id.           */
+ /*			0 returns address of the current thread's TCB*/
+ /*                                                                  */
+ /*      Entry Points:  _pli_GetTCB                                  */
+ /*                                                                  */
+ /*      Calling Sequence: (see below)                               */
+ /*                                                                  */
+ /*      Parameters:                                                 */
+ /*                                                                  */
+ /*      Description:                                                */
+ /*                                                                  */
+ /*      Dependencies:                                               */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                   . It would certailly be _real nice_ to have    */
+ /*                     the address of the current thread's TCB      */
+ /*                     stored somewhere easily accessible.          */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+ 
+ GetTCB: proc(ulThreadid)
+ 	      returns(ptr)
+	      options( LINKAGE(SYSTEM) )
+              ext( '_pli_GetTCB' );
+
+ /*------------------------*/
+ /* Parameters             */
+ /*------------------------*/
+ dcl	 ulThreadid	     fixed bin(31);  /* Thread id arg        */
+
+ /*------------------------*/
+ /* EXTERNAL data          */
+ /*------------------------*/
+ dcl	  thread_mutex	      fixed bin(31)  static    init(0)
+              ext( '_pli_thread_mutex' );
+
+ /*------------------------*/
+ /* STATIC data            */
+ /*------------------------*/
+
+ /*------------------------*/
+ /* AUTOMATIC data         */
+ /*------------------------*/
+ dcl      RC                  fixed bin(31);
+ dcl      ulTID               fixed bin(31);
+ dcl      pTCB                ptr;
+ dcl      pCh		      ptr;
+ dcl   1  procinfo,           /* like pliprocinfo                    */
+          5 pi_len            fixed bin(31),
+          5 pi_pid            fixed bin(31),
+          5 pi_tid            fixed bin(31);
+ 
+ /*------------------------*/
+ /* EXTERNAL entries       */
+ /*------------------------*/
+ dcl     getgbl              entry     
+                             returns( ptr )          
+			     options( LINKAGE(SYSTEM) )
+			     external( '_pli_GetGbl' );       			     
+ dcl     GetProcInfo         entry( ptr )
+                             returns( fixed bin(31) )
+                             external( '_pli_OSGetProcInfo' )
+                             options( LINKAGE(SYSTEM) );
+
+ dcl     mutex_wait          entry(ptr)              
+                             options( linkage(system) )
+                             ext( '_pli_mutex_wait' );
+ dcl     mutex_post          entry(ptr)              
+                             options( linkage(system) )
+                             ext( '_pli_mutex_post' );
+
+ dcl    ( 
+         addr,	         
+         stg,
+         sysnull
+        )                    builtin;
+ %page;	 
+	  
+ if ulThreadid^=0		       /* Use supplied thread id     */
+ then ulTID = ulThreadid;
+ else do;			       /*  - or get current threadid */
+   pi_len = stg(procinfo);             /* (short control blk)        */
+   RC = GetProcInfo( addr(procinfo) ); /* Get current proc info      */
+   ulTID = pi_tid;
+   end;
+     
+ /*------------------------------------*/
+ /* Scan TCB chain                     */
+ /*------------------------------------*/
+ call mutex_wait ( addr(thread_mutex) );/* Lock the TCB chain        */ 
+ pCh = getgbl();			/* Get addr(global_data)     */
+ pTCB = pCh->GBL_TCB_anchor;		/* Addr(first_TCB)	     */
+ do while(pTCB^=sysnull() );
+   if pTCB->TCB_tid = ulTID then leave; /* This is the TCB	     */
+   pTCB = pTCB->TCB_next;
+   end; /* do while */
+ call mutex_post ( addr(thread_mutex) );/* Unlock the TCB chain      */ 
+     
+ /*------------------------------------*/
+ /* Exit                               */
+ /*------------------------------------*/
+ return(pTCB);           
+ %page;
+
+ %include tcb;
+ %include gbl;
+
+ end GetTCB;                       /* End of procedure           */       

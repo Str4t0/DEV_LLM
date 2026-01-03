@@ -1,0 +1,244 @@
+ /* _pli_BIndex                                                      */
+ /********************************************************************/
+ /*           Iron Spring PL/I Runtime Library Version 0.5           */
+ /*              Distributed under the Gnu LGPL License              */
+ /*                                                                  */
+ /*      Module:        _pli_BIndex (PL/I runtime)                   */
+ /*      Version:       1.0                                          */
+ /*      Date:          Nov, 2005                                    */
+ /*      Author:        Peter Flass                                  */
+ /*                                                                  */
+ /*      Entry Points:  _pli_BIndex [INDEX() BIF]                    */
+ /*                                                                  */
+ /*      Function:      Implement INDEX to search for                */
+ /*                     bit string expressions.                      */
+ /*                                                                  */
+ /*      Dependencices: PL/I Locator/Descriptor formats.             */
+ /*                                                                  */
+ /*      Calling sequence:                                           */
+ /*                     DCL BIndex entry(pHaystk,pNeedle[,iBegin)]   */
+ /*                                returns( fixed bin(31) )          */
+ /*                                options( LINKAGE(SYSTEM) );       */
+ /*                     ix = BIndex( addr(haystack_loc_desc),        */
+ /*                                  addr(needle_loc_desc)[,         */
+ /*                                  iBegin] );                      */
+ /*                                                                  */
+ /*                     'Haystack' and 'Needle' are both bit-string  */
+ /*                     expressions.                                 */
+ /*                                                                  */
+ /*                     Each address points to a bit-string          */
+ /*                     Locator/Descriptor.                          */
+ /*                                                                  */
+ /*      To Do:                                                      */
+ /*                                                                  */
+ /*      Modifications:                                              */
+ /*                                                                  */
+ /********************************************************************/
+
+ BIndex: proc( pHaystack, pNeedle, iBegin )
+         returns( fixed bin(31) )
+         options( LINKAGE(SYSTEM) )
+         ext( '_pli_BIndex' );
+
+ /*-------------------------*/
+ /* Parameters              */
+ /*-------------------------*/
+ dcl     pHaystack           ptr;
+ dcl     pNeedle             ptr;
+ dcl     iBegin              fixed bin(31);
+
+ /*-------------------------*/
+ /* Automatic Data          */
+ /*-------------------------*/
+ dcl    (pH,pN)              ptr;                /* Addresses        */
+ dcl    (lH,lN)              fixed bin(31);      /* Lengths          */
+ dcl    (sH,sN)              fixed bin(31);      /* Original lengths */
+ dcl    (oH,oN)              fixed bin(7);       /* Offsets          */
+ dcl    (bH,bN)              bit(8)    aligned;  /* Temporaries      */
+ dcl     iX                  fixed bin(31);
+
+ /*-------------------------*/
+ /* Prototypes              */
+ /*-------------------------*/
+ dcl     Varying_String      char(0)   varying   based;
+ dcl     bx                  bit(16)   aligned   based;
+
+ /*-------------------------*/
+ /* Static Data             */
+ /*-------------------------*/
+
+ dcl    (addr,index,length,min,mod,stg,string,sysnull)
+                             builtin;
+ %page;
+ /*-----------------------------------*/
+ /* Get Lengths and positions         */
+ /*-----------------------------------*/
+ pH = pHaystack->pData;                /* Address of 'Haystack'      */
+ if pHaystack->pDesc->ST_id='20'x      /* Is Haystack fixed-length?  */
+ then lH=pHaystack->pDesc->ST_len;     /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lH = length(pH->Varying_String);
+   pH = pH + stg( sysnull()->Varying_String );
+   end;
+ sH = lH;                              /* Save starting length       */
+ oH = pHaystack->pDesc->ST_bo;         /* Offset of 1st bit  20060828*/
+ pN = pNeedle->pData;                  /* Address of 'Needle'        */
+ if pNeedle->pDesc->ST_id='20'x        /* Is Needle fixed-length?    */
+ then lN=pNeedle->pDesc->ST_len;       /* .. Yes, length from descr  */
+ else do;                              /* .. No, length from prefix  */
+   lN = length(pN->Varying_String);
+   pN = pN + stg( sysnull()->Varying_String );
+   end;
+ sN = lN;                              /* Save starting length       */
+ oN = pNeedle->pDesc->ST_bo;           /* Offset of 1st bit  20060828*/
+
+ if lN=0 | lH=0 | lN>lH                /* Zero-len or needle too long*/
+ then return(0);
+ if iBegin<0 | iBegin>lH               /* Check starting position    */
+ then signal STRINGRANGE;              /* Manual doesn't say optional*/
+
+ /*-----------------------------------*/
+ /* Prime bytes for compare           */
+ /*-----------------------------------*/
+ bH = load_byte( pH, oH, lH );         /* Load 1st byte of 'haystack'*/
+ bN = load_byte( pN, oN, lN );         /* Load 1st byte of 'needle'  */
+
+ /*-----------------------------------*/
+ /* Main Loop - Compare up to 8 bits  */
+ /*-----------------------------------*/
+ do while( lH>=lN );
+   if bH=bN then do;                   /* First 'n' bits match       */
+     iX = compare_strings;
+     if iXª=0 then return(iX);         /* We've found a match        */
+     end;
+   if lH<=8 then bH = substr(bH,2,7);
+   else do;
+     bH = concatenate_bits( bH, this_byte(pH,oH,lH) );
+     call adjust_offset(pH,oH,1);      /* Adjust string pointer      */
+     end; /* else */
+   lH = lH-1;                          /* Adjust rem length          */
+   end; /* do while */
+
+ return( 0 );                          /* Not found                  */
+
+ /*------------------------------------------------------------------*/
+ /* Concatenate unaligned bit strings                                */
+ /*------------------------------------------------------------------*/
+ concatenate_bits: proc(b1,b2) returns( bit(8) );
+   dcl  (b1,b2)              bit(8)    aligned;
+   dcl   bx                  bit(8)    aligned;
+   dcl   by                  bit(16)   aligned;
+   bx = substr(b1,2,7);                /* Left-shift 'b1' one bit    */
+   by = (8)'0'b || b2;                 /* Right-shift 'b2' seven bits*/
+   by = substr(by,2,8);
+   bx = bx | substr(by,1,8);           /* OR 'b1' and 'b2'           */
+   return( bx );                       /* And we're done             */
+   end concatenate_bits;
+
+ /*------------------------------------------------------------------*/
+ /* Compare bit strings when the first eight bits have been matched. */
+ /*------------------------------------------------------------------*/
+ compare_strings: proc returns( fixed bin(31) );
+   dcl  (pXH,pXN)            ptr;
+   dcl  (oXH,oXN)            fixed bin(7);
+   dcl  (lXH,lXN)            fixed bin(31);
+   dcl  (bXH,bXN)            bit(8)    aligned;
+   if lN<=8                            /* Matched entire 'needle'    */
+   then return(sH-lH+1);               /* Return starting bit pos.   */
+   /* First 8 bits at substr(pH->bx,oH,8) are in bH,                 */
+   /* same for bN.  We know that lH is greater or equal to lN.       */
+   pXH=pH;  pXN=pN;                    /* Save starting values       */
+   oXH=oH;  oXN=oN;
+   lXH=lH;  lXN=lN;                    /* lXH actually not used.     */
+   lXN = lXN-8;                        /* Eight bits already compared*/
+   do while( lXN>0 );                  /* Compare remaining bits     */
+     bXH = load_byte( pH, oXH, lXN );  /* Load next bytes            */
+     bXN = load_byte( pN, oXN, lXN );  /* Load next bytes            */
+     /* Notice that only the number of bits remaining in the         */
+     /* 'needle' are loaded for comparison.                          */
+     if bXNª=bXH then return(0);       /* No match                   */
+     lXN = lXN-8;                      /* Eight more bits compared   */
+     end; /* do while */
+   return(sH-lH+1);                    /* Matched whole string       */
+   end compare_strings;
+
+ /*------------------------------------------------------------------*/
+ /* Load up to eight bits of data for compare.  This procedure is    */
+ /* written so that it will not make any bit string calls, hence     */
+ /* all calls to SUBSTR are made with constant lengths.              */
+ /* Fudged further to use constant offsets.                          */
+ /*------------------------------------------------------------------*/
+ load_byte: proc(p,o,l) returns( bit(8) );
+   dcl   p                   ptr;
+   dcl   o                   fixed bin(7);
+   dcl   l                   fixed bin(31);
+   dcl   ox                  fixed bin(7);
+   dcl   lx                  fixed bin(31);
+   dcl   b                   bit(8)    aligned;
+
+   ox = o+1;                           /* Adjust offset for SUBSTR   */
+   lx = min(l,8);                      /* Compute length to move     */
+   b = this_byte(p,o,lX);
+   select( lx );                       /* Pick off 'active' bits     */
+     when( 1 ) b = substr(b,1,1);
+     when( 2 ) b = substr(b,1,2);
+     when( 3 ) b = substr(b,1,3);
+     when( 4 ) b = substr(b,1,4);
+     when( 5 ) b = substr(b,1,5);
+     when( 6 ) b = substr(b,1,6);
+     when( 7 ) b = substr(b,1,7);
+     otherwise b = substr(b,1,8);
+     end; /* select */
+   call adjust_offset(p,o,lx);
+   return( b );
+
+   end load_byte;
+
+ this_byte: proc(p,o,l) returns( bit(8) );
+   dcl   p                   ptr;
+   dcl   o                   fixed bin(7);
+   dcl   l                   fixed bin(31);
+   dcl   ox                  fixed bin(7);
+   dcl   lx                  fixed bin(31);
+   dcl   b                   bit(8)    aligned;
+   dcl   b16x                bit(16)   aligned;
+
+   ox = o+1;                           /* Adjust offset for SUBSTR   */
+   lx = min(l,8);                      /* Compute length to move     */
+   /* Copy byte(s) containing the relevant bits                      */
+   if o+lx<8 then b16x = substr(p->bx,1,8);
+   else           b16x = substr(p->bx,1,16);
+   select( ox );                       /* Shift left 'offset' bits   */
+     when( 1 ) b = substr(b16x,1,8);
+     when( 2 ) b = substr(b16x,2,8);
+     when( 3 ) b = substr(b16x,3,8);
+     when( 4 ) b = substr(b16x,4,8);
+     when( 5 ) b = substr(b16x,5,8);
+     when( 6 ) b = substr(b16x,6,8);
+     when( 7 ) b = substr(b16x,7,8);
+     otherwise b = substr(b16x,8,8);
+     end; /* select */
+   return( b );
+
+   end this_byte;
+
+ /*-----------------------------------*/
+ /* Bump bit offset and adjust byte   */
+ /* address if necessary.             */
+ /*-----------------------------------*/
+ adjust_offset: proc(p,o,n);
+   dcl   p                   ptr;
+   dcl   o                   fixed bin(7);
+   dcl   n                   fixed bin(31);
+   o = o+n;                            /* Bump offset                */
+   if o>7 then do;                     /* Adj byte addr if necessary */
+     p = p+1;
+     o = mod(o,8);
+     end;
+   end adjust_offset;
+
+ %page;
+ %include DESC;
+ %include LOCDESC;
+
+ end BIndex;
