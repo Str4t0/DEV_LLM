@@ -6015,6 +6015,20 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                     if (!pendingChange) return;
                     setShowConfirmModal(false);
                     
+                    // Helper: ékezetek normalizálása összehasonlításhoz
+                    const normalizeForCompare = (str: string) => {
+                      return str
+                        .normalize('NFD')
+                        .replace(/[\u0300-\u036f]/g, '')
+                        .replace(/[ÃƒÂ¡áàâäãå]/gi, 'a')
+                        .replace(/[ÃƒÂ©éèêë]/gi, 'e')
+                        .replace(/[ÃƒÂ­íìîï]/gi, 'i')
+                        .replace(/[ÃƒÂ³óòôöõő]/gi, 'o')
+                        .replace(/[ÃƒÂºúùûüű]/gi, 'u')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    };
+                    
                     // Alkalmazzuk a módosításokat
                     let appliedCount = 0;
                     for (const patch of pendingChange.patches) {
@@ -6026,12 +6040,45 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                         }
                         const loadData = await loadRes.json();
                         let fileContent = loadData.content || "";
+                        let applied = false;
                         
-                        if (fileContent.includes(patch.original) || fileContent.includes(patch.original.trim())) {
-                          const searchStr = fileContent.includes(patch.original) ? patch.original : patch.original.trim();
-                          const replaceStr = fileContent.includes(patch.original) ? patch.modified : patch.modified.trim();
-                          fileContent = fileContent.replace(searchStr, replaceStr);
+                        // 1. Pontos egyezés
+                        if (fileContent.includes(patch.original)) {
+                          fileContent = fileContent.replace(patch.original, patch.modified);
+                          applied = true;
+                        }
+                        // 2. Whitespace-toleráns
+                        else if (fileContent.includes(patch.original.trim())) {
+                          fileContent = fileContent.replace(patch.original.trim(), patch.modified.trim());
+                          applied = true;
+                        }
+                        // 3. Ékezet-toleráns (fuzzy)
+                        else {
+                          const originalLines = patch.original.split('\n');
+                          const fileLines = fileContent.split('\n');
+                          const normalizedFirstLine = normalizeForCompare(originalLines[0]);
                           
+                          for (let i = 0; i < fileLines.length; i++) {
+                            if (normalizeForCompare(fileLines[i]) === normalizedFirstLine) {
+                              let allMatch = true;
+                              for (let j = 1; j < originalLines.length && i + j < fileLines.length; j++) {
+                                if (normalizeForCompare(fileLines[i + j]) !== normalizeForCompare(originalLines[j])) {
+                                  allMatch = false;
+                                  break;
+                                }
+                              }
+                              if (allMatch) {
+                                const newLines = [...fileLines];
+                                newLines.splice(i, originalLines.length, ...patch.modified.split('\n'));
+                                fileContent = newLines.join('\n');
+                                applied = true;
+                                break;
+                              }
+                            }
+                          }
+                        }
+                        
+                        if (applied) {
                           const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
