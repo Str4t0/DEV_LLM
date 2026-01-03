@@ -4042,17 +4042,27 @@ React.useEffect(() => {
               let fileContent = loadData.content || "";
               
               // Helper: ékezetek normalizálása összehasonlításhoz
+              // Kezeli a double-encoded UTF-8 karaktereket is!
               const normalizeForCompare = (str: string) => {
                 return str
+                  // Double-encoded UTF-8 patterns
+                  .replace(/Ã¡/g, 'a').replace(/Ã©/g, 'e').replace(/Ã­/g, 'i')
+                  .replace(/Ã³/g, 'o').replace(/Ã¶/g, 'o').replace(/Å'/g, 'o')
+                  .replace(/Ãº/g, 'u').replace(/Ã¼/g, 'u').replace(/Å±/g, 'u')
+                  .replace(/Ã/g, 'A').replace(/Ã‰/g, 'E').replace(/Ã/g, 'I')
+                  .replace(/Ã"/g, 'O').replace(/Ã–/g, 'O').replace(/Å/g, 'O')
+                  .replace(/Ãš/g, 'U').replace(/Ãœ/g, 'U').replace(/Å°/g, 'U')
+                  // Normal ékezetek
                   .normalize('NFD')
-                  .replace(/[\u0300-\u036f]/g, '') // ékezetek eltávolítása
-                  .replace(/[ÃƒÂ¡áàâäãå]/gi, 'a')
-                  .replace(/[ÃƒÂ©éèêë]/gi, 'e')
-                  .replace(/[ÃƒÂ­íìîï]/gi, 'i')
-                  .replace(/[ÃƒÂ³óòôöõő]/gi, 'o')
-                  .replace(/[ÃƒÂºúùûüű]/gi, 'u')
+                  .replace(/[\u0300-\u036f]/g, '')
+                  .replace(/[áàâäãå]/gi, 'a')
+                  .replace(/[éèêë]/gi, 'e')
+                  .replace(/[íìîï]/gi, 'i')
+                  .replace(/[óòôöõő]/gi, 'o')
+                  .replace(/[úùûüű]/gi, 'u')
                   .replace(/\s+/g, ' ')
-                  .trim();
+                  .trim()
+                  .toLowerCase();
               };
               
               // 2. Ellenőrizzük és alkalmazzuk a patch-et
@@ -6016,17 +6026,27 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                     setShowConfirmModal(false);
                     
                     // Helper: ékezetek normalizálása összehasonlításhoz
+                    // Kezeli a double-encoded UTF-8 karaktereket is!
                     const normalizeForCompare = (str: string) => {
                       return str
+                        // Double-encoded UTF-8 patterns
+                        .replace(/Ã¡/g, 'a').replace(/Ã©/g, 'e').replace(/Ã­/g, 'i')
+                        .replace(/Ã³/g, 'o').replace(/Ã¶/g, 'o').replace(/Å'/g, 'o')
+                        .replace(/Ãº/g, 'u').replace(/Ã¼/g, 'u').replace(/Å±/g, 'u')
+                        .replace(/Ã/g, 'A').replace(/Ã‰/g, 'E').replace(/Ã/g, 'I')
+                        .replace(/Ã"/g, 'O').replace(/Ã–/g, 'O').replace(/Å/g, 'O')
+                        .replace(/Ãš/g, 'U').replace(/Ãœ/g, 'U').replace(/Å°/g, 'U')
+                        // Normal ékezetek
                         .normalize('NFD')
                         .replace(/[\u0300-\u036f]/g, '')
-                        .replace(/[ÃƒÂ¡áàâäãå]/gi, 'a')
-                        .replace(/[ÃƒÂ©éèêë]/gi, 'e')
-                        .replace(/[ÃƒÂ­íìîï]/gi, 'i')
-                        .replace(/[ÃƒÂ³óòôöõő]/gi, 'o')
-                        .replace(/[ÃƒÂºúùûüű]/gi, 'u')
+                        .replace(/[áàâäãå]/gi, 'a')
+                        .replace(/[éèêë]/gi, 'e')
+                        .replace(/[íìîï]/gi, 'i')
+                        .replace(/[óòôöõő]/gi, 'o')
+                        .replace(/[úùûüű]/gi, 'u')
                         .replace(/\s+/g, ' ')
-                        .trim();
+                        .trim()
+                        .toLowerCase();
                     };
                     
                     // Alkalmazzuk a módosításokat
