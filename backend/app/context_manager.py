@@ -167,6 +167,40 @@ def parse_file_mentions(message: str) -> List[str]:
     return normalized
 
 
+def auto_detect_file_mentions(message: str) -> List[str]:
+    """
+    AUTOMATIKUSAN detektálja a fájlneveket a szövegben @ nélkül is!
+    
+    Felismeri:
+    - game.js, main.py, App.tsx
+    - static/js/game.js
+    - "game.js fájlban"
+    - `game.js`
+    """
+    patterns = [
+        # Backtick-kel körülvett fájlok: `game.js`
+        r'`([^`]+\.(?:js|ts|tsx|py|css|html|json|txt|md|jsx))`',
+        # Útvonalak: static/js/game.js, backend/app/main.py
+        r'((?:[\w\-]+/)+[\w\-]+\.(?:js|ts|tsx|py|css|html|json|txt|md|jsx))',
+        # Egyszerű fájlnevek: game.js, main.py
+        r'\b([\w\-]+\.(?:js|ts|tsx|py|css|html|json|txt|md|jsx))\b',
+    ]
+    
+    mentions = []
+    for pattern in patterns:
+        matches = re.findall(pattern, message, re.IGNORECASE)
+        mentions.extend(matches)
+    
+    # Normalize and dedupe
+    normalized = []
+    for m in mentions:
+        m = m.replace('\\', '/').strip()
+        if m and m not in normalized:
+            normalized.append(m)
+    
+    return normalized
+
+
 def find_file_in_project(project_root: str, file_mention: str) -> Optional[str]:
     """
     Find a file in project based on mention.
@@ -567,14 +601,25 @@ def build_smart_context(
         "context_summary": "",
     }
     
-    # 1. Parse @file mentions
+    # 1. Parse @file mentions (explicit)
     file_mentions = parse_file_mentions(message)
-    result["file_mentions"] = file_mentions
     
-    # 2. Load mentioned files
-    if project_root and file_mentions:
-        loaded = resolve_and_load_files(project_root, file_mentions)
+    # 2. AUTO-DETECT fájlok a szövegben (@ nélkül is!)
+    auto_detected = auto_detect_file_mentions(message)
+    
+    # Kombináljuk - explicit mentions előnyt élveznek
+    all_mentions = file_mentions + [f for f in auto_detected if f not in file_mentions]
+    result["file_mentions"] = all_mentions
+    
+    print(f"[CONTEXT] Explicit @mentions: {file_mentions}")
+    print(f"[CONTEXT] Auto-detected files: {auto_detected}")
+    
+    # 3. Load mentioned files
+    if project_root and all_mentions:
+        loaded = resolve_and_load_files(project_root, all_mentions)
         result["loaded_files"] = loaded
+        
+        print(f"[CONTEXT] Loaded {len(loaded)} files automatically")
         
         # Track as active files
         for f in loaded:
