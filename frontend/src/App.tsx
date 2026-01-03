@@ -4128,6 +4128,17 @@ React.useEffect(() => {
           addLogMessage("info", `🔔 **${newPatches.length} módosítás** vár megerősítésre`);
         }
       }
+      
+      // Ha nincs patch de van PERMISSION_REQUEST, jelezzük
+      if (newPatches.length === 0) {
+        const permissionMatch = replyText.match(/\[PERMISSION_REQUEST\]([\s\S]*?)\[\/PERMISSION_REQUEST\]/i);
+        if (permissionMatch) {
+          const desc = permissionMatch[1].match(/DESCRIPTION:\s*(.+?)(?:\r?\n|FILE:|$)/i);
+          const file = permissionMatch[1].match(/FILE:\s*(.+?)(?:\r?\n|$)/i);
+          
+          addLogMessage("warning", `⚠️ Az LLM engedélyt kér de nincs konkrét kód. Írd be: "csináld meg a @${file?.[1]?.trim() || 'fájlnév'} fájlban"`);
+        }
+      }
     } catch (err) {
       console.error(err);
       setChatError("Hiba történt a chat hívás közben.");
