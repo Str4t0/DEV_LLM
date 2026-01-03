@@ -28,13 +28,25 @@ FILE: fájl/útvonal.ext
 ACTION: replace
 ORIGINAL:
 ```
-PONTOS eredeti kód a fájlból
+PONTOS eredeti kód a fájlból - KARAKTERRŐL KARAKTERRE!
 ```
 MODIFIED:
 ```
 módosított kód
 ```
 [/CODE_CHANGE]
+
+⚠️ KRITIKUS SZABÁLY AZ ORIGINAL KÓDHOZ:
+═══════════════════════════════════════
+Az ORIGINAL blokkban PONTOSAN azt a kódot add meg, ami a fájlban VAN!
+- Ha a fájlban hibás ékezetek vannak (pl. "Ã¡" vagy "�"), AZOKAT írd be!
+- NE javítsd az ékezeteket az ORIGINAL részben!
+- Csak a MODIFIED részben adj helyes ékezeteket!
+- Ha nem látod a fájl tartalmát, kérd el: [FILE_REQUEST: fájlnév]
+
+PÉLDA hibás ékezetes fájlra:
+ORIGINAL: `// AkadÃ¡lygenerÃ¡lÃ¡s` (ahogy a FÁJLBAN van)
+MODIFIED: `// Akadálygenerálás` (javított verzió)
 
 TÖBB FÁJL MÓDOSÍTÁSA:
 Ha több fájlt kell módosítani, adj TÖBB [CODE_CHANGE] blokkot egymás után!
