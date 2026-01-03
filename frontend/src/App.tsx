@@ -1674,7 +1674,7 @@ const App: React.FC = () => {
       const newPath = `${baseName}_copy${ext}`;
 
       // Először betöltjük a fájl tartalmát
-      const resp = await fetch(`${BACKEND_URL}/projects/${projectId}/file?path=${encodeURIComponent(filePath)}`);
+      const resp = await fetch(`${BACKEND_URL}/projects/${projectId}/file?rel_path=${encodeURIComponent(filePath)}`);
       if (!resp.ok) throw new Error('Nem sikerült betölteni a fájlt');
       const data = await resp.json();
 
@@ -4024,7 +4024,7 @@ React.useEffect(() => {
             
             try {
               // 1. Először betöltjük a cél fájlt a backend-ről
-              const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?path=${encodeURIComponent(patch.filePath)}`);
+              const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(patch.filePath)}`);
               
               if (!loadRes.ok) {
                 addLogMessage("error", `❌ Nem található: ${patch.filePath}`);
@@ -4046,7 +4046,7 @@ React.useEffect(() => {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                      path: patch.filePath,
+                      rel_path: patch.filePath,
                       content: fileContent,
                       encoding: "utf-8",
                     }),
@@ -4076,7 +4076,7 @@ React.useEffect(() => {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
-                    path: patch.filePath,
+                    rel_path: patch.filePath,
                     content: fileContent,
                     encoding: "utf-8",
                   }),
@@ -5937,7 +5937,7 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                     let appliedCount = 0;
                     for (const patch of pendingChange.patches) {
                       try {
-                        const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?path=${encodeURIComponent(patch.filePath)}`);
+                        const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(patch.filePath)}`);
                         if (!loadRes.ok) {
                           addLogMessage("error", `❌ Nem található: ${patch.filePath}`);
                           continue;
@@ -5954,7 +5954,7 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
-                              path: patch.filePath,
+                              rel_path: patch.filePath,
                               content: fileContent,
                               encoding: "utf-8",
                             }),
