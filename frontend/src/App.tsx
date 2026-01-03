@@ -4035,7 +4035,22 @@ React.useEffect(() => {
               const loadData = await loadRes.json();
               let fileContent = loadData.content || "";
               
+              // Helper: ékezetek normalizálása összehasonlításhoz
+              const normalizeForCompare = (str: string) => {
+                return str
+                  .normalize('NFD')
+                  .replace(/[\u0300-\u036f]/g, '') // ékezetek eltávolítása
+                  .replace(/[ÃƒÂ¡áàâäãå]/gi, 'a')
+                  .replace(/[ÃƒÂ©éèêë]/gi, 'e')
+                  .replace(/[ÃƒÂ­íìîï]/gi, 'i')
+                  .replace(/[ÃƒÂ³óòôöõő]/gi, 'o')
+                  .replace(/[ÃƒÂºúùûüű]/gi, 'u')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+              };
+              
               // 2. Ellenőrizzük és alkalmazzuk a patch-et
+              // Először próbáljuk pontos egyezéssel
               if (fileContent.includes(patch.original)) {
                 const occurrences = fileContent.split(patch.original).length - 1;
                 if (occurrences === 1) {
@@ -4092,9 +4107,60 @@ React.useEffect(() => {
                   failedCount++;
                 }
               } else {
-                failedCount++;
-                addLogMessage("warning", `⚠️ Eredeti kód nem található: ${patch.filePath}`);
-                console.log("[AUTO MODE] Keresett:", patch.original.substring(0, 100));
+                // Ékezet-toleráns keresés - soronként próbáljuk megtalálni
+                const originalLines = patch.original.split('\n');
+                const fileLines = fileContent.split('\n');
+                let foundStartIdx = -1;
+                
+                // Keressük meg az első sor normalizált verzióját
+                const normalizedFirstLine = normalizeForCompare(originalLines[0]);
+                for (let i = 0; i < fileLines.length; i++) {
+                  if (normalizeForCompare(fileLines[i]) === normalizedFirstLine) {
+                    // Ellenőrizzük a többi sort is
+                    let allMatch = true;
+                    for (let j = 1; j < originalLines.length && i + j < fileLines.length; j++) {
+                      if (normalizeForCompare(fileLines[i + j]) !== normalizeForCompare(originalLines[j])) {
+                        allMatch = false;
+                        break;
+                      }
+                    }
+                    if (allMatch) {
+                      foundStartIdx = i;
+                      break;
+                    }
+                  }
+                }
+                
+                if (foundStartIdx >= 0) {
+                  // Megtaláltuk - cseréljük ki a sorokat
+                  const newLines = [...fileLines];
+                  newLines.splice(foundStartIdx, originalLines.length, ...patch.modified.split('\n'));
+                  fileContent = newLines.join('\n');
+                  
+                  const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      rel_path: patch.filePath,
+                      content: fileContent,
+                      encoding: "utf-8",
+                    }),
+                  });
+                  
+                  if (saveRes.ok) {
+                    appliedCount++;
+                    addLogMessage("info", `✅ Alkalmazva (ékezet-toleráns): ${patch.filePath}`);
+                    if (isCurrentFile) {
+                      currentEditorCode = fileContent;
+                    }
+                  } else {
+                    failedCount++;
+                  }
+                } else {
+                  failedCount++;
+                  addLogMessage("warning", `⚠️ Eredeti kód nem található: ${patch.filePath}`);
+                  console.log("[AUTO MODE] Keresett:", patch.original.substring(0, 100));
+                }
               }
             } catch (err) {
               console.error("[AUTO MODE] Hiba:", err);
