@@ -4129,14 +4129,19 @@ React.useEffect(() => {
         }
       }
       
-      // Ha nincs patch de van PERMISSION_REQUEST, jelezzük
+      // Ha nincs patch, de az LLM engedélyt kér - figyelmeztetés + modal
       if (newPatches.length === 0) {
-        const permissionMatch = replyText.match(/\[PERMISSION_REQUEST\]([\s\S]*?)\[\/PERMISSION_REQUEST\]/i);
-        if (permissionMatch) {
-          const desc = permissionMatch[1].match(/DESCRIPTION:\s*(.+?)(?:\r?\n|FILE:|$)/i);
-          const file = permissionMatch[1].match(/FILE:\s*(.+?)(?:\r?\n|$)/i);
-          
-          addLogMessage("warning", `⚠️ Az LLM engedélyt kér de nincs konkrét kód. Írd be: "csináld meg a @${file?.[1]?.trim() || 'fájlnév'} fájlban"`);
+        const isAskingPermission = /engedély|engedélyez|szeretnéd|módosítsam|válaszolj.*igen|kérlek.*ok/i.test(replyText);
+        const permissionMatch = replyText.match(/\[PERMISSION_REQUEST\]/i);
+        
+        if (isAskingPermission || permissionMatch) {
+          // Modal megjelenítése figyelmeztetéssel
+          setPendingChange({
+            patches: [],
+            explanation: `⚠️ Az LLM engedélyt kér konkrét kód helyett!\n\n${replyText.substring(0, 400)}...\n\n💡 Tipp: Küldj konkrétabb kérést a @fájlnév szintaxissal, pl:\n"@static/js/game.js javítsd a hiányzó változókat"`,
+          });
+          setShowConfirmModal(true);
+          addLogMessage("warning", "⚠️ Az LLM engedélyt kér - használd a @fájlnév szintaxist!");
         }
       }
     } catch (err) {
@@ -5892,31 +5897,36 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
       {showConfirmModal && pendingChange && (
         <div className="confirm-modal-overlay" onClick={() => setShowConfirmModal(false)}>
           <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>🔔 Módosítás megerősítése</h3>
-            <p className="confirm-modal-explanation">
-              {pendingChange.explanation.length > 300 
-                ? pendingChange.explanation.substring(0, 300) + '...' 
+            <h3>{pendingChange.patches.length > 0 ? '🔔 Módosítás megerősítése' : '⚠️ Figyelmeztetés'}</h3>
+            <p className="confirm-modal-explanation" style={{ whiteSpace: 'pre-wrap' }}>
+              {pendingChange.explanation.length > 500 
+                ? pendingChange.explanation.substring(0, 500) + '...' 
                 : pendingChange.explanation}
             </p>
-            <div className="confirm-modal-changes">
-              <strong>{pendingChange.patches.length} fájl módosítása:</strong>
-              <ul>
-                {pendingChange.patches.map((p, i) => (
-                  <li key={i}>📄 {p.filePath}</li>
-                ))}
-              </ul>
-            </div>
+            {pendingChange.patches.length > 0 && (
+              <div className="confirm-modal-changes">
+                <strong>{pendingChange.patches.length} fájl módosítása:</strong>
+                <ul>
+                  {pendingChange.patches.map((p, i) => (
+                    <li key={i}>📄 {p.filePath}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="confirm-modal-buttons">
               <button 
                 className="confirm-btn reject"
                 onClick={() => {
                   setShowConfirmModal(false);
                   setPendingChange(null);
-                  addLogMessage("info", "❌ Módosítás elutasítva");
+                  if (pendingChange.patches.length > 0) {
+                    addLogMessage("info", "❌ Módosítás elutasítva");
+                  }
                 }}
               >
-                ❌ Elutasítás
+                {pendingChange.patches.length > 0 ? '❌ Elutasítás' : '✖ Bezárás'}
               </button>
+              {pendingChange.patches.length > 0 && (
               <button 
                 className="confirm-btn accept"
                 onClick={async () => {
@@ -5977,6 +5987,7 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
               >
                 ✅ Megerősítés
               </button>
+              )}
             </div>
           </div>
         </div>
