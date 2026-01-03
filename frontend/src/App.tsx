@@ -4008,11 +4008,17 @@ React.useEffect(() => {
           return (originalLen > codeLen * 0.6) || (originalLines > 50 && modifiedLines < originalLines * 0.3);
         });
         
+        // DEBUG: Mode állapot kiírása
+        console.log(`[MODE] autoMode = ${autoMode}, patches = ${newPatches.length}`);
+        
         if (hasDestructiveChange && autoMode) {
           addLogMessage("error", "🛑 **Veszélyes módosítás blokkolva!** A javaslat túl nagy része a fájlnak. Ellenőrizd kézzel!");
           setSuggestedPatches((prev) => [...prev, ...newPatches]);
         } else if (autoMode) {
-          // AUTO MÓD: AUTOMATIKUS alkalmazás MINDEN fájlra
+          // ═══════════════════════════════════════════════════════
+          // AUTO MÓD: Automatikus alkalmazás + összefoglaló
+          // ═══════════════════════════════════════════════════════
+          addLogMessage("info", `🤖 **AUTO MÓD** - ${newPatches.length} módosítás automatikus alkalmazása...`);
           let appliedCount = 0;
           let failedCount = 0;
           let currentEditorCode = code;
@@ -4185,13 +4191,16 @@ React.useEffect(() => {
             }
           }
         } else {
+          // ═══════════════════════════════════════════════════════
           // MANUAL MÓD: Modal ablak megerősítésre
+          // ═══════════════════════════════════════════════════════
+          console.log("[MODE] Manual mode - showing confirmation modal");
           setPendingChange({
             patches: newPatches,
             explanation: replyText.substring(0, 500), // Első 500 karakter magyarázatként
           });
           setShowConfirmModal(true);
-          addLogMessage("info", `🔔 **${newPatches.length} módosítás** vár megerősítésre`);
+          addLogMessage("info", `👆 **MANUAL MÓD** - ${newPatches.length} módosítás vár MEGERŐSÍTÉSRE!`);
         }
       }
       
@@ -4423,8 +4432,15 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
           <button
             type="button"
             className={`auto-mode-toggle ${autoMode ? 'active' : ''}`}
-            onClick={() => setAutoMode(prev => !prev)}
-            title={autoMode ? "Auto mód bekapcsolva - változások automatikusan alkalmazva és mentve" : "Auto mód kikapcsolva"}
+            onClick={() => {
+              const newValue = !autoMode;
+              setAutoMode(newValue);
+              addLogMessage("info", newValue 
+                ? "🤖 **AUTO MÓD BEKAPCSOLVA** - módosítások automatikusan alkalmazva" 
+                : "👆 **MANUAL MÓD BEKAPCSOLVA** - minden módosítás megerősítést igényel"
+              );
+            }}
+            title={autoMode ? "🤖 AUTO MÓD - módosítások automatikusan alkalmazva" : "👆 MANUAL MÓD - megerősítés szükséges"}
           >
             <span className="toggle-switch" />
             <span>⚡ Auto</span>
