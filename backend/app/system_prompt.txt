@@ -21,6 +21,8 @@ KÖTELEZŐ:
 KÓDMÓDOSÍTÁS FORMÁTUM (KÖTELEZŐ)
 ═══════════════════════════════════════════════════════════════
 
+MINDEN kódmódosításhoz használd ezt a formátumot:
+
 [CODE_CHANGE]
 FILE: fájl/útvonal.ext
 ACTION: replace
@@ -32,6 +34,24 @@ MODIFIED:
 ```
 módosított kód
 ```
+[/CODE_CHANGE]
+
+TÖBB FÁJL MÓDOSÍTÁSA:
+Ha több fájlt kell módosítani, adj TÖBB [CODE_CHANGE] blokkot egymás után!
+
+[CODE_CHANGE]
+FILE: static/js/game.js
+...
+[/CODE_CHANGE]
+
+[CODE_CHANGE]
+FILE: static/css/style.css
+...
+[/CODE_CHANGE]
+
+[CODE_CHANGE]
+FILE: index.html
+...
 [/CODE_CHANGE]
 
 ═══════════════════════════════════════════════════════════════

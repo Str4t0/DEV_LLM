@@ -127,6 +127,152 @@ init_memory_db()
 
 
 # ===================================
+# PROJECT FILE STRUCTURE
+# ===================================
+
+# Ignorálandó mappák és fájlok
+IGNORE_DIRS = {
+    'node_modules', '.git', '__pycache__', 'venv', '.venv', 
+    'dist', 'build', '.next', '.cache', 'coverage', '.idea',
+    'backup', '.llm-backups', 'env', '.env'
+}
+
+IGNORE_EXTENSIONS = {
+    '.pyc', '.pyo', '.so', '.dll', '.exe', '.bin',
+    '.jpg', '.jpeg', '.png', '.gif', '.ico', '.svg',
+    '.mp3', '.mp4', '.wav', '.avi', '.mov',
+    '.zip', '.tar', '.gz', '.rar', '.7z',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+    '.woff', '.woff2', '.ttf', '.eot',
+    '.lock', '.log'
+}
+
+CODE_EXTENSIONS = {
+    '.js', '.ts', '.tsx', '.jsx', '.py', '.css', '.html', 
+    '.json', '.txt', '.md', '.yml', '.yaml', '.xml',
+    '.sql', '.sh', '.bat', '.ps1', '.env', '.ini', '.cfg'
+}
+
+
+def get_project_file_structure(project_root: str, max_depth: int = 4) -> Dict:
+    """
+    Rekurzívan felépíti a projekt fájl struktúráját.
+    
+    Returns:
+    {
+        "tree": "ASCII fa reprezentáció",
+        "files": ["fájl1.js", "mappa/fájl2.py", ...],
+        "summary": "X fájl, Y mappa"
+    }
+    """
+    if not project_root or not os.path.isdir(project_root):
+        return {"tree": "", "files": [], "summary": "Nincs projekt"}
+    
+    files = []
+    tree_lines = []
+    
+    def walk_dir(path: str, prefix: str = "", depth: int = 0):
+        if depth > max_depth:
+            return
+        
+        try:
+            entries = sorted(os.listdir(path))
+        except PermissionError:
+            return
+        
+        # Szűrjük az ignorálandó elemeket
+        dirs = []
+        file_list = []
+        
+        for entry in entries:
+            if entry.startswith('.') and entry not in ['.env']:
+                continue
+            
+            full_path = os.path.join(path, entry)
+            
+            if os.path.isdir(full_path):
+                if entry.lower() not in IGNORE_DIRS:
+                    dirs.append(entry)
+            else:
+                ext = os.path.splitext(entry)[1].lower()
+                if ext not in IGNORE_EXTENSIONS:
+                    file_list.append(entry)
+        
+        # Rajzoljuk a fát
+        all_entries = dirs + file_list
+        for i, entry in enumerate(all_entries):
+            is_last = (i == len(all_entries) - 1)
+            connector = "└── " if is_last else "├── "
+            
+            full_path = os.path.join(path, entry)
+            rel_path = os.path.relpath(full_path, project_root).replace('\\', '/')
+            
+            if os.path.isdir(full_path):
+                tree_lines.append(f"{prefix}{connector}📁 {entry}/")
+                next_prefix = prefix + ("    " if is_last else "│   ")
+                walk_dir(full_path, next_prefix, depth + 1)
+            else:
+                ext = os.path.splitext(entry)[1].lower()
+                icon = "📄" if ext in CODE_EXTENSIONS else "📎"
+                tree_lines.append(f"{prefix}{connector}{icon} {entry}")
+                files.append(rel_path)
+    
+    walk_dir(project_root)
+    
+    # Összesítés
+    dir_count = sum(1 for line in tree_lines if "📁" in line)
+    
+    return {
+        "tree": "\n".join(tree_lines),
+        "files": files,
+        "summary": f"{len(files)} fájl, {dir_count} mappa",
+        "code_files": [f for f in files if os.path.splitext(f)[1].lower() in CODE_EXTENSIONS]
+    }
+
+
+def detect_relevant_files_from_message(message: str, project_files: List[str]) -> List[str]:
+    """
+    A user üzenete alapján meghatározza mely fájlok lehetnek relevánsak.
+    """
+    relevant = []
+    message_lower = message.lower()
+    
+    # Kulcsszavak és fájl típusok összekapcsolása
+    keywords_to_files = {
+        'játék': ['game.js', 'game.ts', 'main.js'],
+        'game': ['game.js', 'game.ts', 'main.js'],
+        'stílus': ['style.css', 'styles.css', 'main.css', 'index.css'],
+        'css': ['style.css', 'styles.css', 'main.css'],
+        'html': ['index.html', 'main.html'],
+        'konfig': ['config.js', 'config.json', 'settings.json'],
+        'config': ['config.js', 'config.json', 'settings.json'],
+        'mobil': ['mobile.js', 'mobile_config.js', 'responsive.css'],
+        'mobile': ['mobile.js', 'mobile_config.js'],
+    }
+    
+    # Közvetlen fájlnév említések
+    for file_path in project_files:
+        filename = os.path.basename(file_path).lower()
+        filename_no_ext = os.path.splitext(filename)[0]
+        
+        # Ha a fájlnév szerepel az üzenetben
+        if filename in message_lower or filename_no_ext in message_lower:
+            if file_path not in relevant:
+                relevant.append(file_path)
+    
+    # Kulcsszó alapú keresés
+    for keyword, target_files in keywords_to_files.items():
+        if keyword in message_lower:
+            for target in target_files:
+                for file_path in project_files:
+                    if target.lower() in file_path.lower():
+                        if file_path not in relevant:
+                            relevant.append(file_path)
+    
+    return relevant[:5]  # Max 5 releváns fájl
+
+
+# ===================================
 # @FILE MENTION PARSING
 # ===================================
 
@@ -589,7 +735,8 @@ def build_smart_context(
         "memory_facts": [...],   # Relevant project memory
         "active_files": [...],   # Currently active files in conversation
         "enhanced_history": [...],  # Enhanced chat history
-        "context_summary": "..."  # Summary for system prompt
+        "context_summary": "...",  # Summary for system prompt
+        "project_structure": {...}  # Teljes projekt struktúra
     }
     """
     result = {
@@ -599,7 +746,13 @@ def build_smart_context(
         "active_files": [],
         "enhanced_history": [],
         "context_summary": "",
+        "project_structure": None,
     }
+    
+    # 0. PROJEKT STRUKTÚRA - MINDIG betöltjük!
+    if project_root:
+        result["project_structure"] = get_project_file_structure(project_root)
+        print(f"[CONTEXT] Project structure: {result['project_structure']['summary']}")
     
     # 1. Parse @file mentions (explicit)
     file_mentions = parse_file_mentions(message)
@@ -607,14 +760,32 @@ def build_smart_context(
     # 2. AUTO-DETECT fájlok a szövegben (@ nélkül is!)
     auto_detected = auto_detect_file_mentions(message)
     
+    # 3. INTELLIGENS fájl detektálás kulcsszavak alapján
+    if result["project_structure"]:
+        intelligent_files = detect_relevant_files_from_message(
+            message, 
+            result["project_structure"]["code_files"]
+        )
+        print(f"[CONTEXT] Intelligently detected files: {intelligent_files}")
+    else:
+        intelligent_files = []
+    
     # Kombináljuk - explicit mentions előnyt élveznek
-    all_mentions = file_mentions + [f for f in auto_detected if f not in file_mentions]
+    all_mentions = file_mentions.copy()
+    for f in auto_detected:
+        if f not in all_mentions:
+            all_mentions.append(f)
+    for f in intelligent_files:
+        if f not in all_mentions:
+            all_mentions.append(f)
+    
     result["file_mentions"] = all_mentions
     
     print(f"[CONTEXT] Explicit @mentions: {file_mentions}")
     print(f"[CONTEXT] Auto-detected files: {auto_detected}")
+    print(f"[CONTEXT] All files to load: {all_mentions}")
     
-    # 3. Load mentioned files
+    # 4. Load mentioned files
     if project_root and all_mentions:
         loaded = resolve_and_load_files(project_root, all_mentions)
         result["loaded_files"] = loaded
@@ -707,6 +878,28 @@ def format_memory_facts_for_prompt(facts: List[Dict]) -> str:
     
     for f in facts:
         parts.append(f"- {f['key']}: {f['value']}")
+    
+    return "\n".join(parts)
+
+
+def format_project_structure_for_prompt(structure: Dict) -> str:
+    """Format project structure for inclusion in prompt"""
+    if not structure:
+        return ""
+    
+    parts = [
+        "=" * 60,
+        "📁 PROJEKT FÁJL STRUKTÚRA",
+        "=" * 60,
+        f"Összesen: {structure['summary']}",
+        "",
+        structure["tree"],
+        "",
+        "=" * 60,
+        "Kód fájlok listája (módosíthatók):",
+        ", ".join(structure["code_files"][:30]),  # Max 30 fájl
+        "=" * 60,
+    ]
     
     return "\n".join(parts)
 

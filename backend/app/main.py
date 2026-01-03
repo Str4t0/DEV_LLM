@@ -44,6 +44,7 @@ from .context_manager import (
     build_smart_context,
     format_loaded_files_for_prompt,
     format_memory_facts_for_prompt,
+    format_project_structure_for_prompt,
     parse_file_requests_from_response,
     extract_learned_facts_from_response,
     store_project_fact,
@@ -1443,6 +1444,22 @@ def build_llm_messages(db: Session, payload: schemas.ChatRequest) -> list[dict]:
 
     # 1) Globális rendszerprompt
     messages.append({"role": "system", "content": system_prompt})
+
+    # ========================================
+    # 1.5) PROJEKT STRUKTÚRA - MINDIG BEKERÜL!
+    # ========================================
+    if smart_context and smart_context.get("project_structure"):
+        project_structure_content = format_project_structure_for_prompt(smart_context["project_structure"])
+        messages.append({
+            "role": "system",
+            "content": (
+                "PROJEKT STRUKTÚRA - Ezek a fájlok léteznek a projektben:\n"
+                "Használd ezt a struktúrát, hogy tudd milyen fájlokat módosíthatsz!\n"
+                "Ha több fájlt kell módosítani, adj TÖBB [CODE_CHANGE] blokkot!\n\n"
+                + project_structure_content
+            ),
+        })
+        print(f"[CONTEXT] Project structure included: {smart_context['project_structure']['summary']}")
 
     # ========================================
     # 2) SMART CONTEXT - EXPLICIT FÁJLOK (@file mentions)
