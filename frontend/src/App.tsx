@@ -5927,66 +5927,66 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                 {pendingChange.patches.length > 0 ? '❌ Elutasítás' : '✖ Bezárás'}
               </button>
               {pendingChange.patches.length > 0 && (
-              <button 
-                className="confirm-btn accept"
-                onClick={async () => {
-                  if (!pendingChange) return;
-                  setShowConfirmModal(false);
-                  
-                  // Alkalmazzuk a módosításokat
-                  let appliedCount = 0;
-                  for (const patch of pendingChange.patches) {
-                    try {
-                      const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?path=${encodeURIComponent(patch.filePath)}`);
-                      if (!loadRes.ok) {
-                        addLogMessage("error", `❌ Nem található: ${patch.filePath}`);
-                        continue;
-                      }
-                      const loadData = await loadRes.json();
-                      let fileContent = loadData.content || "";
-                      
-                      if (fileContent.includes(patch.original) || fileContent.includes(patch.original.trim())) {
-                        const searchStr = fileContent.includes(patch.original) ? patch.original : patch.original.trim();
-                        const replaceStr = fileContent.includes(patch.original) ? patch.modified : patch.modified.trim();
-                        fileContent = fileContent.replace(searchStr, replaceStr);
-                        
-                        const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            path: patch.filePath,
-                            content: fileContent,
-                            encoding: "utf-8",
-                          }),
-                        });
-                        
-                        if (saveRes.ok) {
-                          appliedCount++;
-                          addLogMessage("success", `✅ Alkalmazva: ${patch.filePath}`);
-                          
-                          // Frissítsük az editort ha ez a megnyitott fájl
-                          const patchFileName = patch.filePath.split('/').pop()?.toLowerCase();
-                          const currentFileName = selectedFilePath?.split('/').pop()?.toLowerCase();
-                          if (patchFileName === currentFileName) {
-                            setCode(fileContent);
-                          }
+                <button 
+                  className="confirm-btn accept"
+                  onClick={async () => {
+                    if (!pendingChange) return;
+                    setShowConfirmModal(false);
+                    
+                    // Alkalmazzuk a módosításokat
+                    let appliedCount = 0;
+                    for (const patch of pendingChange.patches) {
+                      try {
+                        const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?path=${encodeURIComponent(patch.filePath)}`);
+                        if (!loadRes.ok) {
+                          addLogMessage("error", `❌ Nem található: ${patch.filePath}`);
+                          continue;
                         }
-                      } else {
-                        addLogMessage("warning", `⚠️ Eredeti kód nem található: ${patch.filePath}`);
+                        const loadData = await loadRes.json();
+                        let fileContent = loadData.content || "";
+                        
+                        if (fileContent.includes(patch.original) || fileContent.includes(patch.original.trim())) {
+                          const searchStr = fileContent.includes(patch.original) ? patch.original : patch.original.trim();
+                          const replaceStr = fileContent.includes(patch.original) ? patch.modified : patch.modified.trim();
+                          fileContent = fileContent.replace(searchStr, replaceStr);
+                          
+                          const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              path: patch.filePath,
+                              content: fileContent,
+                              encoding: "utf-8",
+                            }),
+                          });
+                          
+                          if (saveRes.ok) {
+                            appliedCount++;
+                            addLogMessage("success", `✅ Alkalmazva: ${patch.filePath}`);
+                            
+                            // Frissítsük az editort ha ez a megnyitott fájl
+                            const patchFileName = patch.filePath.split('/').pop()?.toLowerCase();
+                            const currentFileName = selectedFilePath?.split('/').pop()?.toLowerCase();
+                            if (patchFileName === currentFileName) {
+                              setCode(fileContent);
+                            }
+                          }
+                        } else {
+                          addLogMessage("warning", `⚠️ Eredeti kód nem található: ${patch.filePath}`);
+                        }
+                      } catch (err) {
+                        addLogMessage("error", `❌ Hiba: ${patch.filePath}`);
                       }
-                    } catch (err) {
-                      addLogMessage("error", `❌ Hiba: ${patch.filePath}`);
                     }
-                  }
-                  
-                  if (appliedCount > 0) {
-                    addLogMessage("success", `🎉 ${appliedCount}/${pendingChange.patches.length} módosítás alkalmazva!`);
-                  }
-                  setPendingChange(null);
-                }}
-              >
-                ✅ Megerősítés
-              </button>
+                    
+                    if (appliedCount > 0) {
+                      addLogMessage("success", `🎉 ${appliedCount}/${pendingChange.patches.length} módosítás alkalmazva!`);
+                    }
+                    setPendingChange(null);
+                  }}
+                >
+                  ✅ Megerősítés
+                </button>
               )}
             </div>
           </div>
