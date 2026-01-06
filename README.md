@@ -1,207 +1,320 @@
-# 🧠 DEV LLM – Local AI-Powered Developer Environment
+# 🧠 DEV LLM – AI-Powered Developer Environment
 
-> **Fejlesztői környezet AI-modellek (LLM-ek) segítségével**  
-> FastAPI + React + OpenAI + Vektoros adatbázis (RAG)
+> **Fejlesztői környezet AI-ügynökkel (Agentic LLM)**  
+> FastAPI + React + OpenAI/Anthropic/Gemini + RAG + Real-time WebSocket
 
 ---
 
 ## 📘 Áttekintés
 
-A **DEV LLM** egy lokális, LLM-alapú fejlesztői környezet, amely képes a **saját kódbázisodat megérteni és feldolgozni**.  
-Segít a kód olvasásában, magyarázatában, refaktorálásában és a fejlesztési folyamat gyorsításában.
+A **DEV LLM** egy lokális, AI-ügynök alapú fejlesztői környezet, amely képes a **saját kódbázisodat megérteni, elemezni és módosítani**.
 
-A rendszer két fő komponensből áll:
+### ✨ Fő jellemzők:
+- 🤖 **Agentic rendszer** - Az AI önállóan olvas, ír és módosít fájlokat
+- 🔄 **Auto/Manual mód** - Automatikus vagy jóváhagyás-alapú műveletek
+- 🎨 **Dark/Light téma** - Cursor IDE-szerű modern megjelenés
+- 📱 **Reszponzív** - Mobilon is használható
+- 🔌 **Multi-LLM** - OpenAI, Anthropic Claude, Google Gemini támogatás
+- 🔍 **RAG** - Vektoros keresés a projekt kódbázisában
 
-- 🐍 **Backend:** Python + FastAPI + SQLAlchemy + OpenAI integráció  
-- ⚛️ **Frontend:** React + TypeScript + Vite  
-- 🧩 **RAG (Retrieval-Augmented Generation):** vektoros keresés a projekt fájljaiban (`vector_store.py`)
+---
+
+## 🏗️ Architektúra
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      FRONTEND (React)                        │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐ │
+│  │ Projekt │  │  Chat   │  │  Kód    │  │ Diff Viewer     │ │
+│  │ Manager │  │ (LLM)   │  │ Editor  │  │ (LCS algoritmus)│ │
+│  └─────────┘  └─────────┘  └─────────┘  └─────────────────┘ │
+└────────────────────────┬────────────────────────────────────┘
+                         │ REST API + WebSocket
+┌────────────────────────┴────────────────────────────────────┐
+│                      BACKEND (FastAPI)                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ Agentic     │  │ RAG Helper  │  │ Token Manager       │  │
+│  │ Tools       │  │ (embeddings)│  │ (budget control)    │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ Model       │  │ WebSocket   │  │ Context Manager     │  │
+│  │ Router      │  │ Sync        │  │ (smart context)     │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## 🚀 Fő funkciók
 
-### 🗂️ Projektkezelés
-- Új projektek létrehozása, szerkesztése, törlése
-- Leírás + gyökérmappa (`root_path`)
-- „Reindex” gomb: újraépíti a vektoros indexet (RAG)
+### 🤖 Agentic AI rendszer
+Az AI-ügynök **önállóan használ eszközöket** a feladatok elvégzésére:
 
-### 📁 Fájlrendszer böngésző
-- Fa-nézetben listázza a projekt gyökérmappáját
-- Fájlok kattintással betölthetők és szerkeszthetők
+| Eszköz | Leírás |
+|--------|--------|
+| `read_file` | Fájl tartalmának olvasása |
+| `apply_edit` | Kód módosítása (old_text → new_text) |
+| `write_file` | Új fájl létrehozása |
+| `delete_file` | Fájl törlése |
+| `create_directory` | Könyvtár létrehozása |
+| `execute_terminal` | Terminal parancs futtatása |
+| `list_files` | Könyvtár tartalmának listázása |
+| `search_codebase` | Kód keresése regex-szel |
 
-### 🧠 LLM Chat (RAG-gal)
-- Chat az LLM-mel az aktuális projekt kontextusában
-- Vektoros keresés a projekt kódbázisában  
-- Az LLM fájlrészleteket kap, így ténylegesen a **projekt kódját elemzi**
-- Kattintható hivatkozások:  
-  `(FILE: backend\app\main.py | chunk #0)` → a megfelelő fájl megnyílik a szerkesztőben
+### 🔄 Auto / Manual mód
 
-### 💬 Chat memória
-- A beszélgetések **projektenként mentődnek** `localStorage`-be  
-- Oldalfrissítés után sem tűnnek el a korábbi üzenetek
+| Mód | Leírás |
+|-----|--------|
+| **Auto** | Az AI automatikusan végrehajtja a módosításokat |
+| **Manual** | Minden művelet jóváhagyást igényel (diff előnézet) |
 
-### 🧱 Kódszerkesztő
-- Forrás- és módosított kód panel
-- Undo/Redo
-- Diff-nézet
-- Projekt-specifikus mentés (`localStorage`)
+### 📊 Diff Viewer
+- **LCS algoritmus** - Pontos változás-detektálás
+- **Zöld/piros kiemelés** - Hozzáadott/törölt sorok
+- **Navigáció** - Előző/Következő változás gombok
+- **Csoportosítás** - Egy fájl = egy oldal
 
-### 📶 Állapotfigyelés
-- „Online / Offline” kijelzés a `/health` endpoint alapján
+### 🎨 Témák
+- **Sötét mód** - Cursor IDE-szerű sötét téma
+- **Világos mód** - Magas kontrasztú világos téma
+- **Automatikus** - A jóváhagyás modal is követi a témát
 
-### 📱 Mobil-nézet támogatás
-- Reszponzív elrendezés: kód / projektek / chat tabok között lehet váltani
+### 💬 Chat funkciók
+- **@fájl** - Fájl hivatkozás autocomplete-tel
+- **Alt+Enter** - Új sor beszúrása
+- **Dátum+idő** - Minden üzenetnél (YYYY.MM.DD HH:MM:SS)
+- **Diff linkek** - Kattintható `[[DIFF:path]]` hivatkozások
+
+### 🔌 Multi-LLM támogatás
+
+| Provider | Modellek |
+|----------|----------|
+| **OpenAI** | GPT-4o, GPT-4o-mini, GPT-4-turbo |
+| **Anthropic** | Claude 3.5 Sonnet, Claude 3 Opus |
+| **Google** | Gemini 1.5 Pro, Gemini 1.5 Flash |
 
 ---
 
-## 🧩 Könyvtárstruktúra
+## 📁 Könyvtárstruktúra
 
-```plaintext
+```
 DEV_LLM/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py          # FastAPI belépési pont + /chat (RAG)
-│   │   ├── database.py      # SQLite + SQLAlchemy
-│   │   ├── models.py        # ORM modellek (Project, stb.)
-│   │   ├── schemas.py       # Pydantic sémák
-│   │   ├── config.py        # OpenAI, CORS, ENV-olvasás
-│   │   └── app.db           # SQLite adatbázis
+│   │   ├── main.py              # FastAPI belépési pont
+│   │   ├── agentic_tools.py     # AI ügynök eszközök
+│   │   ├── model_router.py      # Multi-LLM router
+│   │   ├── token_manager.py     # Token budget kezelés
+│   │   ├── rag_helper.py        # RAG segédfüggvények
+│   │   ├── context_manager.py   # Smart context
+│   │   ├── websocket_manager.py # WebSocket kezelés
+│   │   ├── database.py          # SQLite + SQLAlchemy
+│   │   ├── models.py            # ORM modellek
+│   │   ├── schemas.py           # Pydantic sémák
+│   │   ├── config.py            # Konfiguráció
+│   │   └── system_prompt.txt    # AI rendszer prompt
 │   ├── requirements.txt
-│   └── venv/
+│   └── vector_store.py          # RAG vektoros index
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx          # Fő UI komponens (projektek, chat, szerkesztő)
-│   │   ├── App.css
-│   │   ├── config.ts        # Backend URL ENV-ből
-│   │   ├── main.tsx
-│   │   └── index.css
+│   │   ├── App.tsx              # Fő UI komponens
+│   │   ├── App.css              # Stílusok (dark/light)
+│   │   ├── components/
+│   │   │   ├── LogWindow.tsx    # Log ablak
+│   │   │   ├── LLMSettings.tsx  # LLM beállítások
+│   │   │   ├── ProjectsList.tsx # Projekt lista
+│   │   │   └── ContextMenu.tsx  # Jobb-klikk menü
+│   │   ├── types/
+│   │   │   └── index.ts         # TypeScript típusok
+│   │   ├── utils/
+│   │   │   ├── useWebSocketSync.ts  # WebSocket hook
+│   │   │   ├── fileUtils.ts     # Fájl segédfüggvények
+│   │   │   ├── patchUtils.ts    # Patch segédfüggvények
+│   │   │   └── codeUtils.ts     # Kód segédfüggvények
+│   │   └── config.ts            # Frontend konfiguráció
 │   ├── package.json
 │   └── vite.config.ts
 │
-├── vector_store.py          # Vektoros indexelő + lekérdező
-├── start_dev_env.bat        # Indítja a backend + frontend ablakokat
-├── .env                     # Lokális konfiguráció
-├── .gitignore
+├── start_dev_env.bat            # Windows indító script
+├── .env                         # Környezeti változók
 └── README.md
+```
 
-⚙️ Technológiák
-Komponens	Stack
-Backend	FastAPI · SQLAlchemy · OpenAI · python-dotenv · SQLite
-Frontend	React · TypeScript · Vite · CSS
-RAG	OpenAI Embeddings + Chroma / SQLite tárolás
-Integráció	REST API + CORS + JSON schema
+---
 
-🔑 Konfiguráció
-Backend .env
-env
-Kód másolása
+## ⚙️ Technológiák
+
+| Komponens | Stack |
+|-----------|-------|
+| **Backend** | FastAPI · SQLAlchemy · OpenAI · Anthropic · Google AI · WebSocket |
+| **Frontend** | React 18 · TypeScript · Vite · CSS Variables |
+| **RAG** | OpenAI Embeddings · ChromaDB / SQLite |
+| **Diff** | LCS (Longest Common Subsequence) algoritmus |
+| **Sync** | WebSocket real-time szinkronizáció |
+
+---
+
+## 🔑 Konfiguráció
+
+### Backend `.env`
+
+```env
+# OpenAI
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-4o
 
-# CORS engedélyezett origin-ek
+# Anthropic (opcionális)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Google AI (opcionális)
+GOOGLE_API_KEY=...
+
+# CORS
 FRONTEND_ORIGINS=*
-Frontend .env
-env
 
+# Titkosítás (API kulcsok DB-ben)
+ENCRYPTION_KEY=your-32-byte-key-here
+```
 
-VITE_BACKEND_URL=yourbackendurl
-# vagy lokálisan:
-# VITE_BACKEND_URL=yourlocalurl
+### Frontend `.env`
 
-🧠 RAG – vektoros kontextus
-A vector_store.py feldarabolja a projektfájlokat chunkokra
+```env
+VITE_BACKEND_URL=http://localhost:8000
+```
 
-A chunkok embeddingjei OpenAI Embeddings API-val kerülnek eltárolásra
+---
 
-Kérdés esetén a backend meghívja:
+## 🧩 Telepítés
 
-python
-Kód másolása
-chunks = query_project(project_key, search_text, top_k=5)
-és az eredményeket system üzenetként adja át az LLM-nek.
+### 1️⃣ Klónozás
 
-Ezáltal a modell a projekt saját kódjára válaszol.
-A válaszokban fájl- és chunk-hivatkozásokat látsz, amelyek a frontendben kattinthatók.
-
-🧠 API rövid áttekintés
-Metódus	Útvonal	Leírás
-GET	/health	Egyszerű státuszellenőrzés
-GET	/projects	Projektek listázása
-POST	/projects	Új projekt létrehozása
-PUT	/projects/{id}	Projekt módosítása
-DELETE	/projects/{id}	Projekt törlése
-POST	/projects/{id}/reindex	Kódbázis újraindexelése
-GET	/projects/{id}/files	Fájlfa lekérése
-GET	/projects/{id}/file	Fájl tartalmának lekérése
-POST	/chat	Chat az LLM-mel (RAG integrációval)
-
-🧩 Telepítés
-1 ️⃣ Klónozás
-bash
-Kód másolása
+```bash
 git clone https://github.com/Str4t0/DEV_LLM.git
 cd DEV_LLM
-2 ️⃣ Backend
-bash
-Kód másolása
+```
+
+### 2️⃣ Backend
+
+```bash
 cd backend
 python -m venv venv
-venv\Scripts\activate
+venv\Scripts\activate  # Windows
+# source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-3️ ⃣ Frontend
-bash
-Kód másolása
+```
+
+### 3️⃣ Frontend
+
+```bash
 cd frontend
 npm install
 npm run dev -- --host 0.0.0.0 --port 5173
-4 ️⃣ Egyszerű indítás (Windows)
-bash
-Kód másolása
+```
+
+### 4️⃣ Egyszerű indítás (Windows)
+
+```bash
 start_dev_env.bat
-Ez automatikusan:
+```
 
-aktiválja a virtualenv-et,
+---
 
-elindítja a FastAPI backendet,
+## 🧠 API végpontok
 
-és külön ablakban a React frontendet.
+### Projektek
 
-💾 Mentés és állapotkezelés
-Projektek → SQLite adatbázisban (backend/app/app.db)
+| Metódus | Útvonal | Leírás |
+|---------|---------|--------|
+| GET | `/projects` | Projektek listázása |
+| POST | `/projects` | Új projekt létrehozása |
+| PUT | `/projects/{id}` | Projekt módosítása |
+| DELETE | `/projects/{id}` | Projekt törlése |
+| POST | `/projects/{id}/reindex` | RAG index újraépítése |
+| GET | `/projects/{id}/files` | Fájlfa lekérése |
+| GET | `/projects/{id}/file` | Fájl tartalom lekérése |
+| POST | `/projects/{id}/file` | Fájl mentése |
 
-Vektoros index → külön SQLite DB (vector_store.py)
+### Chat & AI
 
-Forráskód + projected kód → localStorage
+| Metódus | Útvonal | Leírás |
+|---------|---------|--------|
+| POST | `/chat` | Chat az LLM-mel (agentic mód) |
+| POST | `/api/agentic/execute-approved` | Jóváhagyott művelet végrehajtása |
+| GET | `/api/llm-settings` | LLM beállítások lekérése |
+| POST | `/api/llm-settings` | LLM beállítások mentése |
 
-Chat előzmények → projektenként localStorage (projectChat_{id})
+### WebSocket
 
-🧭 Használat röviden
-Indítsd el a környezetet (start_dev_env.bat)
+| Útvonal | Leírás |
+|---------|--------|
+| `/ws/{project_id}` | Real-time szinkronizáció |
 
-Nyisd meg a frontendet:
-👉 http://localhost:5173 vagy http://<IP>:5173
+---
 
-Hozz létre egy projektet, add meg a root_path-ot
+## 🎯 Használat
 
-Nyomd meg a Reindex gombot (vektoros index építése)
+### 1. Projekt létrehozása
+- Add meg a **nevet** és **gyökérmappát**
+- Kattints a **Reindex** gombra (RAG index építés)
 
-Nyisd meg a Chatet és kérdezd meg pl.:
+### 2. Chat használata
+```
+Te: Nézd át a game.js fájlt és javítsd a hibákat
 
-„Hol van a FastAPI belépési pont a projektben?”
+AI: [Olvas, elemez, módosít az apply_edit eszközzel]
+    ✅ 3 fájl módosítva (+15/-8 sor)
+```
 
-Az LLM válaszában fájl-hivatkozásokat fogsz látni, amelyekre kattintva a fájl megnyílik a kódszerkesztőben.
+### 3. Manual mód
+- Kapcsold be a **Manual** módot
+- Az AI jóváhagyást kér minden módosításhoz
+- Lásd az **Eredeti vs Új** diff-et
+- Kattints **Jóváhagyás** vagy **Elutasítás**
 
-🧠 Fejlesztői cél
-A DEV LLM célja, hogy a fejlesztés során:
+### 4. Diff nézet
+- Kattints a fájlnévre a chat-ben
+- Zöld = hozzáadott sorok
+- Piros = törölt sorok
+- Navigálj az **Előző/Következő** gombokkal
 
-megértsd a komplex kódbázisokat,
+---
 
-refaktorálást végezhess az LLM segítségével,
+## 🔧 Fejlesztői tippek
 
-és saját offline / on-premise környezetet biztosítson AI-integrációhoz.
+### Vite cache törlése
+```bash
+cd frontend
+rmdir /s /q node_modules\.vite
+npm run dev
+```
 
-📜 Licenc
+### Backend újraindítás
+```bash
+# Ctrl+C a terminálban, majd:
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Böngésző hard refresh
+```
+Ctrl+Shift+R
+```
+
+---
+
+## 📜 Licenc
+
 MIT License © 2025
+
 Személyes fejlesztői és AI-integrációs projektekhez készült.
+
+---
+
+## 🤝 Közreműködés
+
+Pull request-eket szívesen fogadunk! Kérjük, nyiss egy issue-t a nagyobb változtatások előtt.
+
+---
+
+**Made with ❤️ and 🤖 AI**
