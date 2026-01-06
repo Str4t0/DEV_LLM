@@ -32,7 +32,7 @@ export const setWebSocketEnabled = (enabled: boolean) => {
 
 interface ChatMessage {
   id: number;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   text: string;
 }
 
@@ -60,6 +60,7 @@ interface UseWebSocketSyncReturn {
   joinProject: (projectId: number) => void;
   leaveProject: (projectId: number) => void;
   requestState: () => void;
+  selectProject: (projectId: number | null) => void;  // Projekt váltás értesítés
 }
 
 // Egyedi kliens ID generálása (perzisztens)
@@ -291,6 +292,12 @@ export function useWebSocketSync({
     sendMessage({ type: 'request_state', data: {} });
   }, [sendMessage]);
 
+  // Projekt váltás értesítés - a server per-client projekteket kezel
+  const selectProject = useCallback((projectId: number | null) => {
+    console.log(`[WS] Projekt váltás: ${projectId}`);
+    sendMessage({ type: 'select_project', project_id: projectId, data: {} });
+  }, [sendMessage]);
+
   return {
     isConnected,
     clientId: CLIENT_ID,
@@ -301,5 +308,6 @@ export function useWebSocketSync({
     joinProject,
     leaveProject,
     requestState,
+    selectProject,
   };
 }

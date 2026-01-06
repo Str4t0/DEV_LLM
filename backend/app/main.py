@@ -5,6 +5,16 @@ import time
 import shutil
 import json
 
+# Fix Windows encoding issues - set UTF-8 mode via environment
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONUTF8'] = '1'
+
+# FORCE UNBUFFERED OUTPUT - azonnali log megjelenes!
+os.environ['PYTHONUNBUFFERED'] = '1'
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
 # --- Könyvtár útvonalak ---
 CURRENT_DIR = os.path.dirname(__file__)               # .../backend/app
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)            # .../backend
@@ -14,7 +24,7 @@ ROOT_DIR = os.path.dirname(BACKEND_DIR)               # .../llm_dev_env (projekt
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from pathlib import Path
 
@@ -22,8 +32,10 @@ SYSTEM_PROMPT_PATH = Path(__file__).parent /  "system_prompt.txt"
 SYSTEM_PROMPT = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
 
 
+from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, status, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import atexit
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -53,12 +65,47 @@ from .context_manager import (
     clean_llm_response_for_history,
 )
 
+# WebSocket Manager import (korai import a lifespan-hoz)
+from .websocket_manager import manager as ws_manager
+
+# Token Manager import
+try:
+    from .token_manager import TokenManager, get_token_manager, estimate_file_tokens, RollingSummary
+    HAS_TOKEN_MANAGER = True
+    print("[MAIN] Token manager loaded successfully")
+except ImportError as e:
+    HAS_TOKEN_MANAGER = False
+    print(f"[MAIN] Token manager not available: {e}")
+
+# Model Router import
+try:
+    from .model_router import (
+        get_model_router, route_model, TaskType, get_summary_model,
+        init_dual_agent, get_dual_agent_manager,
+        THINKING_MODEL, WORKER_MODEL
+    )
+    HAS_MODEL_ROUTER = True
+    print("[MAIN] Model router loaded successfully")
+except ImportError as e:
+    HAS_MODEL_ROUTER = False
+    print(f"[MAIN] Model router not available: {e}")
+
 # Mode Manager import
 from .mode_manager import (
     mode_manager,
     get_mode_system_prompt_addition,
     OperationMode,
     ActionType,
+)
+
+# Agentic Tools import
+from .agentic_tools import (
+    AGENTIC_TOOLS,
+    run_agentic_chat,
+    ToolExecutor,
+    AgenticResult,
+    _enforce_context_budget,
+    MAX_CONTEXT_BUDGET,
 )
 
 # =====================================
@@ -125,8 +172,31 @@ else:
 models.Base.metadata.create_all(bind=engine)
 
 # Ha nincs FRONTEND_ORIGINS az env-ben, fallback localhostra
+
+# --- Server state persistence ---
+def save_server_state():
+    """State mentése server leállításakor"""
+    print("[SERVER] State mentese leallitas elott...")
+    ws_manager.save_state()
+    print("[SERVER] State mentve!")
+
+# Lifespan context manager - startup és shutdown kezelése
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("[SERVER] Server indulas...")
+    
+    # atexit handler a state mentéshez
+    atexit.register(save_server_state)
+    
+    yield  # Server fut
+    
+    # Shutdown
+    print("[SERVER] Server leallitas...")
+    save_server_state()
+
 # --- FastAPI példány létrehozása ---
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 # --- CORS beállítás ---
 # Development módban engedélyezzük az összes origin-t
@@ -164,6 +234,74 @@ def health_check():
 @app.get("/")
 def root():
     return {"message": "LLM Dev Environment backend is running"}
+
+
+# =====================================
+#   TOKEN MANAGEMENT ENDPOINTS
+# =====================================
+
+class TokenCountRequest(BaseModel):
+    text: str
+    model: str = "gpt-4o"
+
+class TokenCountResponse(BaseModel):
+    tokens: int
+    model: str
+    limit: int
+    percentage_used: float
+
+@app.post("/api/tokens/count", response_model=TokenCountResponse)
+def count_tokens(payload: TokenCountRequest):
+    """Szöveg token számának meghatározása"""
+    if not HAS_TOKEN_MANAGER:
+        raise HTTPException(status_code=503, detail="Token manager not available")
+    
+    tm = get_token_manager(payload.model)
+    tokens = tm.count_tokens(payload.text)
+    
+    return TokenCountResponse(
+        tokens=tokens,
+        model=payload.model,
+        limit=tm.limit,
+        percentage_used=round((tokens / tm.limit) * 100, 2)
+    )
+
+
+class FileTokenInfoRequest(BaseModel):
+    project_id: int
+    file_path: str
+
+class FileTokenInfoResponse(BaseModel):
+    file: str
+    tokens: int
+    lines: int
+    tokens_per_line: float
+    recommendations: List[str]
+    suggested_max_context: int
+
+@app.post("/api/tokens/file-info", response_model=FileTokenInfoResponse)
+def get_file_token_info(payload: FileTokenInfoRequest, db: Session = Depends(get_db)):
+    """Fájl token információ lekérése"""
+    if not HAS_TOKEN_MANAGER:
+        raise HTTPException(status_code=503, detail="Token manager not available")
+    
+    project = db.query(models.Project).filter(models.Project.id == payload.project_id).first()
+    if not project or not project.root_path:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    file_abs = os.path.join(project.root_path, payload.file_path)
+    if not os.path.isfile(file_abs):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        with open(file_abs, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading file: {e}")
+    
+    info = estimate_file_tokens(payload.file_path, content)
+    
+    return FileTokenInfoResponse(**info)
 
 
 # =====================================
@@ -614,7 +752,13 @@ def save_project_file(
         try:
             shutil.copy2(target_abs, backup_full_path)
             backup_path = backup_full_path
-            print(f"[BACKUP] Létrehozva: {backup_full_path}")
+            
+            # META FÁJL - eredeti relatív útvonal mentése a visszaállításhoz!
+            meta_path = backup_full_path + ".meta"
+            with open(meta_path, "w", encoding="utf-8") as mf:
+                mf.write(payload.rel_path)
+            
+            print(f"[BACKUP] Létrehozva: {backup_full_path} + .meta ({payload.rel_path})")
         except Exception as e:
             print(f"[BACKUP] Hiba: {e}")
             # Folytatjuk a mentést akkor is ha a backup nem sikerült
@@ -740,9 +884,19 @@ def list_project_backups(
                 except ValueError:
                     formatted = timestamp_str
                 
+                # Próbáljuk betölteni a meta fájlt az eredeti útvonalhoz
+                meta_path = full_path + ".meta"
+                display_name = original_name
+                if os.path.isfile(meta_path):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as mf:
+                            display_name = mf.read().strip()
+                    except Exception:
+                        pass
+                
                 backups.append(BackupFile(
                     filename=filename,
-                    original_name=original_name,
+                    original_name=display_name,  # Teljes útvonal ha van meta
                     timestamp=timestamp_str,
                     timestamp_formatted=formatted,
                     size_bytes=os.path.getsize(full_path),
@@ -969,13 +1123,36 @@ def restore_backup(
         except Exception as e:
             print(f"[RESTORE] Meta fájl olvasási hiba: {e}")
     
-    # Target path in the project
+    # Ha nincs meta fájl, keressük meg a fájlt a projektben
     root_abs = os.path.abspath(project.root_path)
+    if not original_rel_path:
+        print(f"[RESTORE] Nincs meta fájl, keresés a projektben: {original_name}")
+        # Keressük meg a fájlt a projekt struktúrában
+        for dirpath, dirnames, filenames in os.walk(root_abs):
+            # Kihagyjuk a node_modules, .git, backup, stb. mappákat
+            dirnames[:] = [d for d in dirnames if d not in ['node_modules', '.git', '__pycache__', 'backup', 'venv', 'dist', 'build']]
+            
+            if original_name in filenames:
+                found_path = os.path.join(dirpath, original_name)
+                original_rel_path = os.path.relpath(found_path, root_abs).replace("\\", "/")
+                print(f"[RESTORE] Fájl megtalálva: {original_rel_path}")
+                
+                # Mentsük el a meta fájlt a jövőbeli visszaállításokhoz
+                try:
+                    with open(meta_file_path, "w", encoding="utf-8") as mf:
+                        mf.write(original_rel_path)
+                    print(f"[RESTORE] Meta fájl létrehozva utólag: {original_rel_path}")
+                except Exception as e:
+                    print(f"[RESTORE] Meta fájl mentési hiba: {e}")
+                break
+    
+    # Target path in the project
     if original_rel_path:
         target_abs = os.path.join(root_abs, original_rel_path)
         original_name = original_rel_path
     else:
         target_abs = os.path.join(root_abs, original_name)
+        print(f"[RESTORE] FIGYELEM: Fájl nem található a projektben, gyökérbe állítjuk: {original_name}")
     
     # Ensure target directory exists
     target_dir = os.path.dirname(target_abs)
@@ -1001,10 +1178,14 @@ def restore_backup(
         shutil.copy2(backup_file_path, target_abs)
         print(f"[RESTORE] Visszaállítva: {backup_file_path} -> {target_abs}")
         
+        # Számítsuk ki a relatív útvonalat a projekt root-hoz képest
+        relative_path = os.path.relpath(target_abs, root_abs).replace("\\", "/")
+        print(f"[RESTORE] Relatív útvonal: {relative_path}")
+        
         return RestoreResponse(
             status="ok",
             message=f"Backup sikeresen visszaállítva: {original_name}",
-            restored_to=original_name,
+            restored_to=relative_path,  # Teljes relatív útvonal visszaadása
             backup_of_current=current_backup_path,
         )
     except Exception as e:
@@ -1149,8 +1330,167 @@ def browse_directories(path: Optional[str] = None):
 # =====================================
 
 client: Optional[OpenAI] = None
+dual_agent = None
+
 if OPENAI_API_KEY:
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=300.0,  # 5 perc - de MI kontrolláljuk a kontextus méretet!
+    )
+    
+    # DUAL-AGENT ARCHITEKTURA INICIALIZALASA
+    if HAS_MODEL_ROUTER:
+        dual_agent = init_dual_agent(client)
+        print(f"[DUAL AGENT] Thinking: {THINKING_MODEL}, Worker: {WORKER_MODEL}")
+
+# =====================================
+#   ROLLING SUMMARY SYSTEM
+# =====================================
+# Per-project rolling summaries - memory efficient context management
+_rolling_summaries: dict[int, dict] = {}  # project_id -> {summary, message_count, last_update}
+_rolling_summary_lock = Lock()
+
+# Konfiguracio - WORKER MODEL (GPT-4o-mini) hasznalata osszefoglalashoz
+ROLLING_SUMMARY_CONFIG = {
+    "summarize_after_n_messages": 10,  # Ennyi üzenet után összefoglal
+    "keep_last_n_messages": 6,         # Utolsó N üzenetet mindig megtartja
+    "max_summary_tokens": 2000,        # Maximum summary méret
+    "summary_model": WORKER_MODEL if HAS_MODEL_ROUTER else "gpt-4o-mini",  # Worker agent
+}
+
+
+def get_rolling_summary(project_id: int) -> dict:
+    """Visszaadja a projekt rolling summary-ját"""
+    with _rolling_summary_lock:
+        if project_id not in _rolling_summaries:
+            _rolling_summaries[project_id] = {
+                "summary": "",
+                "message_count": 0,
+                "last_update": None,
+                "total_messages_summarized": 0,
+            }
+        return _rolling_summaries[project_id]
+
+
+def update_rolling_summary(
+    project_id: int,
+    new_messages: list[dict],
+    force: bool = False
+) -> str:
+    """
+    Frissíti a rolling summary-t ha szükséges.
+    
+    Args:
+        project_id: Projekt ID
+        new_messages: Új üzenetek (user + assistant)
+        force: Ha True, mindenképp újra összefoglal
+    
+    Returns:
+        Az aktuális summary szöveg
+    """
+    global client
+    if not client:
+        return ""
+    
+    with _rolling_summary_lock:
+        state = get_rolling_summary(project_id)
+        state["message_count"] += len(new_messages)
+        
+        config = ROLLING_SUMMARY_CONFIG
+        should_summarize = force or (state["message_count"] >= config["summarize_after_n_messages"])
+        
+        if not should_summarize:
+            return state["summary"]
+        
+        # Összefoglalás készítése
+        try:
+            # Korábbi összefoglaló + új üzenetek szövege
+            conversation_parts = []
+            if state["summary"]:
+                conversation_parts.append(f"KORÁBBI ÖSSZEFOGLALÓ:\n{state['summary']}")
+            
+            for msg in new_messages:
+                role = msg.get("role", "unknown").upper()
+                content = msg.get("content", "")[:1000]  # Max 1000 char / üzenet
+                conversation_parts.append(f"{role}: {content}")
+            
+            conversation_text = "\n\n".join(conversation_parts)
+            
+            summary_prompt = f"""Foglald össze TÖMÖREN az alábbi beszélgetés lényegét, hogy egy AI asszisztens később folytatni tudja a munkát.
+
+FONTOS:
+- Tartsd meg a kulcsfontosságú döntéseket és kontextust
+- Emeld ki a módosított fájlokat és változtatásokat
+- Max 500 szó!
+
+BESZÉLGETÉS:
+{conversation_text}
+
+ÖSSZEFOGLALÓ:"""
+
+            # Használj olcsó modelt a summary-hoz
+            summary_model = config.get("summary_model", "gpt-4o-mini")
+            
+            response = client.chat.completions.create(
+                model=summary_model,
+                messages=[{"role": "user", "content": summary_prompt}],
+                max_tokens=config["max_summary_tokens"],
+                temperature=0.3,  # Alacsony kreativitás - pontosság fontos
+            )
+            
+            new_summary = response.choices[0].message.content or ""
+            
+            # Frissítjük az állapotot
+            state["summary"] = new_summary
+            state["total_messages_summarized"] += state["message_count"]
+            state["message_count"] = 0
+            state["last_update"] = datetime.now().isoformat()
+            
+            print(f"[ROLLING SUMMARY] Project {project_id}: Összefoglalva {state['total_messages_summarized']} üzenet, summary: {len(new_summary)} chars")
+            
+            return new_summary
+            
+        except Exception as e:
+            print(f"[ROLLING SUMMARY] Hiba: {e}")
+            return state["summary"]
+
+
+def get_optimized_history(
+    project_id: int,
+    full_history: list[dict],
+    token_budget: int = 4000
+) -> tuple[str, list[dict]]:
+    """
+    Visszaadja az optimalizált history-t: summary + utolsó N üzenet.
+    
+    Returns:
+        (summary_text, recent_messages)
+    """
+    config = ROLLING_SUMMARY_CONFIG
+    keep_last = config["keep_last_n_messages"]
+    
+    # Mindig megtartjuk az utolsó N üzenetet
+    recent_messages = full_history[-keep_last:] if len(full_history) >= keep_last else full_history
+    
+    # Ha elég rövid a history, nem kell summary
+    if len(full_history) <= keep_last + 4:
+        return "", recent_messages
+    
+    # Lekérjük az összefoglalót
+    state = get_rolling_summary(project_id)
+    summary = state.get("summary", "")
+    
+    # Ha van összefoglaló, használjuk
+    if summary:
+        return summary, recent_messages
+    
+    # Ha nincs összefoglaló és sok üzenet van, készítünk egyet
+    if len(full_history) > keep_last + 4:
+        older_messages = full_history[:-keep_last]
+        summary = update_rolling_summary(project_id, older_messages, force=True)
+    
+    return summary, recent_messages
+
 
 class TerminalExecutionResult(BaseModel):
     command: str
@@ -1170,12 +1510,34 @@ class CodeChangeResult(BaseModel):
     is_valid: bool = True
     validation_error: Optional[str] = None
 
+class ModifiedFileInfo(BaseModel):
+    """Info about a file modified by agentic tools"""
+    path: str
+    action: str = "modified"  # modified, created, deleted
+    lines_added: int = 0
+    lines_deleted: int = 0
+    before_content: Optional[str] = None
+    after_content: Optional[str] = None
+
+
+class PendingPermission(BaseModel):
+    """Permission request for dangerous operations"""
+    tool_call_id: str
+    tool_name: str
+    permission_type: str  # "terminal", "delete", "create", "modify"
+    details: Dict[str, Any]
+    arguments: Dict[str, Any]
+
 class ChatResponse(BaseModel):
     reply: str
     terminal_results: Optional[List[TerminalExecutionResult]] = None
-    code_changes: Optional[List[CodeChangeResult]] = None  # Strukturált kódmódosítások
+    code_changes: Optional[List[CodeChangeResult]] = None  # Strukturált kódmódosítások (legacy)
+    modified_files: Optional[List[ModifiedFileInfo]] = None  # Agentic mode: mely fájlok módosultak
     had_errors: bool = False
     retry_attempted: bool = False
+    tool_calls_count: int = 0  # Agentic mode: hány tool hívás történt
+    agentic_mode_used: bool = False  # Jelzi hogy agentic mode volt-e
+    pending_permissions: Optional[List[PendingPermission]] = None  # Jóváhagyásra váró műveletek
 
 
 def build_llm_messages(db: Session, payload: schemas.ChatRequest) -> list[dict]:
@@ -1245,8 +1607,8 @@ def build_llm_messages(db: Session, payload: schemas.ChatRequest) -> list[dict]:
             )
 
     # --- KRITIKUS: Az aktív fájl TELJES tartalma ---
-    # Ez a legfontosabb kontextus - az LLM-nek látnia kell az egész fájlt!
-    MAX_ACTIVE_FILE = 50000  # 50KB - ez elég nagy fájlokhoz is
+    # GYORS mód: kisebb context = gyorsabb válasz
+    MAX_ACTIVE_FILE = 10000  # 10KB - nagy fájlokhoz használj @fájlnév mention-t
     
     if payload.source_code:
         source_len = len(payload.source_code)
@@ -1455,7 +1817,7 @@ def build_llm_messages(db: Session, payload: schemas.ChatRequest) -> list[dict]:
             "content": (
                 "PROJEKT STRUKTÚRA - Ezek a fájlok léteznek a projektben:\n"
                 "Használd ezt a struktúrát, hogy tudd milyen fájlokat módosíthatsz!\n"
-                "Ha több fájlt kell módosítani, adj TÖBB [CODE_CHANGE] blokkot!\n\n"
+                "Ha több fájlt kell módosítani, hívd meg az apply_edit() tool-t többször!\n\n"
                 + project_structure_content
             ),
         })
@@ -1546,34 +1908,78 @@ def build_llm_messages(db: Session, payload: schemas.ChatRequest) -> list[dict]:
         })
 
     # ========================================
-    # 6) Chat előzmények - MEGNÖVELT LIMIT
+    # 6) Chat előzmények - ROLLING SUMMARY RENDSZER
     # ========================================
-    # Régi: max 8 üzenet, 1200 char
-    # Új: max 25 üzenet, 3000 char (a context_manager-ből)
-    if smart_context and smart_context.get("enhanced_history"):
+    # Token-hatékony kontextus kezelés:
+    # - Régi üzenetek → összefoglaló (~500-1000 token)
+    # - Utolsó 6 üzenet → teljes tartalom
+    # Így mindig ~2-5k token marad a history-ra
+    
+    hist = getattr(payload, "history", None) or []
+    
+    # Konvertáljuk a history-t dict formátumra
+    history_dicts = []
+    for h in hist:
+        role = getattr(h, "role", None) or (h.get("role") if isinstance(h, dict) else None)
+        text = getattr(h, "text", None) or (h.get("text") if isinstance(h, dict) else None)
+        if role and text:
+            history_dicts.append({"role": role, "content": text})
+    
+    # Rolling summary használata ha van project
+    # TEMPORARILY DISABLED - debug
+    if False and payload.project_id and len(history_dicts) > 0:
+        summary_text, recent_messages = get_optimized_history(
+            project_id=payload.project_id,
+            full_history=history_dicts,
+            token_budget=4000  # Max 4k token a history-ra
+        )
+        
+        # Ha van összefoglaló, hozzáadjuk system üzenetként
+        if summary_text:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "📋 KORÁBBI BESZÉLGETÉS ÖSSZEFOGLALÓJA:\n"
+                    f"{summary_text}\n\n"
+                    "A fenti összefoglaló tartalmazza a korábbi beszélgetés lényegét. "
+                    "Az utolsó néhány üzenet teljes tartalma alább következik."
+                )
+            })
+            print(f"[ROLLING SUMMARY] Összefoglaló használva: {len(summary_text)} chars")
+        
+        # Az utolsó N üzenetet teljes formában hozzáadjuk
+        for h in recent_messages:
+            content = h.get("content", "")
+            if len(content) > MAX_HISTORY_CHARS_PER_MSG:
+                content = content[:MAX_HISTORY_CHARS_PER_MSG] + " ... [csonkolva]"
+            messages.append({"role": h["role"], "content": content})
+        
+        print(f"[HISTORY] {len(history_dicts)} üzenetből: summary={'van' if summary_text else 'nincs'}, recent={len(recent_messages)}")
+    
+    elif smart_context and smart_context.get("enhanced_history"):
+        # Fallback smart context-re
         for h in smart_context["enhanced_history"]:
             if h.get("role") and h.get("content"):
                 messages.append({"role": h["role"], "content": h["content"]})
     else:
-        # Fallback régi logikára, de megnövelt limitekkel
-        hist = getattr(payload, "history", None) or []
-        for h in hist[-MAX_HISTORY_MESSAGES:]:
-            role = getattr(h, "role", None) or (h.get("role") if isinstance(h, dict) else None)
-            text = getattr(h, "text", None) or (h.get("text") if isinstance(h, dict) else None)
-            if not role or not text:
-                continue
-            if len(text) > MAX_HISTORY_CHARS_PER_MSG:
-                text = text[:MAX_HISTORY_CHARS_PER_MSG] + " ... [csonkolva]"
-            messages.append({"role": role, "content": text})
+        # Végső fallback: egyszerű history limit
+        for h in history_dicts[-MAX_HISTORY_MESSAGES:]:
+            content = h.get("content", "")
+            if len(content) > MAX_HISTORY_CHARS_PER_MSG:
+                content = content[:MAX_HISTORY_CHARS_PER_MSG] + " ... [csonkolva]"
+            messages.append({"role": h["role"], "content": content})
 
     # ========================================
     # 7) Az AKTUÁLIS user üzenet a végére
     # ========================================
     messages.append({"role": "user", "content": user_text})
 
-    # Debug: teljes kontextus mérete
+    # ========================================
+    # DEBUG: Kontextus méret (simplified)
+    # ========================================
     total_chars = sum(len(m.get("content", "")) for m in messages)
-    print(f"[CONTEXT] Total context size: {total_chars} chars, {len(messages)} messages")
+    estimated_tokens = total_chars // 4
+    print(f"[CONTEXT] ~{estimated_tokens:,} token, {total_chars:,} chars, {len(messages)} messages")
 
     return messages
 
@@ -1584,8 +1990,8 @@ def chat_with_llm(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     LLM chat endpoint.
 
     Támogatja:
-    - auto_mode: Ha True, az LLM automatikusan hajt végre műveleteket
-    - agentic_mode: Ha True, többlépéses agentic végrehajtás
+    - auto_mode: Ha True, AGENTIC MÓD - az LLM tool calling-gel olvassa/írja a fájlokat
+    - agentic_mode: Ha True, szintén agentic mód (legacy flag)
     """
     if client is None:
         raise HTTPException(
@@ -1595,18 +2001,202 @@ def chat_with_llm(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
 
     messages = build_llm_messages(db, payload)
     
-    # Mode információ hozzáadása a system prompt-hoz - ÚJ MODE MANAGER
-    mode_instruction = get_mode_system_prompt_addition(
-        auto_mode=payload.auto_mode,
-        agentic_mode=payload.agentic_mode
-    )
-    
     # Effektív mód meghatározása
     effective_mode = mode_manager.get_effective_mode(
         auto_mode=payload.auto_mode,
         agentic_mode=payload.agentic_mode
     )
-    print(f"[MODE] Effective mode: {effective_mode.value}")
+    print(f"[MODE] Effective mode: {effective_mode.value}", flush=True)
+    
+    # ============================================
+    # AGENTIC MODE: Tool calling megközelítés
+    # MINDIG agentic módot használunk - manual módban is!
+    # A különbség: manual módban minden írás jóváhagyást kér
+    # ============================================
+    use_agentic = True  # Mindig agentic!
+    
+    if use_agentic:
+        print("[AGENTIC] Agentic mode activated - LLM will use tools to read/write files")
+        
+        # Projekt root path meghatározása
+        project_root = None
+        if payload.project_id:
+            project = db.query(models.Project).filter(models.Project.id == payload.project_id).first()
+            if project and project.root_path:
+                project_root = project.root_path
+                print(f"[AGENTIC] Project root: {project_root}")
+        
+        if not project_root:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Agentic mode requires a valid project with root_path",
+            )
+        
+        # System prompt kiegészítése agentic instrukciókkal
+        agentic_system_addition = """
+
+## ⚠️⚠️⚠️ CRITICAL: AGENTIC EXECUTION MODE ⚠️⚠️⚠️
+
+YOU ARE AN AUTONOMOUS AGENT. You MUST EXECUTE actions, not describe them!
+
+### YOUR ONLY WAY TO MODIFY FILES IS THROUGH TOOLS!
+- Text responses describing code changes are USELESS and IGNORED
+- [CODE_CHANGE] blocks are DEPRECATED and IGNORED
+- You MUST call apply_edit() or write_file() to actually change files!
+
+### TOOLS YOU MUST USE:
+1. **get_file_info(path)** - Check file size FIRST! See if chunked reading is needed.
+2. **read_file(path, start_line, end_line)** - Read file or chunk. Use line ranges for large files!
+3. **apply_edit(path, old_text, new_text)** - Change specific text. old_text must be EXACT!
+4. **continue_task(message)** - Signal you're done with a chunk and continue to next.
+
+### ⛔ CRITICAL RULES:
+- NEVER use write_file on existing files - it TRUNCATES!
+- For large files (>500 lines): work in CHUNKS of 300-500 lines
+- ALWAYS use apply_edit() for modifications (can call many times)
+
+### 📦 CHUNKED WORKFLOW FOR LARGE FILES:
+```
+1. get_file_info("game.js") → "3700 lines"
+2. read_file("game.js", start_line=1, end_line=500)
+3. apply_edit(...) apply_edit(...) apply_edit(...) - fix that chunk
+4. continue_task("Done lines 1-500, continuing...")
+5. read_file("game.js", start_line=501, end_line=1000)
+6. apply_edit(...) apply_edit(...) - fix that chunk
+7. continue_task("Done lines 501-1000, continuing...")
+... repeat until done ...
+```
+
+### MANDATORY EXECUTION PATTERN:
+```
+Step 1: read_file("path/to/file")
+Step 2: apply_edit("path/to/file", "exact old text", "new text")
+Step 3: apply_edit("path/to/file", "another old text", "another new")
+... repeat apply_edit for each change ...
+Step N: Respond with summary "Done! Modified X lines."
+```
+
+### ❌ WRONG (will be ignored):
+"I would change X to Y" - NO! Call apply_edit!
+"Here's the modified code:" - NO! Call write_file!
+[CODE_CHANGE] blocks - NO! Use tools!
+
+### ✅ CORRECT:
+1. Call read_file() first
+2. Call apply_edit() for EACH change (you can call it many times!)
+3. Only after ALL edits are done, write a short summary
+
+### IMPORTANT FOR apply_edit:
+- old_text must be EXACTLY as it appears in the file (from read_file output)
+- Copy-paste the exact text, including whitespace and newlines
+- Make small, focused edits - one comment at a time if needed
+
+NOW EXECUTE THE USER'S REQUEST USING TOOLS!
+"""
+        
+        if messages and messages[0]["role"] == "system":
+            messages[0]["content"] += agentic_system_addition
+        
+        # DUAL-AGENT: Thinking model hasznalata az agentic feladatokhoz
+        agentic_model = THINKING_MODEL if HAS_MODEL_ROUTER else OPENAI_MODEL
+        print(f"[DUAL AGENT] Using thinking model: {agentic_model}", flush=True)
+        
+        # KONTEXTUS BUDGET ELLENORZES - MIELOTT elkuldenek az LLM-nek
+        if HAS_TOKEN_MANAGER:
+            try:
+                from .token_manager import get_token_manager
+                tm = get_token_manager(agentic_model)
+                initial_tokens = tm.count_messages_tokens(messages)
+                print(f"[BUDGET] Initial context: {initial_tokens} tokens (limit: {MAX_CONTEXT_BUDGET})", flush=True)
+                
+                if initial_tokens > MAX_CONTEXT_BUDGET:
+                    print(f"[BUDGET] Context too large! Enforcing budget...", flush=True)
+                    messages = _enforce_context_budget(messages, tm, MAX_CONTEXT_BUDGET)
+                    final_tokens = tm.count_messages_tokens(messages)
+                    print(f"[BUDGET] Reduced to: {final_tokens} tokens", flush=True)
+            except Exception as e:
+                print(f"[BUDGET] Token counting error (continuing anyway): {e}", flush=True)
+        
+        try:
+            agentic_result = run_agentic_chat(
+                client=client,
+                model=agentic_model,  # GPT-4o for thinking
+                messages=messages,
+                project_root=project_root,
+                max_iterations=8,  # Gyorsabb válaszok - max 8 iteráció
+                auto_mode=payload.auto_mode,  # Manual módban minden írás jóváhagyást kér!
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Agentic execution failed: {e}",
+            )
+        
+        if not agentic_result.success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Agentic execution error: {agentic_result.error}",
+            )
+        
+        # Format modified files info - MINDEN mezővel!
+        modified_files_info = [
+            ModifiedFileInfo(
+                path=f["path"], 
+                action=f.get("action", "modified"),
+                lines_added=f.get("lines_added", 0),
+                lines_deleted=f.get("lines_deleted", 0),
+                before_content=f.get("before_content"),
+                after_content=f.get("after_content")
+            )
+            for f in agentic_result.modified_files
+        ]
+        
+        # Részletes log
+        total_added = sum(f.get("lines_added", 0) for f in agentic_result.modified_files)
+        total_deleted = sum(f.get("lines_deleted", 0) for f in agentic_result.modified_files)
+        print(f"[AGENTIC] Completed with {agentic_result.tool_calls_count} tool calls, {len(modified_files_info)} files modified (+{total_added}/-{total_deleted} lines)")
+        
+        # Pending permissions konvertálása
+        pending_perms = None
+        if agentic_result.pending_permissions:
+            pending_perms = [
+                PendingPermission(
+                    tool_call_id=p["tool_call_id"],
+                    tool_name=p["tool_name"],
+                    permission_type=p["permission_type"],
+                    details=p["details"],
+                    arguments=p["arguments"],
+                )
+                for p in agentic_result.pending_permissions
+            ]
+            print(f"[AGENTIC] {len(pending_perms)} pending permission(s)")
+        
+        # ========================================
+        # Rolling Summary frissítése - AGENTIC
+        # ========================================
+        # DISABLED - causes blocking LLM call
+        # TODO: Make this async/background task
+        print(f"[AGENTIC] Returning response to client...")
+        
+        return ChatResponse(
+            reply=agentic_result.response,
+            modified_files=modified_files_info,
+            tool_calls_count=agentic_result.tool_calls_count,
+            agentic_mode_used=True,
+            had_errors=False,
+            pending_permissions=pending_perms,
+        )
+    
+    # ============================================
+    # LEGACY MODE: Hagyományos [CODE_CHANGE] blokkok
+    # ============================================
+    print("[LEGACY] Using traditional mode with [CODE_CHANGE] blocks")
+    
+    # Mode információ hozzáadása a system prompt-hoz
+    mode_instruction = get_mode_system_prompt_addition(
+        auto_mode=payload.auto_mode,
+        agentic_mode=payload.agentic_mode
+    )
     
     # System message módosítása
     if messages and messages[0]["role"] == "system":
@@ -1766,6 +2356,13 @@ def chat_with_llm(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"[CODE_CHANGES] Parse error: {e}")
     
+    # ========================================
+    # Rolling Summary frissítése - LEGACY
+    # ========================================
+    # DISABLED - causes blocking LLM call
+    # TODO: Make this async/background task
+    print(f"[LEGACY] Returning response to client...")
+    
     return ChatResponse(
         reply=reply,
         terminal_results=[
@@ -1778,8 +2375,11 @@ def chat_with_llm(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
             ) for r in terminal_results
         ] if 'terminal_results' in dir() and terminal_results else None,
         code_changes=code_changes_list,
+        modified_files=None,  # Legacy mode doesn't use this
         had_errors=not all_succeeded if 'all_succeeded' in dir() else False,
-        retry_attempted='retry_reply' in dir()
+        retry_attempted='retry_reply' in dir(),
+        tool_calls_count=0,
+        agentic_mode_used=False,
     )
 
 
@@ -1826,6 +2426,387 @@ def clear_all_pending_actions():
     """Összes függőben lévő művelet törlése"""
     mode_manager.clear_pending_actions()
     return {"status": "ok", "message": "Minden függőben lévő művelet törölve"}
+
+
+# =====================================
+#   AGENTIC TOOL PERMISSION EXECUTION
+# =====================================
+
+class ExecuteToolRequest(BaseModel):
+    """Request to execute an approved tool"""
+    project_id: int
+    tool_name: str
+    permission_type: str  # "terminal", "delete", "write", "edit", "create_directory"
+    arguments: Dict[str, Any]
+
+class FileModificationInfo(BaseModel):
+    path: str
+    action: str
+    lines_added: int = 0
+    lines_deleted: int = 0
+    before_content: Optional[str] = None
+    after_content: Optional[str] = None
+
+class ExecuteToolResponse(BaseModel):
+    success: bool
+    result: str
+    error: Optional[str] = None
+    file_modification: Optional[FileModificationInfo] = None
+
+@app.post("/api/agentic/execute-approved", response_model=ExecuteToolResponse)
+def execute_approved_tool(request: ExecuteToolRequest, db: Session = Depends(get_db)):
+    """
+    Execute a previously approved agentic tool.
+    This is called after the user approves a permission request.
+    """
+    from .agentic_tools import ToolExecutor
+    
+    # Get project
+    project = db.query(models.Project).filter(models.Project.id == request.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Projekt nem található")
+    
+    if not project.root_path:
+        raise HTTPException(status_code=400, detail="Nincs beállítva root_path")
+    
+    executor = ToolExecutor(project.root_path)
+    
+    try:
+        if request.permission_type == "terminal":
+            # Execute terminal command
+            result = executor.execute_terminal_approved(
+                command=request.arguments.get("command", ""),
+                working_directory=request.arguments.get("working_directory", project.root_path),
+                timeout=request.arguments.get("timeout", 30)
+            )
+        elif request.permission_type == "delete":
+            # Delete file
+            result = executor.delete_file_approved(
+                path=request.arguments.get("path", "")
+            )
+        elif request.permission_type == "write":
+            # Write file (manual mode)
+            result = executor.write_file_approved(
+                path=request.arguments.get("path", ""),
+                content=request.arguments.get("content", "")
+            )
+        elif request.permission_type == "edit":
+            # Apply edit (manual mode)
+            result = executor.apply_edit_approved(
+                path=request.arguments.get("path", ""),
+                old_text=request.arguments.get("old_text", ""),
+                new_text=request.arguments.get("new_text", ""),
+                expected_file_hash=request.arguments.get("file_hash")  # Fájl frissesség ellenőrzéshez
+            )
+        elif request.permission_type == "create_directory":
+            # Create directory (manual mode)
+            result = executor.create_directory_approved(
+                path=request.arguments.get("path", "")
+            )
+        else:
+            return ExecuteToolResponse(
+                success=False,
+                result="",
+                error=f"Unknown permission type: {request.permission_type}"
+            )
+        
+        # Ha volt fájl módosítás, adjuk vissza a részleteket
+        file_mod_info = None
+        if result.file_modifications and len(result.file_modifications) > 0:
+            mod = result.file_modifications[0]
+            file_mod_info = FileModificationInfo(
+                path=mod.path,
+                action=mod.action,
+                lines_added=mod.lines_added,
+                lines_deleted=mod.lines_deleted,
+                before_content=mod.before_content,
+                after_content=mod.after_content
+            )
+        
+        return ExecuteToolResponse(
+            success=result.success,
+            result=result.result,
+            error=result.error,
+            file_modification=file_mod_info
+        )
+        
+    except Exception as e:
+        return ExecuteToolResponse(
+            success=False,
+            result="",
+            error=str(e)
+        )
+
+
+# =====================================
+#   AGENTIC ANALYSIS ENDPOINTS
+# =====================================
+
+class AgenticAnalysisRequest(BaseModel):
+    project_id: int
+    file_path: Optional[str] = None  # Opcionális - ha nincs, projekt szintű elemzés
+    analysis_type: str  # "suggest" | "validate" | "validate_and_fix" | "refactor"
+    scope: str = "file"  # "file" = aktuális fájl, "project" = teljes projekt
+    auto_mode: bool = True  # AUTO mód = automatikusan alkalmazza a javításokat
+    additional_context: Optional[str] = None
+
+
+class AgenticAnalysisResponse(BaseModel):
+    success: bool
+    analysis: str
+    suggestions: Optional[List[dict]] = None
+    modified_files: Optional[List[dict]] = None
+    pending_permissions: Optional[List[dict]] = None  # MANUAL módban - függőben lévő jóváhagyások
+    tool_calls_count: int = 0
+    errors: Optional[List[str]] = None
+
+
+@app.post("/api/agentic/analyze", response_model=AgenticAnalysisResponse)
+def agentic_analyze(request: AgenticAnalysisRequest, db: Session = Depends(get_db)):
+    """
+    Agentic kódelemzés - Javaslat, Validálás, Refaktorálás
+    
+    Az LLM tool-okkal olvassa és elemzi a kódot.
+    """
+    if client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM nincs konfigurálva",
+        )
+    
+    # Projekt és fájl ellenőrzése
+    project = db.query(models.Project).filter(models.Project.id == request.project_id).first()
+    if not project or not project.root_path:
+        raise HTTPException(status_code=404, detail="Projekt nem található")
+    
+    # Prompt az elemzés típusa és scope alapján
+    is_project_scope = request.scope == "project"
+    target_desc = "the entire project" if is_project_scope else f"the file '{request.file_path}'"
+    
+    # 🌍 NYELV SZABÁLY - Az LLM a felhasználó nyelvén válaszoljon
+    language_instruction = """
+🌍 LANGUAGE RULE: Detect the user's language from their input or context!
+- If the context/comments are in Hungarian → respond in HUNGARIAN
+- If the context/comments are in English → respond in ENGLISH  
+- If the context/comments are in another language → respond in THAT language
+- Match the language of any "Additional context" if provided
+
+"""
+    
+    if is_project_scope:
+        # Projekt szintű elemzés - több fájl
+        analysis_prompts = {
+            "suggest": f"""Analyze {target_desc} and MAKE IMPROVEMENTS.
+
+## ⚠️⚠️⚠️ CRITICAL - YOU MUST EXECUTE, NOT DESCRIBE! ⚠️⚠️⚠️
+
+## MANDATORY WORKFLOW:
+1. Call list_directory("") to see the project structure
+2. Read key files using read_file()
+3. For EVERY issue found → IMMEDIATELY call apply_edit() to fix it!
+4. Keep calling apply_edit() until ALL issues are fixed
+5. Only AFTER all edits → write a SHORT summary
+
+## ⛔ FORBIDDEN:
+- Writing "I would change X to Y" → CALL apply_edit() INSTEAD!
+- Writing code blocks → CALL apply_edit() INSTEAD!
+- Describing changes without executing → USELESS!
+- Using [CODE_CHANGE] → DEPRECATED AND IGNORED!
+
+## ✅ CORRECT PATTERN:
+read_file("file.js") → apply_edit("file.js", "old", "new") → apply_edit(...) → apply_edit(...) → "Done!"
+
+{f"Additional context: {request.additional_context}" if request.additional_context else ""}
+""",
+            "validate": f"""Validate {target_desc} for errors - REPORT ONLY, NO FIXES.
+
+WORKFLOW:
+1. Call list_directory("") to see the project structure  
+2. Read and validate key files using read_file()
+3. Check for: Syntax errors, Missing dependencies, Inconsistent imports, Type mismatches
+4. Provide a detailed validation report with file:line references
+
+⚠️ This is VALIDATE mode - only REPORT issues, do NOT fix them!
+
+{f"Additional context: {request.additional_context}" if request.additional_context else ""}
+""",
+            "refactor": f"""Refactor {target_desc} for better code quality.
+
+## ⚠️⚠️⚠️ CRITICAL - YOU MUST EXECUTE, NOT DESCRIBE! ⚠️⚠️⚠️
+
+## MANDATORY WORKFLOW:
+1. Call list_directory("") to see the project structure
+2. Read files using read_file()
+3. For EVERY improvement → IMMEDIATELY call apply_edit() to apply it!
+4. Keep calling apply_edit() for ALL changes
+5. Only AFTER all edits → write a SHORT summary
+
+## ⛔ FORBIDDEN: Describing changes without calling apply_edit()!
+
+{f"Additional context: {request.additional_context}" if request.additional_context else ""}
+"""
+        }
+    else:
+        # Fájl szintű elemzés - egy fájl
+        analysis_prompts = {
+            "suggest": f"""Analyze {target_desc} and MAKE improvements NOW.
+
+## ⚠️⚠️⚠️ CRITICAL - EXECUTE, DON'T DESCRIBE! ⚠️⚠️⚠️
+
+## MANDATORY WORKFLOW:
+1. Call read_file("{request.file_path}") FIRST
+2. For EVERY issue/improvement found → IMMEDIATELY call apply_edit()!
+3. Keep calling apply_edit() until ALL improvements are made
+4. Only AFTER all edits → write "Done! Fixed X issues."
+
+## ⛔ ABSOLUTELY FORBIDDEN:
+- "I would change X to Y" → NO! CALL apply_edit() NOW!
+- Writing code blocks → NO! CALL apply_edit() NOW!
+- [CODE_CHANGE] blocks → DEPRECATED AND IGNORED!
+- Describing without executing → USELESS AND IGNORED!
+
+## ✅ DO THIS:
+apply_edit("{request.file_path}", "exact old text", "new text")
+
+{f"Additional context: {request.additional_context}" if request.additional_context else ""}
+""",
+            "validate": f"""Validate {target_desc} for syntax errors - REPORT ONLY.
+
+WORKFLOW:
+1. Call read_file("{request.file_path}") to get the current content
+2. Check for: Syntax errors, Missing semicolons, Undefined variables, Type mismatches
+3. List ALL issues with line numbers
+4. DO NOT fix anything - only report!
+
+{f"Additional context: {request.additional_context}" if request.additional_context else ""}
+""",
+            "validate_and_fix": f"""Validate AND FIX {target_desc} - EXECUTE ALL FIXES!
+
+## ⚠️⚠️⚠️ CRITICAL - YOU MUST CALL apply_edit() FOR EVERY FIX! ⚠️⚠️⚠️
+
+## MANDATORY WORKFLOW:
+1. Call read_file("{request.file_path}") FIRST
+2. Find syntax errors, undefined variables, missing semicolons, etc.
+3. For EACH error → IMMEDIATELY call apply_edit() to fix it!
+4. Repeat: find error → apply_edit() → find next → apply_edit() → ...
+5. Only AFTER all fixes → write "Done! Fixed X errors."
+
+## ⛔ ABSOLUTELY FORBIDDEN:
+- Writing "Here's the fix:" → NO! CALL apply_edit()!
+- Code blocks showing changes → NO! CALL apply_edit()!
+- [CODE_CHANGE] → DEPRECATED, WILL BE IGNORED!
+- "I suggest changing" → NO! CALL apply_edit() NOW!
+
+## ✅ CORRECT - DO THIS PATTERN:
+1. read_file("{request.file_path}")
+2. apply_edit("{request.file_path}", "broken code here", "fixed code here")
+3. apply_edit("{request.file_path}", "another issue", "another fix")
+4. ... keep calling apply_edit for each fix ...
+5. "Done! Fixed 5 errors."
+
+## REMEMBER: old_text MUST be EXACT copy from the file!
+
+## EXAMPLE:
+1. read_file("{request.file_path}")
+2. apply_edit("{request.file_path}", "let x;", "let x = null;")
+3. apply_edit("{request.file_path}", "other old", "other new")
+4. "Fixed 2 issues: initialized x, fixed other"
+
+{f"Additional context: {request.additional_context}" if request.additional_context else ""}
+""",
+            "refactor": f"""Refactor {target_desc} for better code quality.
+
+WORKFLOW:
+1. Call read_file("{request.file_path}") to get the current content
+2. Identify refactoring opportunities
+3. Use apply_edit() to apply improvements:
+   - Better naming
+   - Extract functions/methods
+   - Simplify complex logic
+   - Remove duplication
+4. Provide a summary of changes
+
+Work in chunks if the file is large.
+{f"Additional context: {request.additional_context}" if request.additional_context else ""}
+"""
+        }
+    
+    prompt = language_instruction + analysis_prompts.get(request.analysis_type, analysis_prompts["suggest"])
+    
+    # Agentic system prompt
+    agentic_system = """You are a code execution agent with file modification tools.
+
+## 🌍 LANGUAGE RULE:
+- Respond in the SAME LANGUAGE as the user's input!
+- Hungarian input → Hungarian response
+- English input → English response
+
+## ⚠️⚠️⚠️ ABSOLUTE RULE: YOU MUST CALL apply_edit() TO MAKE CHANGES! ⚠️⚠️⚠️
+
+### YOUR TOOLS:
+1. read_file(path) - ALWAYS call this FIRST!
+2. apply_edit(path, old_text, new_text) - Call this for EVERY fix!
+3. get_file_info(path) - Check file size
+
+### EXECUTION PATTERN (YOU MUST FOLLOW THIS):
+```
+read_file("file.js")
+apply_edit("file.js", "exact old text", "new text")
+apply_edit("file.js", "another old", "another new")
+apply_edit("file.js", "third issue", "third fix")
+... call apply_edit as many times as needed ...
+"Kész! 5 hibát javítottam." / "Done! Fixed 5 issues."
+```
+
+### ⛔⛔⛔ ABSOLUTELY FORBIDDEN - YOUR RESPONSE WILL BE REJECTED IF YOU DO THIS: ⛔⛔⛔
+- Writing "I would change X to Y" → WRONG! Call apply_edit() instead!
+- Writing code blocks (```code```) → WRONG! Call apply_edit() instead!
+- Writing [CODE_CHANGE] → DEPRECATED! Call apply_edit() instead!
+- Describing fixes without executing → USELESS! Call apply_edit()!
+- "Here's how to fix it:" → NO! Just call apply_edit()!
+- "Itt a javítás:" → NEM! Hívd meg az apply_edit()-et!
+
+### ✅ THE ONLY CORRECT WAY:
+1. read_file() - read the content
+2. apply_edit() - for EACH fix (you can call this 10+ times if needed!)
+3. Short summary only AFTER all edits are done
+
+### REMEMBER:
+- old_text must be EXACTLY as it appears in the file (copy-paste!)
+- You can call apply_edit() many times in one response
+- NO TEXT DESCRIPTIONS OF CHANGES - ONLY TOOL CALLS!
+"""
+    
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + agentic_system},
+        {"role": "user", "content": prompt}
+    ]
+    
+    try:
+        agentic_result = run_agentic_chat(
+            client=client,
+            model=OPENAI_MODEL,
+            messages=messages,
+            project_root=project.root_path,
+            max_iterations=8,  # Gyorsabb válaszok
+            auto_mode=request.auto_mode  # AUTO mód = automatikusan javít, MANUAL = jóváhagyást kér
+        )
+        
+        return AgenticAnalysisResponse(
+            success=agentic_result.success,
+            analysis=agentic_result.response,
+            modified_files=agentic_result.modified_files,
+            pending_permissions=agentic_result.pending_permissions,  # MANUAL módban - jóváhagyandó változtatások
+            tool_calls_count=agentic_result.tool_calls_count,
+            errors=[agentic_result.error] if agentic_result.error else None
+        )
+        
+    except Exception as e:
+        return AgenticAnalysisResponse(
+            success=False,
+            analysis="",
+            errors=[str(e)]
+        )
 
 
 # =====================================
@@ -2052,7 +3033,7 @@ def list_llm_providers(db: Session = Depends(get_db)):
             api_base_url=p.api_base_url,
             model_name=p.model_name,
             max_tokens=p.max_tokens,
-            temperature=p.temperature,
+            temperature=str(p.temperature) if p.temperature is not None else "0.7",  # DB-ben lehet float
             is_active=p.is_active,
             is_default=p.is_default,
             api_key_set=bool(p.api_key),
@@ -2091,7 +3072,7 @@ def create_llm_provider(provider: schemas.LLMProviderCreate, db: Session = Depen
         api_base_url=db_provider.api_base_url,
         model_name=db_provider.model_name,
         max_tokens=db_provider.max_tokens,
-        temperature=db_provider.temperature,
+        temperature=str(db_provider.temperature) if db_provider.temperature is not None else "0.7",
         is_active=db_provider.is_active,
         is_default=db_provider.is_default,
         api_key_set=bool(db_provider.api_key),
@@ -2140,7 +3121,7 @@ def update_llm_provider(provider_id: int, update: schemas.LLMProviderUpdate, db:
         api_base_url=db_provider.api_base_url,
         model_name=db_provider.model_name,
         max_tokens=db_provider.max_tokens,
-        temperature=db_provider.temperature,
+        temperature=str(db_provider.temperature) if db_provider.temperature is not None else "0.7",
         is_active=db_provider.is_active,
         is_default=db_provider.is_default,
         api_key_set=bool(db_provider.api_key),
@@ -2180,7 +3161,7 @@ def activate_llm_provider(provider_id: int, db: Session = Depends(get_db)):
     if db_provider.provider_type == "openai" and db_provider.api_key:
         decrypted_key = decrypt_api_key(db_provider.api_key)
         if decrypted_key:
-            client = OpenAI(api_key=decrypted_key)
+            client = OpenAI(api_key=decrypted_key, timeout=120.0)
             print(f"[LLM] Aktív provider: {db_provider.name} ({db_provider.model_name})")
     
     return {"status": "ok", "message": f"Provider aktiválva: {db_provider.name}"}
@@ -2268,7 +3249,7 @@ def export_project(project_id: int, mode: str = "light", db: Session = Depends(g
                         if file_size > max_file_size:
                             skipped_size += file_size
                             continue
-                    except:
+                    except (OSError, IOError):
                         continue
                         
                     arc_name = os.path.relpath(file_path, root_path)
@@ -2737,7 +3718,7 @@ async def execute_agentic(request: AgenticRequest, db: Session = Depends(get_db)
 #   WEBSOCKET - REAL-TIME SYNC
 # =====================================
 
-from .websocket_manager import manager as ws_manager
+# ws_manager már importálva fent a lifespan-hoz
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
@@ -2771,4 +3752,180 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 def get_connected_clients():
     """Csatlakozott kliensek száma"""
     return {"count": len(ws_manager.active_connections)}
+
+
+# =====================================
+#   SYNC API - ESZKÖZÖK KÖZÖTTI SZINKRONIZÁCIÓ
+# =====================================
+
+class ChatMessageSync(BaseModel):
+    id: int
+    role: str
+    text: str
+    project_id: Optional[int] = None
+
+
+class SettingSync(BaseModel):
+    key: str
+    value: str
+
+
+@app.get("/api/sync/chat")
+def get_chat_history(
+    project_id: Optional[int] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    Chat history lekérése az adatbázisból.
+    Eszközök közötti szinkronizáláshoz.
+    """
+    query = db.query(models.ChatMessage)
+    
+    if project_id is not None:
+        query = query.filter(models.ChatMessage.project_id == project_id)
+    
+    messages = query.order_by(models.ChatMessage.id.desc()).limit(limit).all()
+    
+    return {
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role,
+                "text": m.content,  # DB-ben 'content', API-ban 'text'
+                "project_id": m.project_id,
+                "created_at": m.created_at.isoformat() if m.created_at else None
+            }
+            for m in reversed(messages)  # Időrendben
+        ],
+        "count": len(messages)
+    }
+
+
+@app.post("/api/sync/chat")
+def save_chat_message(message: ChatMessageSync, db: Session = Depends(get_db)):
+    """
+    Chat üzenet mentése az adatbázisba.
+    Ha már létezik az ID, frissíti, különben létrehozza.
+    """
+    existing = db.query(models.ChatMessage).filter(models.ChatMessage.id == message.id).first()
+    
+    if existing:
+        # Már létezik - skip (nem frissítünk chat üzeneteket)
+        return {"status": "exists", "id": message.id}
+    
+    new_message = models.ChatMessage(
+        id=message.id,
+        role=message.role,
+        content=message.text,  # API-ban 'text', DB-ben 'content'
+        project_id=message.project_id
+    )
+    db.add(new_message)
+    db.commit()
+    
+    # Broadcast WebSocket-en (opcionális, ha fut az event loop)
+    # Megjegyzés: sync endpoint-ból nem garantált az async hívás sikere
+    pass  # WebSocket sync már az add_chat_message-ben történik
+    
+    return {"status": "created", "id": message.id}
+
+
+@app.post("/api/sync/chat/bulk")
+def save_chat_messages_bulk(messages: List[ChatMessageSync], db: Session = Depends(get_db)):
+    """
+    Több chat üzenet mentése egyszerre.
+    """
+    created = 0
+    skipped = 0
+    
+    existing_ids = {
+        m.id for m in db.query(models.ChatMessage.id).filter(
+            models.ChatMessage.id.in_([m.id for m in messages])
+        ).all()
+    }
+    
+    for msg in messages:
+        if msg.id in existing_ids:
+            skipped += 1
+            continue
+        
+        new_message = models.ChatMessage(
+            id=msg.id,
+            role=msg.role,
+            content=msg.text,  # API-ban 'text', DB-ben 'content'
+            project_id=msg.project_id
+        )
+        db.add(new_message)
+        created += 1
+    
+    db.commit()
+    
+    return {"status": "ok", "created": created, "skipped": skipped}
+
+
+@app.delete("/api/sync/chat")
+def clear_chat_history(project_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Chat history törlése."""
+    query = db.query(models.ChatMessage)
+    if project_id is not None:
+        query = query.filter(models.ChatMessage.project_id == project_id)
+    
+    deleted = query.delete()
+    db.commit()
+    
+    return {"status": "ok", "deleted": deleted}
+
+
+@app.get("/api/sync/settings")
+def get_settings(db: Session = Depends(get_db)):
+    """Összes beállítás lekérése."""
+    settings = db.query(models.UserSettings).all()
+    
+    return {
+        "settings": {s.key: s.value for s in settings}
+    }
+
+
+@app.post("/api/sync/settings")
+def save_setting(setting: SettingSync, db: Session = Depends(get_db)):
+    """Beállítás mentése."""
+    existing = db.query(models.UserSettings).filter(models.UserSettings.key == setting.key).first()
+    
+    if existing:
+        existing.value = setting.value
+    else:
+        new_setting = models.UserSettings(key=setting.key, value=setting.value)
+        db.add(new_setting)
+    
+    db.commit()
+    
+    # Broadcast WebSocket-en
+    import asyncio
+    try:
+        asyncio.create_task(ws_manager.broadcast({
+            "type": "setting_change",
+            "key": setting.key,
+            "value": setting.value
+        }))
+    except RuntimeError:
+        pass
+    
+    return {"status": "ok", "key": setting.key}
+
+
+@app.post("/api/sync/settings/bulk")
+def save_settings_bulk(settings: List[SettingSync], db: Session = Depends(get_db)):
+    """Több beállítás mentése egyszerre."""
+    for setting in settings:
+        existing = db.query(models.UserSettings).filter(models.UserSettings.key == setting.key).first()
+        
+        if existing:
+            existing.value = setting.value
+        else:
+            new_setting = models.UserSettings(key=setting.key, value=setting.value)
+            db.add(new_setting)
+    
+    db.commit()
+    
+    return {"status": "ok", "count": len(settings)}
 

@@ -53,13 +53,20 @@ export const LLMSettings: React.FC<LLMSettingsProps> = ({ onClose }) => {
   const loadProviders = useCallback(async () => {
     try {
       setLoading(true);
-      const resp = await fetch(`${BACKEND_URL}/api/llm-providers`);
-      if (!resp.ok) throw new Error('Nem sikerült betölteni');
-      const data = await resp.json();
-      setProviders(data);
       setError(null);
+      console.log('[LLM Settings] Fetching providers from:', `${BACKEND_URL}/api/llm-providers`);
+      const resp = await fetch(`${BACKEND_URL}/api/llm-providers`);
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${errText || 'Nem sikerült betölteni'}`);
+      }
+      const data = await resp.json();
+      console.log('[LLM Settings] Providers loaded:', data);
+      setProviders(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Hiba történt');
+      console.error('[LLM Settings] Error:', err);
+      const message = err instanceof Error ? err.message : 'Hiba történt';
+      setError(`Failed to fetch - Backend: ${BACKEND_URL} - ${message}`);
     } finally {
       setLoading(false);
     }

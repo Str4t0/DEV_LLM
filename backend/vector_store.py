@@ -144,6 +144,14 @@ def chunk_text_by_lines(text: str, max_chars: int = MAX_CHARS_PER_CHUNK):
         yield "".join(chunk)
 
 
+def chunk_text(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> list:
+    """
+    Szöveg darabolása listába (nem generator).
+    A chunk_text_by_lines wrapper-e.
+    """
+    return list(chunk_text_by_lines(text, max_chars))
+
+
 def get_or_create_project(conn, name: str, root_dir: str) -> int:
     cur = conn.cursor()
     cur.execute("SELECT id FROM projects WHERE name = ?", (name,))

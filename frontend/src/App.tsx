@@ -22,22 +22,43 @@ import type {
   Status,
   DiffLine,
   DiffKind,
+  PendingPermission,
+  FileModification,
 } from "./types/index";
-import { detectCodeLanguage, extractFirstCodeBlock, extractAllCodeBlocks } from "./utils/codeUtils";
+import { detectCodeLanguage, extractFirstCodeBlock } from "./utils/codeUtils";
 import { checkPLISyntax, type SyntaxError } from "./utils/pliSyntaxChecker";
 import { 
   sanitizeRawPath, 
   normalizeFileName, 
   findPathInTreeByName, 
   resolveRelPathFromChat,
+  resolvePathFromTree,
   sanitizeFileRef 
 } from "./utils/fileUtils";
+import { 
+  applyPatch, 
+  formatPatchSummary, 
+  formatPatchPreview,
+  generateUniqueId,
+  type PatchResult 
+} from "./utils/patchUtils";
 import { 
   applyEditorSettings, 
   defaultEditorSettings 
 } from "./utils/editorUtils";
 import { useWebSocketSync, setWebSocketEnabled } from "./utils/useWebSocketSync";
 import { ProjectsList } from "./components/ProjectsList";
+
+// Dátum + idő formázás (YYYY.MM.DD HH:MM:SS)
+const formatDateTime = (date: Date = new Date()): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}.${month}.${day} ${hours}:${minutes}:${seconds}`;
+};
 import { SyntaxErrorPanel } from "./components/SyntaxErrorPanel";
 import { LogWindow, type LogMessage } from "./components/LogWindow";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "./components/ContextMenu";
@@ -154,6 +175,16 @@ function loadProjectChat(projectId: number): ChatMessage[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as ChatMessage[];
     if (!Array.isArray(parsed)) return [];
+    
+    // DUPLIKÁLT ID ELLENŐRZÉS - ha van, töröljük az egészet
+    const allIds = parsed.map(m => m.id).filter(id => id != null);
+    const uniqueIds = new Set(allIds);
+    if (allIds.length !== uniqueIds.size) {
+      console.warn(`[CHAT] ⚠️ Duplikált ID-k a ${key}-ban! TÖRÖLVE`);
+      localStorage.removeItem(key);
+      return [];
+    }
+    
     return parsed;
   } catch {
     return [];
@@ -163,27 +194,68 @@ function loadProjectChat(projectId: number): ChatMessage[] {
 function saveProjectChat(projectId: number, messages: ChatMessage[]): void {
   const key = `projectChat_${projectId}`;
   try {
-    localStorage.setItem(key, JSON.stringify(messages));
+    // Mentés előtt is ellenőrizzük a duplikátumokat
+    const uniqueMessages = messages.filter((msg, index, self) => 
+      index === self.findIndex(m => m.id === msg.id)
+    );
+    localStorage.setItem(key, JSON.stringify(uniqueMessages));
   } catch {
     // ignore
   }
 }
 
+// EGYSZERI TISZTÍTÁS - Töröl minden hibás chat adatot
+(function cleanupDuplicateChatData() {
+  const cleanupKey = 'chat_cleanup_v3'; // Verzió frissítve!
+  if (localStorage.getItem(cleanupKey)) return; // Már lefutott
+  
+  console.log('[CLEANUP] ⚠️ Chat adatok TELJES tisztítása v3...');
+  let cleanedCount = 0;
+  
+  // AGRESSZÍV TISZTÍTÁS: Töröljük az ÖSSZES projekt chat-et
+  const allKeys = Object.keys(localStorage);
+  for (const key of allKeys) {
+    if (key.startsWith('projectChat_')) {
+      localStorage.removeItem(key);
+      cleanedCount++;
+      console.log(`[CLEANUP] Törölve: ${key}`);
+    }
+  }
+  
+  // És a globális chat history-t is
+  if (localStorage.getItem('chat_history')) {
+    localStorage.removeItem('chat_history');
+    cleanedCount++;
+    console.log('[CLEANUP] Törölve: chat_history');
+  }
+  
+  // Mentjük a flaget
+  localStorage.setItem(cleanupKey, 'done');
+  
+  // Ha volt törlés, újratöltünk
+  if (cleanedCount > 0) {
+    console.log(`[CLEANUP] ✅ ${cleanedCount} adat törölve. Újratöltés...`);
+    window.location.reload();
+  } else {
+    console.log('[CLEANUP] ✅ Nincs törlendő adat');
+  }
+})();
 
 function loadProjectCode(projectId: number): ProjectCode {
   const key = `projectCode_${projectId}`;
   try {
     const raw = localStorage.getItem(key);
     if (!raw) {
-      return { source: "", projected: "" };
+      return { source: "", projected: "", filePath: undefined };
     }
     const parsed = JSON.parse(raw) as Partial<ProjectCode>;
     return {
       source: parsed.source ?? "",
       projected: parsed.projected ?? "",
+      filePath: parsed.filePath,  // Fájl útvonal visszatöltése!
     };
   } catch {
-    return { source: "", projected: "" };
+    return { source: "", projected: "", filePath: undefined };
   }
 }
 
@@ -205,6 +277,7 @@ interface CodeEditorProps {
   settings: EditorSettings;
   scrollToLine?: number | null;
   filePath?: string | null; // Fájl útvonal a típus meghatározáshoz
+  syntaxHighlightEnabled?: boolean; // Szintaxis színezés ki/be kapcsolása
 }
 
 const CodeEditor: React.FC<CodeEditorProps> = ({
@@ -214,6 +287,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   settings,
   scrollToLine,
   filePath,
+  syntaxHighlightEnabled = true, // Alapértelmezetten be
 }) => {
   // MINDEN HOOK ELŐBB, UTÁNA A CONDITIONÁLIS RETURN!
   const gutterRef = React.useRef<HTMLDivElement | null>(null);
@@ -222,12 +296,16 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   
   // Ellenőrizzük hogy színezhető fájl-e (kiterjesztés VAGY tartalom alapján)
   const shouldHighlight = React.useMemo(() => {
+    // Ha ki van kapcsolva a szintaxis színezés, ne színezzünk
+    if (!syntaxHighlightEnabled) {
+      return false;
+    }
     // Mindig színezzük ha van tartalom
     if (value && value.trim().length > 0) {
       return true;
     }
     return false;
-  }, [value]);
+  }, [value, syntaxHighlightEnabled]);
 
   // PL/I fájl detektálása (speciális kezeléshez)
   const isPLIFile = React.useMemo(() => {
@@ -547,29 +625,54 @@ interface DiffViewProps {
   modified: string;
 }
 
+// LCS (Longest Common Subsequence) alapú diff algoritmus
+// Ez SOKKAL jobb, mint a pozíció-alapú összehasonlítás!
 function computeSimpleDiff(original: string, modified: string): DiffLine[] {
   const a = original.split("\n");
   const b = modified.split("\n");
-  const maxLen = Math.max(a.length, b.length);
-  const result: DiffLine[] = [];
-
-  for (let i = 0; i < maxLen; i++) {
-    const aLine = a[i];
-    const bLine = b[i];
-
-    if (aLine === undefined && bLine !== undefined) {
-      result.push({ type: "added", text: bLine });
-    } else if (bLine === undefined && aLine !== undefined) {
-      result.push({ type: "removed", text: aLine });
-    } else if (aLine === bLine) {
-      result.push({ type: "common", text: aLine ?? "" });
-    } else if (aLine !== undefined && bLine !== undefined) {
-      // mindkettő létezik, de különböznek → előbb törölt, aztán új sor
-      result.push({ type: "removed", text: aLine });
-      result.push({ type: "added", text: bLine });
+  
+  // LCS matrix építése
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
+  
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
     }
   }
-
+  
+  // Backtrack: diff összeállítása
+  const result: DiffLine[] = [];
+  let i = m, j = n;
+  const tempResult: DiffLine[] = [];
+  
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+      // Közös sor
+      tempResult.push({ type: "common", text: a[i - 1] });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      // Hozzáadott sor (b-ben van, a-ban nincs)
+      tempResult.push({ type: "added", text: b[j - 1] });
+      j--;
+    } else if (i > 0) {
+      // Törölt sor (a-ban van, b-ben nincs)
+      tempResult.push({ type: "removed", text: a[i - 1] });
+      i--;
+    }
+  }
+  
+  // Megfordítjuk a sorrendet (backtrack visszafelé ment)
+  for (let k = tempResult.length - 1; k >= 0; k--) {
+    result.push(tempResult[k]);
+  }
+  
   return result;
 }
 
@@ -589,6 +692,173 @@ const DiffView: React.FC<DiffViewProps> = ({ original, modified }) => {
           <span className="diff-text">{d.text === "" ? " " : d.text}</span>
         </div>
       ))}
+    </div>
+  );
+};
+
+// DiffViewer - nagyobb diff nézet navigációval
+interface DiffViewerProps {
+  before: string;
+  after: string;
+}
+
+const DiffViewer: React.FC<DiffViewerProps> = ({ before, after }) => {
+  const [currentChangeIndex, setCurrentChangeIndex] = React.useState(0);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  
+  const diffs = React.useMemo(
+    () => computeSimpleDiff(before, after),
+    [before, after]
+  );
+  
+  // Találjuk meg a változások indexeit
+  const changeIndices = React.useMemo(() => {
+    const indices: number[] = [];
+    diffs.forEach((d, idx) => {
+      if (d.type === 'added' || d.type === 'removed') {
+        indices.push(idx);
+      }
+    });
+    return indices;
+  }, [diffs]);
+  
+  // Ugrás a következő változáshoz
+  const goToNextChange = React.useCallback(() => {
+    if (changeIndices.length === 0) return;
+    const nextIndex = (currentChangeIndex + 1) % changeIndices.length;
+    setCurrentChangeIndex(nextIndex);
+    
+    // Scroll a változáshoz
+    const element = document.getElementById(`diff-line-${changeIndices[nextIndex]}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [currentChangeIndex, changeIndices]);
+  
+  // Ugrás az előző változáshoz
+  const goToPrevChange = React.useCallback(() => {
+    if (changeIndices.length === 0) return;
+    const prevIndex = currentChangeIndex === 0 ? changeIndices.length - 1 : currentChangeIndex - 1;
+    setCurrentChangeIndex(prevIndex);
+    
+    const element = document.getElementById(`diff-line-${changeIndices[prevIndex]}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [currentChangeIndex, changeIndices]);
+  
+  // Számláló: hány sor hozzáadva/törölve
+  const stats = React.useMemo(() => {
+    let added = 0, removed = 0;
+    diffs.forEach(d => {
+      if (d.type === 'added') added++;
+      if (d.type === 'removed') removed++;
+    });
+    return { added, removed };
+  }, [diffs]);
+  
+  // Csoportosított változások száma (egymás melletti változások = 1 csoport)
+  const changeGroups = React.useMemo(() => {
+    let groups = 0;
+    let inChangeGroup = false;
+    diffs.forEach(d => {
+      if (d.type === 'added' || d.type === 'removed') {
+        if (!inChangeGroup) {
+          groups++;
+          inChangeGroup = true;
+        }
+      } else {
+        inChangeGroup = false;
+      }
+    });
+    return groups;
+  }, [diffs]);
+  
+  // Aktuális csoport indexe
+  const [currentGroupIndex, setCurrentGroupIndex] = React.useState(0);
+  
+  // Csoport kezdő indexek (ahol új változás-blokk kezdődik)
+  const groupStartIndices = React.useMemo(() => {
+    const indices: number[] = [];
+    let inChangeGroup = false;
+    diffs.forEach((d, idx) => {
+      if (d.type === 'added' || d.type === 'removed') {
+        if (!inChangeGroup) {
+          indices.push(idx);
+          inChangeGroup = true;
+        }
+      } else {
+        inChangeGroup = false;
+      }
+    });
+    return indices;
+  }, [diffs]);
+  
+  // Navigáció CSOPORTOK között (nem sorok!)
+  const goToNextGroup = React.useCallback(() => {
+    if (groupStartIndices.length === 0) return;
+    const nextIdx = (currentGroupIndex + 1) % groupStartIndices.length;
+    setCurrentGroupIndex(nextIdx);
+    const element = document.getElementById(`diff-line-${groupStartIndices[nextIdx]}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [currentGroupIndex, groupStartIndices]);
+  
+  const goToPrevGroup = React.useCallback(() => {
+    if (groupStartIndices.length === 0) return;
+    const prevIdx = currentGroupIndex === 0 ? groupStartIndices.length - 1 : currentGroupIndex - 1;
+    setCurrentGroupIndex(prevIdx);
+    const element = document.getElementById(`diff-line-${groupStartIndices[prevIdx]}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [currentGroupIndex, groupStartIndices]);
+
+  return (
+    <div className="diff-viewer">
+      <div className="diff-viewer-nav">
+        <button 
+          type="button"
+          className="diff-nav-btn"
+          onClick={goToPrevGroup}
+          disabled={groupStartIndices.length === 0}
+          title="Előző változás-blokk"
+        >
+          ⬆️ Előző
+        </button>
+        <span className="diff-nav-counter">
+          {changeGroups > 0 
+            ? `${currentGroupIndex + 1} / ${changeGroups} változás` 
+            : 'Nincs változás'}
+        </span>
+        <button 
+          type="button"
+          className="diff-nav-btn"
+          onClick={goToNextGroup}
+          disabled={groupStartIndices.length === 0}
+          title="Következő változás-blokk"
+        >
+          Következő ⬇️
+        </button>
+      </div>
+      
+      <div className="diff-viewer-code" ref={scrollRef}>
+        {diffs.map((d, idx) => {
+          const lineNum = idx + 1;
+          // Ellenőrizzük, hogy ez a sor az aktuális csoportban van-e
+          const currentGroupStart = groupStartIndices[currentGroupIndex] ?? -1;
+          const nextGroupStart = groupStartIndices[currentGroupIndex + 1] ?? diffs.length;
+          const isInCurrentGroup = (d.type === 'added' || d.type === 'removed') && 
+                                   idx >= currentGroupStart && idx < nextGroupStart;
+          
+          return (
+            <div 
+              key={idx} 
+              id={`diff-line-${idx}`}
+              className={`diff-line diff-line-${d.type}${isInCurrentGroup ? ' current-change' : ''}`}
+            >
+              <span className="diff-line-num">{lineNum}</span>
+              <span className="diff-gutter">
+                {d.type === "added" ? "+" : d.type === "removed" ? "-" : " "}
+              </span>
+              <span className="diff-text">{d.text === "" ? " " : d.text}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -808,6 +1078,7 @@ interface InlineCodeWithSuggestionProps {
   diffViewRef: React.RefObject<HTMLDivElement | null>;
   scrollToLine?: number | null;
   filePath?: string | null;
+  syntaxHighlightEnabled?: boolean; // Szintaxis színezés ki/be kapcsolása
 }
 
 const InlineCodeWithSuggestion: React.FC<InlineCodeWithSuggestionProps> = ({
@@ -823,6 +1094,7 @@ const InlineCodeWithSuggestion: React.FC<InlineCodeWithSuggestionProps> = ({
   diffViewRef,
   scrollToLine,
   filePath,
+  syntaxHighlightEnabled = true,
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const suggestionRef = React.useRef<HTMLDivElement>(null);
@@ -844,6 +1116,7 @@ const InlineCodeWithSuggestion: React.FC<InlineCodeWithSuggestionProps> = ({
         settings={settings}
         scrollToLine={scrollToLine}
         filePath={filePath}
+        syntaxHighlightEnabled={syntaxHighlightEnabled}
       />
     );
   }
@@ -1100,9 +1373,79 @@ const App: React.FC = () => {
 
   // Chat input (korán definiálva mert a context menük használják)
   const [chatInput, setChatInput] = React.useState("");
+  const chatInputRef = React.useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize chat input when content changes
+  React.useEffect(() => {
+    const textarea = chatInputRef.current;
+    if (!textarea) return;
+    
+    const minHeight = 44;
+    const maxHeight = 200;
+    
+    // FONTOS: Először 'auto'-ra állítjuk hogy a scrollHeight pontos legyen
+    textarea.style.height = 'auto';
+    
+    // Mérjük a tényleges tartalom magasságát
+    const scrollHeight = textarea.scrollHeight;
+    
+    // Állítsuk be a magasságot (min és max között)
+    const newHeight = Math.max(minHeight, Math.min(scrollHeight, maxHeight));
+    textarea.style.height = newHeight + 'px';
+    
+    // Scrollbar csak ha meghaladja a max-ot
+    textarea.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [chatInput]);
+
+  // Kód keresés
+  const [showCodeSearch, setShowCodeSearch] = React.useState(false);
+  const [searchTerm, setSearchTerm] = React.useState("");
+  const [searchResults, setSearchResults] = React.useState<{line: number; column: number; text: string}[]>([]);
+  const [currentSearchIndex, setCurrentSearchIndex] = React.useState(0);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+  
+  // @ mention autocomplete
+  const [atMentionSuggestions, setAtMentionSuggestions] = React.useState<string[]>([]);
+  const [atMentionActive, setAtMentionActive] = React.useState(false);
+  const [atMentionIndex, setAtMentionIndex] = React.useState(0);
 
   // Syntax hibák
   const [syntaxErrors, setSyntaxErrors] = React.useState<SyntaxError[]>([]);
+  
+  // Diff nézet - fájl módosítások megtekintése
+  const [diffViewData, setDiffViewData] = React.useState<{
+    path: string;
+    before: string;
+    after: string;
+    linesAdded: number;
+    linesDeleted: number;
+  } | null>(null);
+  const [showDiffViewer, setShowDiffViewer] = React.useState(false);
+  
+  // Navigáció a módosítások között a diff nézetben
+  const [allDiffModifications, setAllDiffModifications] = React.useState<FileModification[]>([]);
+  const [currentDiffModIndex, setCurrentDiffModIndex] = React.useState(0);
+  
+  // Módosítás előzmények tárolása (localStorage-ban is)
+  const [modificationsHistory, setModificationsHistory] = React.useState<FileModification[]>(() => {
+    try {
+      const saved = localStorage.getItem('modificationsHistory');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  
+  // Mentés localStorage-ba
+  React.useEffect(() => {
+    try {
+      // Max 100 módosítás tárolása
+      const toSave = modificationsHistory.slice(-100);
+      localStorage.setItem('modificationsHistory', JSON.stringify(toSave));
+    } catch {
+      // ignore
+    }
+  }, [modificationsHistory]);
   
   // Kód hash számítása
   const getCodeHash = React.useCallback((codeText: string): string => {
@@ -1179,6 +1522,12 @@ const App: React.FC = () => {
     setCodeZoom(100);
   }, []);
 
+  // Szintaxis színezés ki/be kapcsoló (performancia optimalizáláshoz)
+  const [syntaxHighlightEnabled, setSyntaxHighlightEnabled] = React.useState(true);
+  const toggleSyntaxHighlight = React.useCallback(() => {
+    setSyntaxHighlightEnabled(prev => !prev);
+  }, []);
+
   // Legacy - kompatibilitáshoz (átmenetileg)
   const sourceCode = code;
   const setSourceCode = setCode;
@@ -1228,6 +1577,103 @@ const App: React.FC = () => {
   const [selectedFilePath, setSelectedFilePath] =
     React.useState<string | null>(null);
 
+  // ═══════════════════════════════════════════════════════════════
+  // MULTI-TAB SUPPORT - Több fájl megnyitása egyszerre
+  // ═══════════════════════════════════════════════════════════════
+  interface OpenTab {
+    path: string;
+    content: string;
+    isDirty: boolean; // Ha módosult mentés nélkül
+  }
+  const [openTabs, setOpenTabs] = React.useState<OpenTab[]>([]);
+  const [activeTabIndex, setActiveTabIndex] = React.useState<number>(0);
+
+  // Tab megnyitása (vagy aktiválása ha már nyitva van)
+  const openFileInTab = React.useCallback(async (filePath: string, content?: string) => {
+    // Már nyitva van?
+    const existingIndex = openTabs.findIndex(t => t.path === filePath);
+    if (existingIndex >= 0) {
+      setActiveTabIndex(existingIndex);
+      setCode(openTabs[existingIndex].content);
+      setSelectedFilePath(filePath);
+      return;
+    }
+    
+    // Új tab - tartalom betöltése ha nincs megadva
+    let tabContent = content;
+    if (!tabContent && selectedProjectId) {
+      try {
+        const resp = await fetch(
+          `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(filePath)}`
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          tabContent = (data.content || "").replace(/^\uFEFF/, '');
+        }
+      } catch (e) {
+        console.error(`[TAB] Fájl betöltés hiba: ${filePath}`, e);
+      }
+    }
+    
+    const newTab: OpenTab = {
+      path: filePath,
+      content: tabContent || "",
+      isDirty: false,
+    };
+    
+    setOpenTabs(prev => [...prev, newTab]);
+    setActiveTabIndex(openTabs.length); // Az új tab indexe
+    setCode(newTab.content);
+    setSelectedFilePath(filePath);
+    
+    console.log(`[TAB] Megnyitva: ${filePath} (${openTabs.length + 1} tab)`);
+  }, [openTabs, selectedProjectId]);
+
+  // Tab bezárása
+  const closeTab = React.useCallback((index: number) => {
+    if (openTabs.length <= 1) {
+      // Utolsó tab - ne zárjuk be, csak ürítsük
+      setOpenTabs([]);
+      setCode("");
+      setSelectedFilePath(null);
+      setActiveTabIndex(0);
+      return;
+    }
+    
+    const newTabs = openTabs.filter((_, i) => i !== index);
+    setOpenTabs(newTabs);
+    
+    // Aktív tab korrekció
+    let newActiveIndex = activeTabIndex;
+    if (index === activeTabIndex) {
+      newActiveIndex = Math.min(index, newTabs.length - 1);
+    } else if (index < activeTabIndex) {
+      newActiveIndex = activeTabIndex - 1;
+    }
+    
+    setActiveTabIndex(newActiveIndex);
+    if (newTabs[newActiveIndex]) {
+      setCode(newTabs[newActiveIndex].content);
+      setSelectedFilePath(newTabs[newActiveIndex].path);
+    }
+  }, [openTabs, activeTabIndex]);
+
+  // Tab váltás
+  const switchToTab = React.useCallback((index: number) => {
+    if (index >= 0 && index < openTabs.length) {
+      // Mentjük a jelenlegi tab tartalmát
+      if (activeTabIndex < openTabs.length) {
+        setOpenTabs(prev => prev.map((t, i) => 
+          i === activeTabIndex ? { ...t, content: code } : t
+        ));
+      }
+      
+      setActiveTabIndex(index);
+      setCode(openTabs[index].content);
+      setSelectedFilePath(openTabs[index].path);
+    }
+  }, [openTabs, activeTabIndex, code]);
+
   // Backup restore modal
   const [showBackupModal, setShowBackupModal] = React.useState(false);
   
@@ -1255,13 +1701,44 @@ const App: React.FC = () => {
     }
   });
 
-  // Megerősítő Modal (Normal módhoz)
-  const [showConfirmModal, setShowConfirmModal] = React.useState(false);
+  // Téma mód - sötét/világos
+  const [theme, setTheme] = React.useState<'light' | 'dark'>(() => {
+    try {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+      // Rendszer preferencia alapján
+      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        return 'dark';
+      }
+      return 'light';
+    } catch {
+      return 'light';
+    }
+  });
+
+  // Téma alkalmazása a document-re
+  React.useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  // Téma váltás
+  const toggleTheme = React.useCallback(() => {
+    setTheme(prev => prev === 'light' ? 'dark' : 'light');
+  }, []);
+
+  // Megerősítő - inline a chatben (nem modal!)
+  const [showConfirmModal, setShowConfirmModal] = React.useState(false); // Legacy - már nem használjuk
   const [pendingChange, setPendingChange] = React.useState<{
     patches: SuggestedPatch[];
     explanation: string;
     terminalCommands?: string[];
   } | null>(null);
+  // Pending confirmation - a chat üzenet id-ja ahol a gombok vannak
+  const [pendingConfirmationId, setPendingConfirmationId] = React.useState<number | null>(null);
+  
+  // Jóváhagyásra váró tool műveletek (terminal parancsok, fájl törlések, stb.)
+  const [pendingToolPermissions, setPendingToolPermissions] = React.useState<PendingPermission[]>([]);
 
   // Terminal
   const [showTerminal, setShowTerminal] = React.useState(false);
@@ -1301,7 +1778,12 @@ const App: React.FC = () => {
   const hasSuggestions = suggestions.length > 0;
   const pendingSuggestions = suggestions.filter(s => !s.applied);
 
-  // Syntax validálás
+  // === AGENTIC ANALYSIS STATE ===
+  const [agenticAnalysisLoading, setAgenticAnalysisLoading] = React.useState(false);
+  // Fájlok frissítése trigger (mivel loadProjectFiles később van definiálva)
+  const [refreshFilesTrigger, setRefreshFilesTrigger] = React.useState(0);
+
+  // Syntax validálás - kombinált: lokális PL/I checker + opcionális agentic elemzés
   const handleValidateSyntax = React.useCallback(() => {
     if (!code || code.trim().length === 0) {
       setSyntaxErrors([]);
@@ -1310,7 +1792,7 @@ const App: React.FC = () => {
       return;
     }
     
-    addLogMessage("info", "Szintaxis ellenőrzés indítása...");
+    addLogMessage("info", "🔍 Szintaxis ellenőrzés indítása...");
     const errors = checkPLISyntax(code);
     setSyntaxErrors(errors);
     
@@ -1319,7 +1801,7 @@ const App: React.FC = () => {
     setValidatedCodeHash(codeHash);
     
     if (errors.length === 0) {
-      addLogMessage("success", "✅ Nincs szintaxis hiba!");
+      addLogMessage("success", "✅ PL/I szintaxis OK!");
     } else {
       const errorCount = errors.filter(e => e.severity === "error").length;
       const warningCount = errors.filter(e => e.severity === "warning").length;
@@ -1343,6 +1825,273 @@ const App: React.FC = () => {
     }
     setShowSyntaxPanel(true);
   }, [code, addLogMessage, getCodeHash]);
+
+  // PL/I fájl detektálás
+  const isPLIFile = React.useCallback((filePath: string | null): boolean => {
+    if (!filePath) return false;
+    const ext = filePath.toLowerCase().split('.').pop();
+    return ext === 'pli' || ext === 'pl1' || ext === 'pli1' || ext === 'inc';
+  }, []);
+
+  // AGENTIC Validálás - LLM tool-okkal elemzi az AKTUÁLIS FÁJLT
+  const handleAgenticValidation = React.useCallback(async () => {
+    console.log("[AI VALIDÁLÁS] Gomb kattintva!", { selectedProjectId, selectedFilePath });
+    
+    if (!selectedProjectId || !selectedFilePath) {
+      addLogMessage("warning", "Válassz ki egy projektet és fájlt a validáláshoz!");
+      console.log("[AI VALIDÁLÁS] Nincs projekt/fájl kiválasztva");
+      return;
+    }
+    
+    console.log("[AI VALIDÁLÁS] Indítás...");
+    setAgenticAnalysisLoading(true);
+    addLogMessage("info", `🔍 **AI VALIDÁLÁS** - ${selectedFilePath}`);
+    
+    // Csak PL/I fájloknál futtassuk a lokális PL/I checker-t
+    const isPLI = isPLIFile(selectedFilePath);
+    if (isPLI && code && code.trim().length > 0) {
+      const localErrors = checkPLISyntax(code);
+      if (localErrors.length > 0) {
+        setSyntaxErrors(localErrors);
+        addLogMessage("warning", `PL/I checker: ${localErrors.length} probléma találva`);
+      }
+    } else if (!isPLI) {
+      // Nem PL/I fájl - töröljük az esetleges régi PL/I hibákat
+      setSyntaxErrors([]);
+    }
+    
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/agentic/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: selectedProjectId,
+          file_path: selectedFilePath,
+          analysis_type: autoMode ? "validate_and_fix" : "validate",  // AUTO mód = automatikus javítás
+          scope: "file",
+          auto_mode: autoMode,  // Átadjuk az auto módot
+          additional_context: syntaxErrors.length > 0 
+            ? `PL/I checker hibák: ${syntaxErrors.map(e => `${e.line}: ${e.message}`).join(', ')}`
+            : undefined
+        }),
+      });
+      
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(errText);
+      }
+      
+      const data = await resp.json();
+      
+      if (data.success) {
+        const modeLabel = autoMode ? "(AUTO)" : "(MANUAL)";
+        addLogMessage("success", `✅ **AI VALIDÁLÁS** ${modeLabel} kész (${data.tool_calls_count} tool hívás)`);
+        
+        // Készítsük el az eredményt módosítás adatokkal
+        let validationResult = `## 🔍 AI Validálás - ${selectedFilePath}\n\n${data.analysis}`;
+        const valMsgId = generateUniqueId();
+        let valModifications: FileModification[] = [];
+        
+        // Ha volt módosítás (AUTO módban), frissítsük a fájlt
+        // ⚠️ Szűrjük ki a VALÓBAN módosított fájlokat (ahol történt változás)
+        const actualMods = (data.modified_files || []).filter(
+          (f: any) => (f.lines_added || 0) > 0 || (f.lines_deleted || 0) > 0
+        );
+        
+        if (actualMods.length > 0) {
+          const totalAdded = actualMods.reduce((sum: number, f: any) => sum + (f.lines_added || 0), 0);
+          const totalDeleted = actualMods.reduce((sum: number, f: any) => sum + (f.lines_deleted || 0), 0);
+          
+          // Módosítás adatok mentése
+          valModifications = actualMods.map((f: any) => ({
+            path: f.path,
+            action: f.action || 'edit',
+            lines_added: f.lines_added || 0,
+            lines_deleted: f.lines_deleted || 0,
+            before_content: f.before_content,
+            after_content: f.after_content,
+            timestamp: new Date().toISOString(),
+            messageId: valMsgId,
+          }));
+          
+          // Módosítások összefoglalása
+          validationResult += '\n\n---\n### ✅ Módosítások alkalmazva\n\n';
+          for (const file of actualMods) {
+            const linesInfo = ` **(+${file.lines_added || 0}/-${file.lines_deleted || 0})**`;
+            const action = file.action === 'create' ? '🆕' : file.action === 'edit' ? '✏️' : '📝';
+            validationResult += `${action} [[DIFF:${file.path}]]${linesInfo}\n`;
+          }
+          validationResult += `\n**Összesen:** ${actualMods.length} fájl (+${totalAdded}/-${totalDeleted} sor)\n`;
+          validationResult += `\n*Kattints a fájlnévre a változások megtekintéséhez!*`;
+          
+          addLogMessage("info", `📝 ${actualMods.length} fájl módosítva (+${totalAdded}/-${totalDeleted} sor)`);
+          setRefreshFilesTrigger(prev => prev + 1);
+          
+          // Módosítások mentése a history-ba
+          if (valModifications.length > 0) {
+            setModificationsHistory(prev => [...prev, ...valModifications]);
+          }
+          
+          // Újratöltjük a fájl tartalmát
+          if (selectedFilePath) {
+            fetch(`${BACKEND_URL}/api/files/content/${selectedProjectId}?file_path=${encodeURIComponent(selectedFilePath)}`)
+              .then(r => r.json())
+              .then(fileData => {
+                if (fileData.content) {
+                  setCode(fileData.content.replace(/^\uFEFF/, ''));
+                }
+              })
+              .catch(console.error);
+          }
+        }
+        
+        // Eredmény hozzáadása chat-hez
+        setChatMessages(prev => [...prev, {
+          id: valMsgId,
+          role: "assistant",
+          text: validationResult,
+          modifications: valModifications.length > 0 ? valModifications : undefined,
+        }]);
+        
+        // MANUAL módban - ha vannak függőben lévő jóváhagyások
+        if (data.pending_permissions && data.pending_permissions.length > 0) {
+          addLogMessage("warning", `⚠️ ${data.pending_permissions.length} javítás vár jóváhagyásra`);
+          // Hozzáadjuk a globális pending permissions listához
+          setPendingToolPermissions(prev => {
+            const newPerms = data.pending_permissions.filter(
+              (p: any) => !prev.some(existing => 
+                existing.permission_type === p.permission_type && 
+                existing.details?.path === p.details?.path &&
+                JSON.stringify(existing.details) === JSON.stringify(p.details)
+              )
+            );
+            return [...prev, ...newPerms];
+          });
+        }
+      } else {
+        addLogMessage("error", `❌ AI validálás hiba: ${data.errors?.join(', ')}`);
+      }
+    } catch (e: any) {
+      console.error("[AI VALIDÁLÁS] Hiba:", e);
+      addLogMessage("error", `❌ AI validálás hiba: ${e.message}`);
+    } finally {
+      console.log("[AI VALIDÁLÁS] Befejezve");
+      setAgenticAnalysisLoading(false);
+    }
+  }, [selectedProjectId, selectedFilePath, code, syntaxErrors, addLogMessage, isPLIFile, autoMode]);
+
+  // AGENTIC Javaslat - LLM tool-okkal elemzi és javítja a TELJES PROJEKTET
+  const handleAgenticSuggestion = React.useCallback(async () => {
+    if (!selectedProjectId) {
+      addLogMessage("warning", "Válassz ki egy projektet a projekt elemzéshez!");
+      return;
+    }
+    
+    setAgenticAnalysisLoading(true);
+    addLogMessage("info", "💡 **AI PROJEKT ELEMZÉS** indítása...");
+    
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/agentic/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: selectedProjectId,
+          file_path: selectedFilePath || undefined,  // Opcionális - ha van, azt is megnézi először
+          analysis_type: "suggest",
+          scope: "project",  // Teljes projekt elemzés
+          additional_context: chatInput.trim() ? `User context: ${chatInput}` : undefined
+        }),
+      });
+      
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(errText);
+      }
+      
+      const data = await resp.json();
+      
+      if (data.success) {
+        addLogMessage("success", `✅ **AI PROJEKT ELEMZÉS** kész (${data.tool_calls_count} tool hívás)`);
+        
+        const projMsgId = generateUniqueId();
+        let projModifications: FileModification[] = [];
+        let projResult = `## 💡 AI Projekt Elemzés\n\n${data.analysis}`;
+        
+        // Ha volt módosítás, frissítsük a fájlokat ÉS mutassuk a részleteket
+        // ⚠️ Szűrjük ki a VALÓBAN módosított fájlokat
+        const actualProjMods = (data.modified_files || []).filter(
+          (f: any) => (f.lines_added || 0) > 0 || (f.lines_deleted || 0) > 0
+        );
+        
+        if (actualProjMods.length > 0) {
+          const totalAdded = actualProjMods.reduce((sum: number, f: any) => sum + (f.lines_added || 0), 0);
+          const totalDeleted = actualProjMods.reduce((sum: number, f: any) => sum + (f.lines_deleted || 0), 0);
+          
+          // Módosítások mentése
+          projModifications = actualProjMods.map((f: any) => ({
+            path: f.path,
+            action: f.action || 'edit',
+            lines_added: f.lines_added || 0,
+            lines_deleted: f.lines_deleted || 0,
+            before_content: f.before_content,
+            after_content: f.after_content,
+            timestamp: new Date().toISOString(),
+            messageId: projMsgId,
+          }));
+          
+          // Összefoglaló hozzáadása
+          projResult += '\n\n---\n### ✅ Módosítások alkalmazva\n\n';
+          for (const file of actualProjMods) {
+            const linesInfo = ` **(+${file.lines_added || 0}/-${file.lines_deleted || 0})**`;
+            const action = file.action === 'create' ? '🆕' : file.action === 'edit' ? '✏️' : '📝';
+            projResult += `${action} [[DIFF:${file.path}]]${linesInfo}\n`;
+          }
+          projResult += `\n**Összesen:** ${actualProjMods.length} fájl (+${totalAdded}/-${totalDeleted} sor)\n`;
+          projResult += `\n*Kattints a fájlnévre a változások megtekintéséhez!*`;
+          
+          addLogMessage("info", `📝 ${actualProjMods.length} fájl módosítva (+${totalAdded}/-${totalDeleted} sor)`);
+          
+          // Módosítások mentése a history-ba
+          if (projModifications.length > 0) {
+            setModificationsHistory(prev => [...prev, ...projModifications]);
+          }
+          
+          setRefreshFilesTrigger(prev => prev + 1);
+          
+          // Ha van nyitott fájl és az módosult, frissítsük
+          if (selectedFilePath) {
+            const modifiedPaths = actualProjMods.map((f: any) => f.path);
+            if (modifiedPaths.some((p: string) => selectedFilePath.includes(p) || p.includes(selectedFilePath))) {
+              const fileResp = await fetch(
+                `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(selectedFilePath)}`
+              );
+              if (fileResp.ok) {
+                const fileData = await fileResp.json();
+                setCode((fileData.content || "").replace(/^\uFEFF/, ''));
+              }
+            }
+          }
+        } else {
+          // Nincs módosítás
+          projResult += '\n\n---\n### ℹ️ Megjegyzés\nNem történt fájl módosítás.';
+        }
+        
+        // Eredmény hozzáadása chat-hez a módosítás adatokkal
+        setChatMessages(prev => [...prev, {
+          id: projMsgId,
+          role: "assistant",
+          text: projResult,
+          modifications: projModifications.length > 0 ? projModifications : undefined,
+        }]);
+      } else {
+        addLogMessage("error", `❌ AI projekt elemzés hiba: ${data.errors?.join(', ')}`);
+      }
+    } catch (e: any) {
+      addLogMessage("error", `❌ AI projekt elemzés hiba: ${e.message}`);
+    } finally {
+      setAgenticAnalysisLoading(false);
+    }
+  }, [selectedProjectId, selectedFilePath, chatInput, addLogMessage]);
 
   // Szintaxis hiba javítás - egyedi hiba
   const handleFixSyntaxError = React.useCallback(async (error: SyntaxError) => {
@@ -1375,8 +2124,44 @@ const App: React.FC = () => {
       const data = await resp.json();
       
       if (data.fixed_code) {
-        setCode(data.fixed_code);
+        const beforeCode = code;
+        const afterCode = data.fixed_code;
+        
+        setCode(afterCode);
         addLogMessage("success", `✅ Hiba javítva: ${error.line}. sor`);
+        
+        // Diff számítás
+        const beforeLines = beforeCode.split('\n').length;
+        const afterLines = afterCode.split('\n').length;
+        const linesAdded = Math.max(0, afterLines - beforeLines);
+        const linesDeleted = Math.max(0, beforeLines - afterLines);
+        
+        // Módosítás mentése és chat üzenet
+        const fixMsgId = generateUniqueId();
+        const fixModification: FileModification = {
+          path: selectedFilePath,
+          action: "edit",
+          lines_added: linesAdded,
+          lines_deleted: linesDeleted,
+          before_content: beforeCode,
+          after_content: afterCode,
+          timestamp: new Date().toISOString(),
+          messageId: fixMsgId,
+        };
+        setModificationsHistory(prev => [...prev, fixModification]);
+        
+        // Chat üzenet
+        setChatMessages(prev => [...prev, {
+          id: fixMsgId,
+          role: "system",
+          text: `### 🔧 Szintaxis hiba javítva\n\n` +
+                `📁 **Fájl:** \`${selectedFilePath}\`\n` +
+                `📍 **Sor:** ${error.line}\n` +
+                `❌ **Hiba:** ${error.message}\n` +
+                `📊 **Változások:** +${linesAdded} / -${linesDeleted} sor\n\n` +
+                `🔍 [[DIFF:${selectedFilePath}]] ← *Kattints a változások megtekintéséhez!*`,
+          modifications: [fixModification],
+        }]);
         
         // Újravalidálás
         const newErrors = checkPLISyntax(data.fixed_code);
@@ -1440,12 +2225,48 @@ const App: React.FC = () => {
     }
 
     if (fixedCount > 0) {
-      setCode(currentCode);
+      const beforeCode = code;
+      const afterCode = currentCode;
+      
+      setCode(afterCode);
       addLogMessage("success", `✅ ${fixedCount} hiba javítva`);
+      
+      // Diff számítás
+      const beforeLines = beforeCode.split('\n').length;
+      const afterLines = afterCode.split('\n').length;
+      const linesAdded = Math.max(0, afterLines - beforeLines);
+      const linesDeleted = Math.max(0, beforeLines - afterLines);
+      
+      // Módosítás mentése és chat üzenet
+      const fixAllMsgId = generateUniqueId();
+      const fixAllModification: FileModification = {
+        path: selectedFilePath,
+        action: "edit",
+        lines_added: linesAdded,
+        lines_deleted: linesDeleted,
+        before_content: beforeCode,
+        after_content: afterCode,
+        timestamp: new Date().toISOString(),
+        messageId: fixAllMsgId,
+      };
+      setModificationsHistory(prev => [...prev, fixAllModification]);
       
       // Újravalidálás
       const newErrors = checkPLISyntax(currentCode);
       setSyntaxErrors(newErrors);
+      
+      // Chat üzenet
+      setChatMessages(prev => [...prev, {
+        id: fixAllMsgId,
+        role: "system",
+        text: `### 🔧 Összes szintaxis hiba javítása\n\n` +
+              `📁 **Fájl:** \`${selectedFilePath}\`\n` +
+              `✅ **Javított hibák:** ${fixedCount} db\n` +
+              `${newErrors.length > 0 ? `⚠️ **Maradt:** ${newErrors.length} hiba\n` : ''}` +
+              `📊 **Változások:** +${linesAdded} / -${linesDeleted} sor\n\n` +
+              `🔍 [[DIFF:${selectedFilePath}]] ← *Kattints a változások megtekintéséhez!*`,
+        modifications: [fixAllModification],
+      }]);
       
       if (newErrors.length > 0) {
         addLogMessage("warning", `⚠️ Még ${newErrors.length} hiba maradt`);
@@ -1801,6 +2622,179 @@ const App: React.FC = () => {
   }, [getChatMessageContextMenuItems, showContextMenu]);
 
   // Kód context menu items
+  // =====================================
+  //   KÓD KERESÉS FUNKCIÓK
+  // =====================================
+  
+  const handleSearchInCode = React.useCallback(() => {
+    setShowCodeSearch(true);
+    // Focus a keresőmezőre - több próbálkozás a biztosabb működésért
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+    setTimeout(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }, 50);
+    setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 150);
+  }, []);
+
+  const performSearch = React.useCallback((term: string) => {
+    if (!term.trim() || !code) {
+      setSearchResults([]);
+      setCurrentSearchIndex(0);
+      return;
+    }
+    
+    const results: {line: number; column: number; text: string}[] = [];
+    const lines = code.split('\n');
+    const searchLower = term.toLowerCase();
+    
+    lines.forEach((line, lineIndex) => {
+      let column = 0;
+      let searchPos = 0;
+      const lineLower = line.toLowerCase();
+      
+      while ((searchPos = lineLower.indexOf(searchLower, column)) !== -1) {
+        // Kontextus kivágása a találat körül
+        const start = Math.max(0, searchPos - 20);
+        const end = Math.min(line.length, searchPos + term.length + 20);
+        let contextText = line.substring(start, end);
+        if (start > 0) contextText = '...' + contextText;
+        if (end < line.length) contextText = contextText + '...';
+        
+        results.push({
+          line: lineIndex + 1, // 1-based
+          column: searchPos + 1, // 1-based
+          text: contextText
+        });
+        column = searchPos + 1;
+      }
+    });
+    
+    setSearchResults(results);
+    setCurrentSearchIndex(0);
+    
+    // Első találatra scrollozás
+    if (results.length > 0) {
+      scrollToSearchResult(results[0]);
+    }
+  }, [code]);
+
+  const scrollToSearchResult = React.useCallback((result: {line: number; column: number}, focusTextarea: boolean = false) => {
+    // ScrollToLine state-et használjuk ha van
+    setScrollToLine(result.line);
+    
+    // Textarea-ba is scrollozunk
+    const textarea = document.querySelector('.code-textarea') as HTMLTextAreaElement;
+    if (textarea) {
+      const lines = code.split('\n');
+      let charIndex = 0;
+      for (let i = 0; i < result.line - 1; i++) {
+        charIndex += lines[i].length + 1;
+      }
+      charIndex += result.column - 1;
+      
+      // Scrollozás a megfelelő pozícióba (focus nélkül alapból!)
+      const lineHeight = 21; // becsült sormagasság
+      textarea.scrollTop = Math.max(0, (result.line - 5) * lineHeight);
+      
+      // Csak akkor fókuszáljuk ha expliciten kérjük
+      if (focusTextarea) {
+        textarea.focus();
+        textarea.setSelectionRange(charIndex, charIndex + searchTerm.length);
+      }
+    }
+  }, [code, searchTerm]);
+
+  const goToNextSearchResult = React.useCallback(() => {
+    if (searchResults.length === 0) return;
+    const nextIndex = (currentSearchIndex + 1) % searchResults.length;
+    setCurrentSearchIndex(nextIndex);
+    scrollToSearchResult(searchResults[nextIndex]);
+  }, [searchResults, currentSearchIndex, scrollToSearchResult]);
+
+  const goToPrevSearchResult = React.useCallback(() => {
+    if (searchResults.length === 0) return;
+    const prevIndex = currentSearchIndex === 0 ? searchResults.length - 1 : currentSearchIndex - 1;
+    setCurrentSearchIndex(prevIndex);
+    scrollToSearchResult(searchResults[prevIndex]);
+  }, [searchResults, currentSearchIndex, scrollToSearchResult]);
+
+  const closeSearch = React.useCallback(() => {
+    // Ha van találat, fókuszáljuk a textarea-t és válasszuk ki a szöveget
+    if (searchResults.length > 0 && searchTerm) {
+      const result = searchResults[currentSearchIndex];
+      const textarea = document.querySelector('.code-textarea') as HTMLTextAreaElement;
+      if (textarea && result) {
+        const lines = code.split('\n');
+        let charIndex = 0;
+        for (let i = 0; i < result.line - 1; i++) {
+          charIndex += lines[i].length + 1;
+        }
+        charIndex += result.column - 1;
+        
+        textarea.focus();
+        textarea.setSelectionRange(charIndex, charIndex + searchTerm.length);
+      }
+    }
+    
+    setShowCodeSearch(false);
+    setSearchTerm("");
+    setSearchResults([]);
+    setCurrentSearchIndex(0);
+  }, [searchResults, currentSearchIndex, searchTerm, code]);
+
+  // Ctrl+F kezelése
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeElement = document.activeElement as HTMLElement;
+      const isSearchInput = activeElement?.classList.contains('code-search-input');
+      
+      // Ha a keresőmezőben vagyunk, csak Escape-et kezeljük
+      if (isSearchInput) {
+        if (e.key === 'Escape') {
+          closeSearch();
+        }
+        // Minden más billentyű maradjon az inputban!
+        return;
+      }
+      
+      // Ctrl+F vagy Cmd+F
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        // Csak ha a kód tab aktív és nem vagyunk a chat inputban
+        if (activeTab === 'code' || window.innerWidth > 768) {
+          const isChatInput = activeElement?.classList.contains('chat-input');
+          
+          if (!isChatInput) {
+            e.preventDefault();
+            handleSearchInCode();
+          }
+        }
+      }
+      // Escape a keresés bezárásához
+      if (e.key === 'Escape' && showCodeSearch) {
+        closeSearch();
+      }
+      // F3 vagy Ctrl+G a következő találathoz (ha nincs fókuszban a kereső)
+      if (showCodeSearch && searchResults.length > 0) {
+        if (e.key === 'F3' || ((e.ctrlKey || e.metaKey) && e.key === 'g')) {
+          e.preventDefault();
+          if (e.shiftKey) {
+            goToPrevSearchResult();
+          } else {
+            goToNextSearchResult();
+          }
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab, showCodeSearch, searchResults, handleSearchInCode, closeSearch, goToNextSearchResult, goToPrevSearchResult]);
+
   const getCodeContextMenuItems = React.useCallback((selection: string): ContextMenuItem[] => {
     const hasSelection = selection.length > 0;
     
@@ -1812,6 +2806,27 @@ const App: React.FC = () => {
     };
 
     return [
+      {
+        id: 'search',
+        label: '🔍 Keresés a kódban (Ctrl+F)',
+        onClick: handleSearchInCode
+      },
+      {
+        id: 'search-selection',
+        label: `🔎 "${selection.substring(0, 20)}${selection.length > 20 ? '...' : ''}" keresése`,
+        disabled: !hasSelection,
+        onClick: () => {
+          if (hasSelection) {
+            setShowCodeSearch(true);
+            setSearchTerm(selection.substring(0, 100)); // Max 100 karakter
+            setTimeout(() => {
+              performSearch(selection.substring(0, 100));
+              searchInputRef.current?.focus();
+            }, 100);
+          }
+        }
+      },
+      { id: 'divider-search', label: '', divider: true },
       {
         id: 'ai-explain',
         label: '🤖 AI: Magyarázd el',
@@ -1878,10 +2893,39 @@ const App: React.FC = () => {
         id: 'copy',
         label: '📋 Másolás',
         disabled: !hasSelection,
+        onClick: async () => {
+          if (hasSelection) {
+            try {
+              await navigator.clipboard.writeText(selection);
+              addLogMessage("success", "✅ Kód másolva a vágólapra");
+            } catch (err) {
+              // Fallback: régi módszer
+              const textarea = document.createElement('textarea');
+              textarea.value = selection;
+              textarea.style.position = 'fixed';
+              textarea.style.opacity = '0';
+              document.body.appendChild(textarea);
+              textarea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textarea);
+              addLogMessage("success", "✅ Kód másolva a vágólapra");
+            }
+          }
+        }
+      },
+      {
+        id: 'copy-to-chat',
+        label: '💬 Másolás a chatbe',
+        disabled: !hasSelection,
         onClick: () => {
           if (hasSelection) {
-            navigator.clipboard.writeText(selection);
-            addLogMessage("success", "Kód másolva a vágólapra");
+            setChatInput(prev => {
+              const codeBlock = `\`\`\`\n${selection}\n\`\`\``;
+              return prev ? prev + '\n\n' + codeBlock : codeBlock;
+            });
+            addLogMessage("success", "✅ Kód beillesztve a chatbe");
+            // Mobilon váltsunk chat fülre
+            goToChatTab();
           }
         }
       },
@@ -2341,30 +3385,68 @@ const App: React.FC = () => {
       const data = await res.json();
       console.log("[RESTORE] Sikeres:", data);
       
-      // Frissítsük a kódot ha a visszaállított fájl az aktuálisan megnyitott
-      const backupInfo = backupList.find(b => b.filename === selectedBackup);
-      const restoredPath = data.restored_to; // A backend visszaadja hova lett visszaállítva
+      // A backend visszaadja hova lett visszaállítva
+      const restoredPath = data.restored_to || '';
+      const restoredFileName = restoredPath.split(/[/\\]/).pop() || '';
       
-      // Ellenőrzés: a fájlnév megegyezik-e (a teljes útvonal végén)
-      const selectedFileName = selectedFilePath ? selectedFilePath.split('/').pop() : '';
-      const backupFileName = backupInfo?.original_name?.replace(' (agentic)', '') || '';
+      console.log("[RESTORE] Visszaállított fájl:", restoredPath, "Fájlnév:", restoredFileName);
+      console.log("[RESTORE] Aktuálisan nyitott:", selectedFilePath);
       
-      if (selectedFilePath && (selectedFileName === backupFileName || selectedFilePath.endsWith(backupFileName))) {
+      // Keressük meg az összes nyitott tab-ot ami egyezhet
+      const matchingTabs = openTabs.filter(tab => {
+        const tabFileName = tab.path.split(/[/\\]/).pop() || '';
+        return tabFileName === restoredFileName || tab.path.includes(restoredFileName);
+      });
+      
+      console.log("[RESTORE] Egyező tab-ok:", matchingTabs.length);
+      
+      // MINDIG újratöltjük a fájlt ha a fájlnév egyezik
+      const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() : '';
+      
+      if (restoredFileName && (selectedFileName === restoredFileName || selectedFilePath?.includes(restoredFileName))) {
+        console.log("[RESTORE] Aktuális fájl frissítése...");
         // Reload the file
         const fileRes = await fetch(
-          `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(selectedFilePath)}&encoding=${encoding}`
+          `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(selectedFilePath!)}&encoding=${encoding}`
         );
         if (fileRes.ok) {
           const fileData = await fileRes.json();
-          setCode(fileData.content);
+          const newContent = (fileData.content || '').replace(/^\uFEFF/, '');
+          setCode(newContent);
+          
+          // Tab frissítése is
+          setOpenTabs(prev => prev.map(tab => {
+            const tabFileName = tab.path.split(/[/\\]/).pop() || '';
+            if (tabFileName === restoredFileName || tab.path === selectedFilePath) {
+              return { ...tab, content: newContent, isDirty: false };
+            }
+            return tab;
+          }));
+          
           addLogMessage("success", `✅ Fájl újratöltve: ${selectedFilePath}`);
+          console.log("[RESTORE] Fájl sikeresen újratöltve, hossz:", newContent.length);
+        }
+      } else if (matchingTabs.length > 0) {
+        // Ha van nyitott tab de nem az aktuális, frissítsük azokat is
+        for (const tab of matchingTabs) {
+          const fileRes = await fetch(
+            `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(tab.path)}&encoding=${encoding}`
+          );
+          if (fileRes.ok) {
+            const fileData = await fileRes.json();
+            const newContent = (fileData.content || '').replace(/^\uFEFF/, '');
+            setOpenTabs(prev => prev.map(t => 
+              t.path === tab.path ? { ...t, content: newContent, isDirty: false } : t
+            ));
+            addLogMessage("success", `✅ Tab frissítve: ${tab.path}`);
+          }
         }
       }
       
       // Fájl lista frissítése is
-      loadProjectFiles();
+      setRefreshFilesTrigger(prev => prev + 1);
       
-      alert(`Backup sikeresen visszaállítva: ${restoredPath || data.restored_to}`);
+      alert(`Backup sikeresen visszaállítva: ${restoredPath}`);
       setShowBackupModal(false);
     } catch (err: any) {
       console.error("[RESTORE] Hiba:", err);
@@ -2372,7 +3454,7 @@ const App: React.FC = () => {
     } finally {
       setRestoring(false);
     }
-  }, [selectedProjectId, selectedBackup, encoding, backupList, selectedFilePath]);
+  }, [selectedProjectId, selectedBackup, encoding, selectedFilePath, openTabs, addLogMessage]);
 
   const openBackupModal = React.useCallback(() => {
     setShowBackupModal(true);
@@ -2505,36 +3587,125 @@ const App: React.FC = () => {
   const [browseParentPath, setBrowseParentPath] = React.useState<string | null>(null);
   const [browseLoading, setBrowseLoading] = React.useState(false);
 
-  // Chat state - localStorage-ból töltjük be ha van
-  const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>(() => {
-    try {
-      const saved = localStorage.getItem('chat_history');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        console.log(`[CHAT] ${parsed.length} üzenet betöltve localStorage-ból`);
-        return parsed;
+  // Chat state - BACKEND API-ból töltjük be először, fallback localStorage-ra
+  const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  const [chatHistoryLoaded, setChatHistoryLoaded] = React.useState(false);
+  
+  // Chat history betöltése a backend API-ból
+  React.useEffect(() => {
+    async function loadChatFromBackend() {
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/sync/chat?limit=100`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.messages && data.messages.length > 0) {
+            console.log(`[CHAT] ${data.messages.length} üzenet betöltve BACKEND-ből`);
+            setChatMessages(data.messages.map((m: any) => ({
+              id: m.id,
+              role: m.role,
+              text: m.text,
+            })));
+            setChatHistoryLoaded(true);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('[CHAT] Backend chat betöltési hiba, localStorage fallback:', e);
       }
-    } catch (e) {
-      console.error('[CHAT] localStorage hiba:', e);
+      
+      // Fallback: localStorage
+      try {
+        const saved = localStorage.getItem('chat_history');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          
+          // EGYSZERI TISZTÍTÁS: Ha duplikált ID-k vannak, töröljük az egészet
+          const allIds = parsed.map((m: any) => m.id).filter((id: any) => id != null);
+          const uniqueIds = new Set(allIds);
+          if (allIds.length !== uniqueIds.size) {
+            console.warn('[CHAT] ⚠️ Duplikált ID-k találhatók! localStorage TÖRÖLVE');
+            localStorage.removeItem('chat_history');
+            setChatHistoryLoaded(true);
+            return;
+          }
+          
+          const seenIds = new Set<number>();
+          const uniqueMessages: any[] = [];
+          let idCounter = 0;
+          
+          for (const m of parsed) {
+            let newId = m.id ?? (Date.now() * 1000 + idCounter++);
+            while (seenIds.has(newId)) {
+              newId = Date.now() * 1000 + idCounter++;
+            }
+            seenIds.add(newId);
+            uniqueMessages.push({ ...m, id: newId });
+          }
+          
+          console.log(`[CHAT] ${uniqueMessages.length} üzenet betöltve localStorage-ból`);
+          setChatMessages(uniqueMessages);
+          
+          // Szinkronizáljuk a backend-re
+          if (uniqueMessages.length > 0) {
+            fetch(`${BACKEND_URL}/api/sync/chat/bulk`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(uniqueMessages.map(m => ({
+                id: m.id,
+                role: m.role,
+                text: m.text,
+                project_id: null
+              })))
+            }).then(r => {
+              if (r.ok) console.log('[CHAT] localStorage szinkronizálva a backend-re');
+            }).catch(() => {});
+          }
+        }
+      } catch (e) {
+        console.error('[CHAT] localStorage hiba:', e);
+        localStorage.removeItem('chat_history');
+      }
+      setChatHistoryLoaded(true);
     }
-    return [];
-  });
+    
+    loadChatFromBackend();
+  }, []);
   // chatInput és setChatInput már korábban definiálva (context menük miatt)
   const [chatLoading, setChatLoading] = React.useState(false);
   const [chatError, setChatError] = React.useState<string | null>(null);
 
-  // Chat history mentése localStorage-ba amikor változik
+  // Chat history mentése backend-re és localStorage-ba amikor változik
+  const lastSavedMessageIdRef = React.useRef<number>(0);
+  
   React.useEffect(() => {
-    if (chatMessages.length > 0) {
+    if (chatMessages.length > 0 && chatHistoryLoaded) {
       try {
-        // Max 100 üzenetet tárolunk
+        // localStorage fallback
         const toSave = chatMessages.slice(-100);
         localStorage.setItem('chat_history', JSON.stringify(toSave));
+        
+        // Backend szinkronizáció - csak az újakat küldjük
+        const lastMsg = chatMessages[chatMessages.length - 1];
+        if (lastMsg && lastMsg.id && lastMsg.id > lastSavedMessageIdRef.current) {
+          // Csak az utolsó üzenetet küldjük (valós időben)
+          fetch(`${BACKEND_URL}/api/sync/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: lastMsg.id,
+              role: lastMsg.role,
+              text: lastMsg.text,
+              project_id: selectedProjectId
+            })
+          }).then(() => {
+            lastSavedMessageIdRef.current = lastMsg.id!;
+          }).catch(() => {});
+        }
       } catch (e) {
         console.error('[CHAT] localStorage mentési hiba:', e);
       }
     }
-  }, [chatMessages]);
+  }, [chatMessages, chatHistoryLoaded, selectedProjectId]);
 
   // ===== WEBSOCKET SYNC - Real-time szinkronizáció PC és mobil között =====
   const {
@@ -2544,18 +3715,36 @@ const App: React.FC = () => {
     sendLogMessage: wsSendLog,
     sendFileChange: wsSendFileChange,
     joinProject: wsJoinProject,
+    selectProject: wsSelectProject,
   } = useWebSocketSync({
     enabled: true, // Mindig aktív
     onChatMessage: React.useCallback((msg: ChatMessage) => {
       // Távoli chat üzenet érkezett - hozzáadjuk ha nincs még
       console.log('[WS] Chat üzenet érkezett:', msg);
       setChatMessages(prev => {
-        if (prev.some(m => m.id === msg.id)) {
-          console.log('[WS] Chat üzenet már létezik, kihagyva:', msg.id);
+        // Egyedi ID biztosítása
+        const existingIds = new Set(prev.map(m => m.id));
+        let newId = msg.id ?? generateUniqueId();
+        while (existingIds.has(newId)) {
+          newId = generateUniqueId();
+        }
+        
+        const msgWithId = { ...msg, id: newId };
+        
+        // Szöveg alapú duplikáció ellenőrzés
+        const isDuplicate = prev.some(m => 
+          m.role === msgWithId.role && 
+          m.text === msgWithId.text &&
+          Math.abs((m.id || 0) - (msgWithId.id || 0)) < 60000
+        );
+        
+        if (isDuplicate) {
+          console.log('[WS] Chat üzenet duplikált, kihagyva');
           return prev;
         }
-        console.log('[WS] Új chat üzenet hozzáadva:', msg.id);
-        const updated = [...prev, msg];
+        
+        console.log('[WS] Új chat üzenet hozzáadva:', msgWithId.id);
+        const updated = [...prev, msgWithId];
         // Mentjük localStorage-ba is
         try {
           localStorage.setItem('chat_history', JSON.stringify(updated.slice(-100)));
@@ -2575,16 +3764,37 @@ const App: React.FC = () => {
         setChatMessages(prev => {
           // Összefésüljük a helyi és távoli üzeneteket
           const merged = [...prev];
+          const seenIds = new Set(merged.map(m => m.id));
           let newCount = 0;
+          let idCounter = 0;
+          
           for (const msg of state.chat_messages) {
-            if (!merged.some(m => m.id === msg.id)) {
-              merged.push(msg);
+            // Generálunk egyedi ID-t ha nincs vagy duplikált
+            let newId = msg.id ?? generateUniqueId();
+            while (seenIds.has(newId)) {
+              newId = generateUniqueId();
+              idCounter++;
+            }
+            
+            const msgWithId = { ...msg, id: newId };
+            seenIds.add(newId);
+            
+            // Szöveg alapú duplikáció ellenőrzés (azonos üzenet ne legyen kétszer)
+            const isDuplicate = merged.some(m => 
+              m.role === msgWithId.role && 
+              m.text === msgWithId.text &&
+              Math.abs((m.id || 0) - (msgWithId.id || 0)) < 60000 // 1 percen belül
+            );
+            
+            if (!isDuplicate) {
+              merged.push(msgWithId);
               newCount++;
             }
           }
+          
           console.log(`[WS] ${newCount} új üzenet összefésülve, összesen: ${merged.length}`);
           // Rendezés id (timestamp) szerint
-          merged.sort((a, b) => a.id - b.id);
+          merged.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
           const final = merged.slice(-100); // Max 100 üzenet
           // Mentjük localStorage-ba
           try {
@@ -2604,12 +3814,16 @@ const App: React.FC = () => {
     }, [selectedProjectId, selectedFilePath]),
   });
 
-  // Projekt szobához csatlakozás amikor projektet váltunk
+  // Projekt szobához csatlakozás és selectProject értesítés amikor projektet váltunk
   React.useEffect(() => {
-    if (selectedProjectId && wsConnected) {
-      wsJoinProject(selectedProjectId);
+    if (wsConnected) {
+      // Értesítjük a servert a projekt váltásról - per-client projekt kezelés
+      wsSelectProject(selectedProjectId);
+      if (selectedProjectId) {
+        wsJoinProject(selectedProjectId);
+      }
     }
-  }, [selectedProjectId, wsConnected, wsJoinProject]);
+  }, [selectedProjectId, wsConnected, wsJoinProject, wsSelectProject]);
 
   // Auto-scroll chat üzeneteknél - robusztus megoldás
   const scrollChatToBottom = React.useCallback(() => {
@@ -2647,330 +3861,6 @@ const App: React.FC = () => {
     React.useState<SuggestedPatch[]>([]);
   const [activePatch, setActivePatch] =
     React.useState<SuggestedPatch | null>(null);
-
-  // --- LLM kódból javaslat létrehozása ---
-
-  // Segédfüggvény: egyetlen kódblokkból javaslat létrehozása
-  function createSuggestionFromCodeBlock(suggestedCode: string, blockIndex: number, totalBlocks: number): CodeSuggestion | null {
-
-    // DEBUG: Ellenőrizzük a code állapotot
-    console.log(`[CREATE #${blockIndex + 1}/${totalBlocks}] code state hossza: ${code.length} karakter, ${code.split("\n").length} sor`);
-    console.log(`[CREATE #${blockIndex + 1}/${totalBlocks}] selectedFilePath: ${selectedFilePath}`);
-    
-    // ELLENŐRZÃ‰S: A javasolt kód már benne van-e a fájlban?
-    const normalizeForCompare = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-    const suggestedNorm = normalizeForCompare(suggestedCode);
-    const codeNorm = normalizeForCompare(code);
-    
-    // Ha a teljes javasolt kód megtalálható a jelenlegi kódban, már alkalmazva van
-    if (codeNorm.includes(suggestedNorm)) {
-      console.log(`[CREATE #${blockIndex + 1}/${totalBlocks}] A javasolt kód már benne van a fájlban - kihagyva`);
-      return null;
-    }
-    
-    // További ellenőrzés: csak akkor tiltjuk le, ha a javasolt kód legalább 90%-a megtalálható
-    // (Csak részleges egyezés esetén nem tiltjuk le - a felhasználó láthassa a javaslatot)
-    const suggestedLines_check = suggestedCode.trim().split("\n").filter(l => l.trim().length > 0);
-    if (suggestedLines_check.length >= 5) {
-      const codeLines_check = code.split("\n").filter(l => l.trim().length > 0);
-      
-      // Keresünk egy olyan pozíciót a kódban, ahol a javasolt kód nagy része megtalálható
-      let maxMatchCount = 0;
-      for (let startIdx = 0; startIdx < codeLines_check.length; startIdx++) {
-        let matchCount = 0;
-        for (let j = 0; j < suggestedLines_check.length && startIdx + j < codeLines_check.length; j++) {
-          if (normalizeForCompare(codeLines_check[startIdx + j]) === normalizeForCompare(suggestedLines_check[j])) {
-            matchCount++;
-          }
-        }
-        if (matchCount > maxMatchCount) {
-          maxMatchCount = matchCount;
-        }
-      }
-      
-      // Ha a javasolt kód legalább 90%-a megtalálható, akkor már alkalmazva van
-      const matchPercentage = (maxMatchCount / suggestedLines_check.length) * 100;
-      if (matchPercentage >= 90) {
-        console.log(`[CREATE #${blockIndex + 1}/${totalBlocks}] A javasolt kód ${Math.round(matchPercentage)}%-a megtalálható - kihagyva`);
-        return null;
-      }
-    }
-
-    // Intelligens snippet keresés - több sor összehasonlítással
-    const suggestedLines = suggestedCode.trim().split("\n");
-    const codeLines = code.split("\n");
-    const MAX_MATCHES = 20; // Több találatot engedünk, a felhasználó választ
-    
-    // Normalizáló függvény - whitespace eltávolítása az összehasonlításhoz
-    const normalize = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-    
-    // Debug: mutassuk az első néhány sort
-    console.log("[DEBUG] Keresett kód első 3 sora:");
-    suggestedLines.slice(0, 3).forEach((line, i) => {
-      console.log(`  ${i + 1}: "${normalize(line)}"`);
-    });
-    
-    // Ha a javasolt kód legalább 70%-a az eredetinek, teljes cserét feltételezünk
-    const isFullReplacement = suggestedLines.length >= codeLines.length * 0.7;
-    
-    let originalSnippet: string;
-    let finalSuggestedSnippet: string;
-    let matchPositions: number[] = [];
-    
-    if (isFullReplacement || code.trim() === "") {
-      // Teljes fájl csere
-      originalSnippet = code;
-      finalSuggestedSnippet = suggestedCode;
-      matchPositions = [0];
-    } else {
-      // Snippet mód - SZIGORÃš keresés több sor alapján
-      
-      // Számítsuk ki hány sornyi egyezést várunk el minimum
-      const minMatchLines = Math.min(5, suggestedLines.length);
-      
-      // Stratégia 1: Több sor pontos egyezése (legalább 5 vagy az összes sor)
-      if (suggestedLines.length >= 2) {
-        const matchPattern = suggestedLines.slice(0, minMatchLines).map(l => normalize(l));
-        
-        // Debug: nézzük meg hol van hasonló az első sor
-        const firstLineNorm = matchPattern[0];
-        let similarCount = 0;
-        for (let i = 0; i < codeLines.length; i++) {
-          const codeLine = normalize(codeLines[i]);
-          if (codeLine === firstLineNorm) {
-            console.log(`[DEBUG] Első sor egyezés a ${i + 1}. sorban`);
-            similarCount++;
-          }
-        }
-        if (similarCount > 1) {
-          console.log(`[DEBUG] Az első sor ${similarCount}x szerepel a fájlban!`);
-        }
-        
-        for (let i = 0; i < codeLines.length - minMatchLines + 1 && matchPositions.length < MAX_MATCHES; i++) {
-          let allMatch = true;
-          let mismatchInfo = "";
-          for (let j = 0; j < minMatchLines; j++) {
-            if (normalize(codeLines[i + j]) !== matchPattern[j]) {
-              allMatch = false;
-              // Ha az első sor egyezik de a többi nem, logolja
-              if (j > 0 && normalize(codeLines[i]) === matchPattern[0]) {
-                mismatchInfo = `(első sor egyezik de ${j + 1}. sor nem: "${normalize(codeLines[i + j]).substring(0, 40)}..." vs "${matchPattern[j].substring(0, 40)}...")`;
-              }
-              break;
-            }
-          }
-          if (allMatch) {
-            matchPositions.push(i);
-            console.log(`[MATCH] ${minMatchLines} soros egyezés a ${i + 1}. sortól`);
-          } else if (mismatchInfo) {
-            console.log(`[DEBUG] Részleges egyezés a ${i + 1}. sortól ${mismatchInfo}`);
-          }
-        }
-      }
-      
-      // Stratégia 2: Ha nincs 5 soros egyezés, próbáljuk 3 sorral
-      if (matchPositions.length === 0 && suggestedLines.length >= 3) {
-        const matchPattern = suggestedLines.slice(0, 3).map(l => normalize(l));
-        
-        for (let i = 0; i < codeLines.length - 2 && matchPositions.length < MAX_MATCHES; i++) {
-          if (normalize(codeLines[i]) === matchPattern[0] &&
-              normalize(codeLines[i + 1]) === matchPattern[1] &&
-              normalize(codeLines[i + 2]) === matchPattern[2]) {
-            matchPositions.push(i);
-            console.log(`[MATCH] 3 soros egyezés a ${i + 1}. sortól`);
-          }
-        }
-      }
-      
-      // Stratégia 3: Pontos első + második sor (ha van egyedi tartalom)
-      if (matchPositions.length === 0 && suggestedLines.length >= 2) {
-        const first = normalize(suggestedLines[0]);
-        const second = normalize(suggestedLines[1]);
-        
-        // Csak ha elég hosszú és egyedi a tartalom
-        if (first.length > 20 && second.length > 10) {
-          for (let i = 0; i < codeLines.length - 1 && matchPositions.length < MAX_MATCHES; i++) {
-            if (normalize(codeLines[i]) === first && 
-                normalize(codeLines[i + 1]) === second) {
-              matchPositions.push(i);
-              console.log(`[MATCH] 2 soros egyezés a ${i + 1}. sortól`);
-            }
-          }
-        }
-      }
-      
-      // Stratégia 4: Egyedi kulcsszó keresés (pl. változónév, speciális érték)
-      if (matchPositions.length === 0) {
-        // Keressünk egyedi mintákat a javasolt kódban
-        const uniquePatterns: string[] = [];
-        for (const line of suggestedLines) {
-          // Egyedi értékek keresése (pl. 'BV003108', specifikus számok)
-          const matches = line.match(/'[A-Z0-9_]{5,}'|0\.\d{4,}|\d{4,}/g);
-          if (matches) {
-            uniquePatterns.push(...matches);
-          }
-        }
-        
-        if (uniquePatterns.length > 0) {
-          // Keressük ezeket a mintákat a kódban
-          const firstUnique = uniquePatterns[0];
-          for (let i = 0; i < codeLines.length && matchPositions.length < MAX_MATCHES; i++) {
-            if (codeLines[i].includes(firstUnique)) {
-              // Ellenőrizzük, hogy a környező sorok is egyeznek-e
-              const first = normalize(suggestedLines[0]);
-              if (normalize(codeLines[i]).includes(first.substring(0, 30))) {
-                matchPositions.push(i);
-                console.log(`[MATCH] Egyedi minta (${firstUnique}) a ${i + 1}. sorban`);
-              }
-            }
-          }
-        }
-      }
-      
-      // Stratégia 5: Első sor pontos egyezés (fallback)
-      if (matchPositions.length === 0) {
-        const first = normalize(suggestedLines[0]);
-        if (first.length > 30) {
-          for (let i = 0; i < codeLines.length && matchPositions.length < MAX_MATCHES; i++) {
-            if (normalize(codeLines[i]) === first) {
-              matchPositions.push(i);
-              console.log(`[MATCH] Első sor pontos egyezés a ${i + 1}. sorban`);
-            }
-          }
-        }
-      }
-      
-      // Stratégia 6: Részleges egyezés - az első sor 60%-a egyezik
-      if (matchPositions.length === 0) {
-        const first = normalize(suggestedLines[0]);
-        if (first.length > 20) {
-          const searchLen = Math.floor(first.length * 0.6);
-          const searchPart = first.substring(0, searchLen);
-          for (let i = 0; i < codeLines.length && matchPositions.length < MAX_MATCHES; i++) {
-            if (normalize(codeLines[i]).startsWith(searchPart)) {
-              matchPositions.push(i);
-              console.log(`[MATCH] Részleges (60%) egyezés a ${i + 1}. sorban`);
-            }
-          }
-        }
-      }
-      
-      if (matchPositions.length > 0) {
-        // Rendezzük a találatokat sorrend szerint
-        matchPositions.sort((a, b) => a - b);
-        
-        // Találtunk pozíció(ka)t - az elsőt használjuk alapból
-        const foundStart = matchPositions[0];
-        const endIdx = Math.min(foundStart + suggestedLines.length, codeLines.length);
-        originalSnippet = codeLines.slice(foundStart, endIdx).join("\n");
-        finalSuggestedSnippet = suggestedCode;
-        
-        // Részletes log az összes találatról
-        console.log(`[INFO] Javaslat pozíciója: ${foundStart + 1}. sor (${matchPositions.length} találat összesen)`);
-        if (matchPositions.length > 1) {
-          console.log(`[INFO] Ã–sszes találat sorrenben: ${matchPositions.map(p => p + 1).join(", ")}. sor`);
-          console.log(`[INFO] ▶ Használd a "Következő" gombot a többi találat megtekintéséhez!`);
-        }
-      } else {
-        // Nem találtuk - új kód beszúrás a végére
-        console.log("[INFO] Nem található egyező kódrészlet, beszúrás a végére");
-        
-        let insertPoint = codeLines.length;
-        // Próbáljuk megtalálni az utolsó END; előtti pozíciót
-        for (let i = codeLines.length - 1; i >= 0; i--) {
-          const trimmed = codeLines[i].trim().toUpperCase();
-          if (trimmed === "END;" || trimmed === "END") {
-            insertPoint = i;
-            break;
-          }
-        }
-        
-        matchPositions = [insertPoint];
-        
-        if (insertPoint < codeLines.length) {
-          originalSnippet = codeLines[insertPoint];
-          finalSuggestedSnippet = suggestedCode + "\n" + codeLines[insertPoint];
-        } else {
-          originalSnippet = "/* --- Ãšj kód beszúrása --- */";
-          finalSuggestedSnippet = suggestedCode;
-        }
-      }
-    }
-    
-    // Ãšj javaslat létrehozása
-    const newSuggestion: CodeSuggestion = {
-      id: `suggestion_${Date.now()}_${blockIndex}`,
-      filePath: selectedFilePath || "aktuális kód",
-      fullCode: code,
-      originalSnippet: originalSnippet,
-      suggestedSnippet: finalSuggestedSnippet,
-      description: isFullReplacement 
-        ? `Teljes kód csere (${blockIndex + 1}/${totalBlocks})` 
-        : matchPositions.length > 1 
-          ? `Kódrészlet módosítás (${matchPositions.length} találat) (${blockIndex + 1}/${totalBlocks})`
-          : `Kódrészlet módosítás (${blockIndex + 1}/${totalBlocks})`,
-      applied: false,
-      matchPositions: matchPositions,
-      selectedPosition: 0,
-    };
-
-    return newSuggestion;
-  }
-
-  // Fő függvény: minden kódblokkot feldolgoz az LLM válaszából
-  function createSuggestionFromLastAssistant() {
-    // utolsó asszisztens üzenet keresése
-    const lastAssistant = [...chatMessages]
-      .reverse()
-      .find((m) => m.role === "assistant");
-
-    if (!lastAssistant) {
-      alert("Nincs asszisztens válasz, amiből javaslatot lehetne létrehozni.");
-      return;
-    }
-
-    // Ã–sszes kódblokk kinyerése
-    const codeBlocks = extractAllCodeBlocks(lastAssistant.text);
-    if (codeBlocks.length === 0) {
-      alert(
-        "Az utolsó asszisztens válaszban nem találtam kódot.\n\n" +
-        "Kérd meg az LLM-et, hogy adjon konkrét kódot, például:\n" +
-        "\"Írd meg a módosított kódot egy kódblokkban.\""
-      );
-      return;
-    }
-
-    console.log(`[CREATE] ${codeBlocks.length} kódblokk találva az LLM válaszában`);
-
-    // Minden kódblokkból javaslat létrehozása
-    const newSuggestions: CodeSuggestion[] = [];
-    for (let i = 0; i < codeBlocks.length; i++) {
-      const suggestion = createSuggestionFromCodeBlock(codeBlocks[i], i, codeBlocks.length);
-      if (suggestion) {
-        newSuggestions.push(suggestion);
-      }
-    }
-
-    if (newSuggestions.length === 0) {
-      alert("Az összes kódblokk már benne van a fájlban, vagy nem hozható létre javaslat belőlük.");
-      return;
-    }
-
-    // Hozzáadás a javaslatok listájához
-    setSuggestions(prev => [...prev, ...newSuggestions]);
-    setCurrentSuggestionIndex(suggestions.length); // Az első új javaslatra ugrunk
-    setActiveTab("code"); // ha mobilon vagy, ugorjon a Kód fülre
-
-    // Tájékoztatás a felhasználónak
-    if (newSuggestions.length > 1) {
-      addLogMessage("info", `✅ ${newSuggestions.length} javaslat létrehozva. Használd a ◀ ▶ gombokat a navigációhoz.`);
-    } else {
-      addLogMessage("info", `✅ 1 javaslat létrehozva.`);
-    }
-  }
-
-  // Legacy alias
-  const applyLastAssistantCodeToProjected = createSuggestionFromLastAssistant;
 
   // 1) Fájl megnyitása a patch alapján (fuzzy névfeloldással)
   async function handlePatchOpenFile(patch: SuggestedPatch) {
@@ -3055,7 +3945,265 @@ const App: React.FC = () => {
     handlePatchOpenFile(patch);
   }
 
-
+  // ═══════════════════════════════════════════════════════════════
+  // TOOL PERMISSION KEZELÉS - Jóváhagyott műveletek végrehajtása
+  // ═══════════════════════════════════════════════════════════════
+  
+  async function executeApprovedTool(permission: PendingPermission) {
+    if (!selectedProjectId) {
+      addLogMessage("error", "❌ Nincs kiválasztott projekt!");
+      return;
+    }
+    
+    try {
+      addLogMessage("info", `⏳ Művelet végrehajtása: ${permission.permission_type}...`);
+      
+      const resp = await fetch(`${BACKEND_URL}/api/agentic/execute-approved`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: selectedProjectId,
+          tool_name: permission.tool_name,
+          permission_type: permission.permission_type,
+          arguments: permission.arguments,
+        }),
+      });
+      
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        throw new Error(errText || `HTTP ${resp.status}`);
+      }
+      
+      const result = await resp.json();
+      const msgId = generateUniqueId();
+      const timestamp = new Date().toISOString();
+      
+      if (result.success) {
+        addLogMessage("success", `✅ **Művelet sikeres!**`);
+        
+        // Terminal eredmény megjelenítése
+        if (permission.permission_type === "terminal" && result.result) {
+          const terminalResultMsg: ChatMessage = {
+            id: msgId,
+            role: "system",
+            text: `### ✅ JÓVÁHAGYVA - Terminal parancs\n\n**Parancs:** \`${permission.details.command}\`\n\n**Eredmény:**\n\`\`\`\n${result.result}\n\`\`\``,
+          };
+          setChatMessages(prev => [...prev, terminalResultMsg]);
+        }
+        
+        // Fájl módosítás eredmény megjelenítése a chatben
+        if (["write", "edit"].includes(permission.permission_type)) {
+          const filePath = permission.details.path || "";
+          let linesAdded = 0;
+          let linesDeleted = 0;
+          let beforeContent = permission.details.old_text || "";
+          let afterContent = permission.details.new_text || "";
+          
+          // Ha a backend visszaadott részletes infót, használjuk azt
+          if (result.file_modification) {
+            const mod = result.file_modification;
+            linesAdded = mod.lines_added || 0;
+            linesDeleted = mod.lines_deleted || 0;
+            if (mod.before_content) beforeContent = mod.before_content;
+            if (mod.after_content) afterContent = mod.after_content;
+          } else {
+            // Becsüljük a változásokat
+            const oldLines = beforeContent.split('\n').length;
+            const newLines = afterContent.split('\n').length;
+            linesAdded = Math.max(0, newLines - oldLines);
+            linesDeleted = Math.max(0, oldLines - newLines);
+          }
+          
+          // Mentés a modifications history-ba
+          const modification: FileModification = {
+            path: filePath,
+            action: permission.permission_type === "write" ? "write" : "edit",
+            lines_added: linesAdded,
+            lines_deleted: linesDeleted,
+            before_content: beforeContent,
+            after_content: afterContent,
+            timestamp: timestamp,
+            messageId: msgId,
+          };
+          setModificationsHistory(prev => [...prev, modification]);
+          
+          // Chat üzenet a változásokkal - MINDIG LÁTSZÓDJON!
+          const modResultMsg: ChatMessage = {
+            id: msgId,
+            role: "system",
+            text: `### ✅ JÓVÁHAGYVA - Fájl módosítás\n\n` +
+                  `📁 **Fájl:** \`${filePath}\`\n` +
+                  `📊 **Változások:** +${linesAdded} sor / -${linesDeleted} sor\n\n` +
+                  `🔍 [[DIFF:${filePath}]] ← *Kattints a részletek megtekintéséhez!*\n\n` +
+                  `---\n` +
+                  `⏱️ ${formatDateTime()}`,
+            modifications: [modification],
+          };
+          setChatMessages(prev => [...prev, modResultMsg]);
+        }
+        
+        // Törlés jóváhagyása
+        if (permission.permission_type === "delete") {
+          const deletePath = permission.details.path || "";
+          const deleteMsg: ChatMessage = {
+            id: msgId,
+            role: "system",
+            text: `### ✅ JÓVÁHAGYVA - Fájl törlés\n\n` +
+                  `🗑️ **Törölve:** \`${deletePath}\`\n\n` +
+                  `⏱️ ${formatDateTime()}`,
+          };
+          setChatMessages(prev => [...prev, deleteMsg]);
+        }
+        
+        // Könyvtár létrehozás
+        if (permission.permission_type === "create_directory") {
+          const dirPath = permission.details.path || "";
+          const dirMsg: ChatMessage = {
+            id: msgId,
+            role: "system",
+            text: `### ✅ JÓVÁHAGYVA - Könyvtár létrehozás\n\n` +
+                  `📁 **Létrehozva:** \`${dirPath}\`\n\n` +
+                  `⏱️ ${formatDateTime()}`,
+          };
+          setChatMessages(prev => [...prev, dirMsg]);
+        }
+        
+        // Fájl műveletek esetén frissítsük a fájlfát és az editort
+        if (["delete", "write", "edit", "create_directory"].includes(permission.permission_type)) {
+          loadProjectFiles();
+          
+          // Ha a szerkesztett fájl éppen nyitva van, frissítsük
+          const modifiedPath = permission.details.path;
+          if (modifiedPath && (permission.permission_type === "write" || permission.permission_type === "edit")) {
+            try {
+              const fileResp = await fetch(
+                `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(modifiedPath)}`
+              );
+              if (fileResp.ok) {
+                const fileData = await fileResp.json();
+                const newContent = (fileData.content || "").replace(/^\uFEFF/, '');
+                
+                setOpenTabs(prev => {
+                  const existingIdx = prev.findIndex(t => t.path === modifiedPath);
+                  if (existingIdx >= 0) {
+                    const updated = [...prev];
+                    updated[existingIdx] = { ...updated[existingIdx], content: newContent, isDirty: false };
+                    return updated;
+                  }
+                  return prev;
+                });
+                
+                if (selectedFilePath === modifiedPath) {
+                  setCode(newContent);
+                }
+              }
+            } catch (e) {
+              console.error("[TOOL EXEC] Fájl frissítés hiba:", e);
+            }
+          }
+        }
+      } else {
+        // Sikertelen művelet - de még mindig mentsük el a chatbe!
+        addLogMessage("error", `❌ **Hiba:** ${result.error || "Ismeretlen hiba"}`);
+        
+        const errorMsg: ChatMessage = {
+          id: msgId,
+          role: "system",
+          text: `### ⚠️ SIKERTELEN - ${permission.permission_type}\n\n` +
+                `📁 **Fájl:** \`${permission.details.path || 'N/A'}\`\n` +
+                `❌ **Hiba:** ${result.error || "Ismeretlen hiba"}\n\n` +
+                `⏱️ ${formatDateTime()}`,
+        };
+        setChatMessages(prev => [...prev, errorMsg]);
+      }
+      
+      // Eltávolítjuk a pending permission-t
+      setPendingToolPermissions(prev => 
+        prev.filter(p => p.tool_call_id !== permission.tool_call_id)
+      );
+      
+    } catch (err) {
+      console.error("[TOOL EXEC] Hiba:", err);
+      addLogMessage("error", `❌ **Végrehajtási hiba:** ${err instanceof Error ? err.message : "Ismeretlen hiba"}`);
+    }
+  }
+  
+  function rejectToolPermission(permission: PendingPermission) {
+    const msgId = generateUniqueId();
+    const timestamp = new Date().toISOString();
+    
+    addLogMessage("info", `🚫 Művelet elutasítva: ${permission.permission_type}`);
+    
+    // FONTOS: Elutasításnál is mentsük el a chatbe, hogy mit utasítottunk el!
+    if (["write", "edit"].includes(permission.permission_type)) {
+      const filePath = permission.details.path || "";
+      const beforeContent = permission.details.old_text || "";
+      const afterContent = permission.details.new_text || "";
+      
+      // Becsüljük a változásokat
+      const oldLines = beforeContent.split('\n').length;
+      const newLines = afterContent.split('\n').length;
+      const linesAdded = Math.max(0, newLines - oldLines);
+      const linesDeleted = Math.max(0, oldLines - newLines);
+      
+      // Mentés a history-ba (elutasított módosításként)
+      const modification: FileModification = {
+        path: filePath,
+        action: "edit",
+        lines_added: linesAdded,
+        lines_deleted: linesDeleted,
+        before_content: beforeContent,
+        after_content: afterContent,
+        timestamp: timestamp,
+        messageId: msgId,
+      };
+      setModificationsHistory(prev => [...prev, modification]);
+      
+      const rejectMsg: ChatMessage = {
+        id: msgId,
+        role: "system",
+        text: `### ❌ ELUTASÍTVA - Fájl módosítás\n\n` +
+              `📁 **Fájl:** \`${filePath}\`\n` +
+              `📊 **Javasolt változások:** +${linesAdded} sor / -${linesDeleted} sor\n\n` +
+              `🔍 [[DIFF:${filePath}]] ← *Kattints a javasolt változások megtekintéséhez!*\n\n` +
+              `---\n` +
+              `⏱️ ${formatDateTime()} - *A módosítás NEM lett alkalmazva*`,
+        modifications: [modification],
+      };
+      setChatMessages(prev => [...prev, rejectMsg]);
+    } else if (permission.permission_type === "terminal") {
+      const rejectMsg: ChatMessage = {
+        id: msgId,
+        role: "system",
+        text: `### ❌ ELUTASÍTVA - Terminal parancs\n\n` +
+              `🖥️ **Parancs:** \`${permission.details.command}\`\n\n` +
+              `⏱️ ${formatDateTime()} - *A parancs NEM lett végrehajtva*`,
+      };
+      setChatMessages(prev => [...prev, rejectMsg]);
+    } else if (permission.permission_type === "delete") {
+      const rejectMsg: ChatMessage = {
+        id: msgId,
+        role: "system",
+        text: `### ❌ ELUTASÍTVA - Fájl törlés\n\n` +
+              `🗑️ **Fájl:** \`${permission.details.path}\`\n\n` +
+              `⏱️ ${formatDateTime()} - *A fájl NEM lett törölve*`,
+      };
+      setChatMessages(prev => [...prev, rejectMsg]);
+    } else if (permission.permission_type === "create_directory") {
+      const rejectMsg: ChatMessage = {
+        id: msgId,
+        role: "system",
+        text: `### ❌ ELUTASÍTVA - Könyvtár létrehozás\n\n` +
+              `📁 **Könyvtár:** \`${permission.details.path}\`\n\n` +
+              `⏱️ ${formatDateTime()} - *A könyvtár NEM lett létrehozva*`,
+      };
+      setChatMessages(prev => [...prev, rejectMsg]);
+    }
+    
+    setPendingToolPermissions(prev => 
+      prev.filter(p => p.tool_call_id !== permission.tool_call_id)
+    );
+  }
 
   // --- Undo/Redo segédfüggvények (REDO fix) ---
 
@@ -3230,6 +4378,13 @@ const App: React.FC = () => {
       }
   }, [selectedProjectId]);
 
+  // Fájlok frissítése trigger alapján (agentic módosítások után)
+  React.useEffect(() => {
+    if (refreshFilesTrigger > 0) {
+      loadProjectFiles();
+    }
+  }, [refreshFilesTrigger, loadProjectFiles]);
+
   // Automatikus fájllista frissítés (polling) - csak ha az ablak aktív
   // KAPCSOLVA KI a teljesítmény javítása érdekében - használd a manuális Refresh gombot!
   /*
@@ -3334,10 +4489,15 @@ const App: React.FC = () => {
     const processedProjected = loaded.projected;
 
     console.log(`[PROJECT LOAD] localStorage-ból: ${processedSource.split("\n").length} sor`);
+    console.log(`[PROJECT LOAD] filePath: ${loaded.filePath || 'nincs'}`);
 
     restoringRef.current = true;
     setSourceCode(processedSource);
     setProjectedCode(processedProjected);
+    // FONTOS: Fájl útvonal visszaállítása!
+    if (loaded.filePath) {
+      setSelectedFilePath(loaded.filePath);
+    }
     restoringRef.current = false;
 
     const snap: CodeSnapshot = {
@@ -3393,7 +4553,7 @@ React.useEffect(() => {
   React.useEffect(() => {
     if (!selectedProjectId) return;
     if (restoringRef.current) return;
-    const toSave: ProjectCode = { source: sourceCode, projected: projectedCode };
+    const toSave: ProjectCode = { source: sourceCode, projected: projectedCode, filePath: selectedFilePath || undefined };
     saveProjectCode(selectedProjectId, toSave);
     pushHistory(sourceCode, projectedCode);
   }, [selectedProjectId, sourceCode, projectedCode, pushHistory]);
@@ -3774,15 +4934,26 @@ React.useEffect(() => {
       const rawLines = data.content.split("\n").length;
       console.log(`[LOAD] Fájl: ${data.path}`);
       console.log(`[LOAD] Backend-ről érkezett: ${data.content.length} karakter, ${rawLines} sor`);
-      console.log(`[LOAD] Első sor: "${data.content.split("\n")[0]?.substring(0, 80)}..."`);
+
+      // ═══════════════════════════════════════════════════════════════
+      // TAB RENDSZER: Nyissuk meg új tab-ban (vagy aktiváljuk ha már nyitva)
+      // ═══════════════════════════════════════════════════════════════
+      const existingTabIndex = openTabs.findIndex(t => t.path === data.path);
+      if (existingTabIndex >= 0) {
+        // Már nyitva van - frissítsük a tartalmát és aktiváljuk
+        setOpenTabs(prev => prev.map((t, i) => 
+          i === existingTabIndex ? { ...t, content: data.content } : t
+        ));
+        setActiveTabIndex(existingTabIndex);
+      } else {
+        // Új tab
+        const newTab = { path: data.path, content: data.content, isDirty: false };
+        setOpenTabs(prev => [...prev, newTab]);
+        setActiveTabIndex(openTabs.length);
+      }
 
       setSelectedFilePath(data.path);
-
-      // NE alkalmazzuk a maxLines-t a fő kódra - az eredeti tartalmat tároljuk!
-      console.log(`[LOAD] maxLines beállítás: ${sourceSettings.maxLines} (ignorálva a fő kódnál)`);
-      
       setCode(data.content);
-
       setHistory([{ source: data.content, projected: "" }]);
       setHistoryIndex(0);
     } catch (err: any) {
@@ -3813,38 +4984,113 @@ React.useEffect(() => {
 
 
 
-	function renderAssistantMessage(text: string): React.ReactNode {
+	function renderAssistantMessage(text: string, modifications?: FileModification[]): React.ReactNode {
 	  // Elfogad:
 	  // [FILE: valami\útvonal | chunk #12]
 	  // (FILE: valami/útvonal | chunk #0)
-	  const regex = /[\[\(]FILE:\s*([^|\]\)]+)(?:[^\]\)]*)[\]\)]/g;
+	  // [[DIFF:path]] - diff nézet link
 
 	  const nodes: React.ReactNode[] = [];
 	  let lastIndex = 0;
+	  
+	  // Kombinált regex a FILE és DIFF linkekhez
+	  const combinedRegex = /(?:[\[\(]FILE:\s*([^|\]\)]+)(?:[^\]\)]*)[\]\)])|(?:\[\[DIFF:([^\]]+)\]\])/g;
 	  let match: RegExpExecArray | null;
 
-	  while ((match = regex.exec(text)) !== null) {
+	  while ((match = combinedRegex.exec(text)) !== null) {
 		if (match.index > lastIndex) {
 		  nodes.push(text.slice(lastIndex, match.index));
 		}
 
-		const rawPath = match[1].trim();
-		const filePath = rawPath.replace(/\\/g, "/");
+		if (match[1]) {
+		  // FILE link
+		  const rawPath = match[1].trim();
+		  const filePath = rawPath.replace(/\\/g, "/");
 
-		nodes.push(
-		  <button
-			key={`${filePath}-${match.index}`}
-			className="chat-file-link"
-			onClick={(e) => {
-			  e.stopPropagation();
-			  handleChatFileClick(filePath);
-			}}
-		  >
-			{`[FILE: ${filePath}]`}
-		  </button>
-		);
+		  nodes.push(
+			<button
+			  key={`file-${filePath}-${match.index}`}
+			  className="chat-file-link"
+			  onClick={(e) => {
+				e.stopPropagation();
+				handleChatFileClick(filePath);
+			  }}
+			>
+			  {`[FILE: ${filePath}]`}
+			</button>
+		  );
+		} else if (match[2]) {
+		  // DIFF link - kattintható gomb a diff megtekintéséhez
+		  const diffPath = match[2].trim();
+		  
+		  // Keressük meg a módosítás adatait
+		  const mod = modifications?.find(m => m.path === diffPath);
+		  const historyMod = !mod ? modificationsHistory.find(m => m.path === diffPath) : null;
+		  const foundMod = mod || historyMod;
+		  
+		  nodes.push(
+			<button
+			  key={`diff-${diffPath}-${match.index}`}
+			  className="chat-diff-link"
+			  onClick={(e) => {
+				e.stopPropagation();
+				
+				// ⚠️ FONTOS: Csak az AKTUÁLIS ÜZENET módosításait használjuk!
+				// NE keverjük a history-val, mert az összekeveri a before/after-t!
+				const currentMsgMods = (modifications || []).filter(
+				  m => m.path === diffPath && m.before_content && m.after_content
+				);
+				
+				// Ha nincs az üzenetben, keressük a history-ban (de csak EGYETLEN bejegyzést!)
+				let modToShow: FileModification | null = null;
+				if (currentMsgMods.length > 0) {
+				  // Ha több módosítás volt ugyanarra a fájlra EGY üzenetben
+				  modToShow = currentMsgMods[currentMsgMods.length - 1]; // Utolsó állapot
+				} else {
+				  // Keressük a history-ban a LEGUTOLSÓ módosítást erre a fájlra
+				  const historyMods = modificationsHistory
+				    .filter(m => m.path === diffPath && m.before_content && m.after_content)
+				    .slice(-1); // Csak a legutolsó
+				  modToShow = historyMods[0] || null;
+				}
+				
+				if (modToShow) {
+				  // Csak az aktuális üzenet egyedi fájljait mutassuk navigációban
+				  const uniqueFilesInMsg = (modifications || []).filter(m => m.before_content && m.after_content);
+				  const seenPaths = new Set<string>();
+				  const uniqueMods: FileModification[] = [];
+				  for (const m of uniqueFilesInMsg) {
+				    if (!seenPaths.has(m.path)) {
+				      seenPaths.add(m.path);
+				      uniqueMods.push(m);
+				    }
+				  }
+				  
+				  const clickedIndex = uniqueMods.findIndex(m => m.path === diffPath);
+				  
+				  setAllDiffModifications(uniqueMods.length > 0 ? uniqueMods : [modToShow]);
+				  setCurrentDiffModIndex(clickedIndex >= 0 ? clickedIndex : 0);
+				  setDiffViewData({
+					path: diffPath,
+					before: modToShow.before_content || '',
+					after: modToShow.after_content || '',
+					linesAdded: modToShow.lines_added || 0,
+					linesDeleted: modToShow.lines_deleted || 0,
+				  });
+				  setShowDiffViewer(true);
+				} else {
+				  alert(`Nincs elérhető diff adat a "${diffPath}" fájlhoz.\nA diff adatok elvesztek a frissítés után.`);
+				}
+			  }}
+			  title="Kattints a változások megtekintéséhez"
+			>
+			  <span className="diff-link-icon">📄</span>
+			  <span className="diff-link-path">{diffPath}</span>
+			</button>
+		  );
+		}
 
-		lastIndex = regex.lastIndex;
+		lastIndex = combinedRegex.lastIndex;
 	  }
 
 	  if (lastIndex < text.length) {
@@ -3861,7 +5107,7 @@ React.useEffect(() => {
     if (!text) return;
 
     const newUserMsg: ChatMessage = {
-      id: Date.now(),
+      id: generateUniqueId(),
       role: "user",
       text,
     };
@@ -3875,21 +5121,138 @@ React.useEffect(() => {
     wsSendChat(newUserMsg, selectedProjectId ?? undefined);
 
     try {
-		const history = [...chatMessages, newUserMsg].map(m => ({ role: m.role, text: m.text }));
+      // FONTOS: A 'system' üzeneteket ki kell szűrni - a backend csak 'user' és 'assistant' role-t fogad!
+      const history = [...chatMessages, newUserMsg]
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({ role: m.role, text: m.text }));
 
-		const resp = await fetch(`${BACKEND_URL}/chat`, {
-		  method: "POST",
-		  headers: { "Content-Type": "application/json" },
-		  body: JSON.stringify({
-			message: text,
-			project_id: selectedProjectId,
-			source_code: sourceCode,
-			projected_code: projectedCode,
-			history,
-			session_id: sessionId, // Session tracking for Smart Context
-			auto_mode: autoMode, // Ha True, automatikus végrehajtás backup-pal
-		  }),
-		});
+      // ═══════════════════════════════════════════════════════════════
+      // FRISS FÁJL TARTALOM BETÖLTÉSE - hogy az LLM a legújabb verziót lássa!
+      // MINDIG a friss tartalommal dolgozunk, függetlenül attól mi van az editorban!
+      // ═══════════════════════════════════════════════════════════════
+      let freshSourceCode = sourceCode;
+      let targetFilePath = selectedFilePath;
+      
+      console.log(`[CHAT] 🔍 Fájl keresés indítása...`);
+      console.log(`[CHAT] 🔍 selectedFilePath: ${selectedFilePath}`);
+      console.log(`[CHAT] 🔍 filesTree: ${filesTree ? filesTree.length + ' elem' : 'NULL!'}`);
+      console.log(`[CHAT] 🔍 chatMessages: ${chatMessages.length} db`);
+      
+      // 1. Ha van kiválasztott fájl, azt használjuk
+      // 2. Ha nincs, keressük @mention-ban
+      // 3. Ha nincs, keressük a chat history-ban (korábbi CODE_CHANGE-ek)
+      // 4. Ha nincs, keressük a suggestedPatches-ben
+      
+      if (!targetFilePath) {
+        // @mention keresése az aktuális üzenetben
+        if (text.includes('@')) {
+          const atMatch = text.match(/@([\w\-./]+\.\w+)/);
+          if (atMatch && filesTree) {
+            const resolved = resolvePathFromTree(atMatch[1], filesTree);
+            if (resolved) {
+              targetFilePath = resolved;
+              console.log(`[CHAT] ✓ @mention feloldva: ${resolved}`);
+            }
+          }
+        }
+      }
+      
+      if (!targetFilePath && chatMessages.length > 0) {
+        // Chat history-ban keresés - korábbi CODE_CHANGE file path-ok
+        console.log(`[CHAT] 🔍 Chat history keresés...`);
+        const recentAssistant = [...chatMessages].reverse().find(m => m.role === 'assistant');
+        if (recentAssistant) {
+          console.log(`[CHAT] 🔍 Utolsó assistant üzenet (első 200 kar): ${recentAssistant.text.substring(0, 200)}`);
+          const fileMatch = recentAssistant.text.match(/FILE:\s*([\w\-./]+\.\w+)/i);
+          console.log(`[CHAT] 🔍 FILE match: ${fileMatch ? fileMatch[1] : 'nincs'}`);
+          if (fileMatch) {
+            if (filesTree) {
+              const resolved = resolvePathFromTree(fileMatch[1], filesTree);
+              console.log(`[CHAT] 🔍 Resolved: ${resolved}`);
+              if (resolved) {
+                targetFilePath = resolved;
+                console.log(`[CHAT] ✓ Chat history-ból: ${resolved}`);
+              }
+            } else {
+              // Ha nincs filesTree, használjuk közvetlenül
+              targetFilePath = fileMatch[1];
+              console.log(`[CHAT] ✓ Chat history-ból (direct): ${targetFilePath}`);
+            }
+          }
+        } else {
+          console.log(`[CHAT] ⚠️ Nincs assistant üzenet a history-ban`);
+        }
+      }
+      
+      if (!targetFilePath && suggestedPatches.length > 0) {
+        // SuggestedPatches-ből (legutóbbi sikertelen patch-ek)
+        const patchPath = suggestedPatches[0].filePath;
+        console.log(`[CHAT] 🔍 SuggestedPatches keresés: ${patchPath}`);
+        if (filesTree) {
+          const resolved = resolvePathFromTree(patchPath, filesTree);
+          if (resolved) {
+            targetFilePath = resolved;
+            console.log(`[CHAT] ✓ Korábbi patch-ből: ${resolved}`);
+          }
+        } else {
+          targetFilePath = patchPath;
+          console.log(`[CHAT] ✓ Korábbi patch-ből (direct): ${targetFilePath}`);
+        }
+      }
+      
+      // MINDIG frissítünk lemezről ha van target fájl!
+      console.log(`[CHAT] 🔍 Target fájl: ${targetFilePath || 'NINCS!'}`);
+      console.log(`[CHAT] 🔍 selectedProjectId: ${selectedProjectId}`);
+      
+      if (selectedProjectId && targetFilePath) {
+        try {
+          console.log(`[CHAT] 🔄 Fájl FRISSÍTÉSE lemezről: ${targetFilePath}`);
+          const fileResp = await fetch(
+            `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(targetFilePath)}`
+          );
+          if (fileResp.ok) {
+            const fileData = await fileResp.json();
+            freshSourceCode = (fileData.content || "").replace(/^\uFEFF/, '');
+            console.log(`[CHAT] ✅ FRISS tartalom betöltve: ${freshSourceCode.length} byte`);
+            console.log(`[CHAT] ✅ Fájl első 100 kar: ${freshSourceCode.substring(0, 100)}`);
+            
+            // Frissítsük az editort és a selectedFilePath-ot is!
+            setCode(freshSourceCode);
+            setSelectedFilePath(targetFilePath);
+          } else {
+            console.error(`[CHAT] ❌ Fájl betöltés HTTP hiba: ${fileResp.status}`);
+          }
+        } catch (e) {
+          console.error(`[CHAT] ❌ Fájl frissítés hiba:`, e);
+        }
+      } else {
+        console.warn(`[CHAT] ⚠️ Nem sikerült target fájlt találni!`);
+        console.warn(`[CHAT] ⚠️ source_code: ${sourceCode.length} byte (lehet ELAVULT!)`);
+      }
+
+      // 5 perces timeout az agentic műveletek miatt
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        addLogMessage("error", "⏱️ Chat timeout (5 perc) - az LLM válasz túl sokáig tartott");
+      }, 5 * 60 * 1000); // 5 perc
+
+      const resp = await fetch(`${BACKEND_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          message: text,
+          project_id: selectedProjectId,
+          source_code: freshSourceCode,
+          projected_code: projectedCode,
+          history,
+          session_id: sessionId, // Session tracking for Smart Context
+          auto_mode: autoMode, // Ha True, automatikus végrehajtás backup-pal
+        }),
+      });
+      
+      clearTimeout(timeoutId);
 
       if (!resp.ok) {
         const errText = await resp.text();
@@ -3915,18 +5278,96 @@ React.useEffect(() => {
           is_valid: boolean;
           validation_error?: string;
         }>;
+        modified_files?: Array<{
+          path: string;
+          action: string;
+          lines_added?: number;
+          lines_deleted?: number;
+          before_content?: string;
+          after_content?: string;
+        }>;
         had_errors?: boolean;
         retry_attempted?: boolean;
+        tool_calls_count?: number;
+        agentic_mode_used?: boolean;
+        pending_permissions?: PendingPermission[];
       } = await resp.json();
       const replyText = data.reply;
 
+      // Ha voltak fájl módosítások, készítsünk összefoglalót és tároljuk
+      let enhancedReply = replyText;
+      let messageModifications: FileModification[] = [];
+      const msgId = generateUniqueId() + 1;
+      
+      if (data.agentic_mode_used && data.modified_files && data.modified_files.length > 0) {
+        // ⚠️ Szűrjük ki a VALÓBAN módosított fájlokat (ahol tényleg történt változás)
+        const actualChatMods = data.modified_files.filter((f: any) => 
+          (f.lines_added > 0 || f.lines_deleted > 0)
+        );
+        
+        // ⚠️ FONTOS: Csoportosítsuk a módosításokat FÁJLNÉV szerint!
+        // Ha ugyanarra a fájlra több apply_edit hívás volt, egyesítsük őket!
+        const groupedByPath = new Map<string, any>();
+        for (const mod of actualChatMods) {
+          const existing = groupedByPath.get(mod.path);
+          if (existing) {
+            // Összevonjuk: első before, utolsó after, összegzett sorok
+            existing.lines_added += mod.lines_added || 0;
+            existing.lines_deleted += mod.lines_deleted || 0;
+            existing.after_content = mod.after_content; // Utolsó állapot
+          } else {
+            groupedByPath.set(mod.path, { ...mod });
+          }
+        }
+        const uniqueFileMods = Array.from(groupedByPath.values());
+        
+        const hasActualChanges = uniqueFileMods.length > 0;
+        
+        const totalAdded = uniqueFileMods.reduce((sum: number, f: any) => sum + (f.lines_added || 0), 0);
+        const totalDeleted = uniqueFileMods.reduce((sum: number, f: any) => sum + (f.lines_deleted || 0), 0);
+        
+        // Módosítások mentése - csoportosított, egyedi fájlok
+        messageModifications = uniqueFileMods.map((f: any) => ({
+          path: f.path,
+          action: f.action || 'edit',
+          lines_added: f.lines_added || 0,
+          lines_deleted: f.lines_deleted || 0,
+          before_content: f.before_content,
+          after_content: f.after_content,
+          timestamp: new Date().toISOString(),
+          messageId: msgId,
+        }));
+        
+        if (hasActualChanges) {
+          let filesSummary = '\n\n---\n### ✅ Fájlok sikeresen módosítva\n\n';
+          for (const file of uniqueFileMods) {
+            const linesInfo = ` **(+${file.lines_added || 0}/-${file.lines_deleted || 0})**`;
+            const action = file.action === 'create' ? '🆕' : file.action === 'edit' ? '✏️' : '📝';
+            // Kattintható link formátum: [[DIFF:path]]
+            filesSummary += `${action} [[DIFF:${file.path}]]${linesInfo}\n`;
+          }
+          filesSummary += `\n**Összesen:** ${uniqueFileMods.length} fájl (+${totalAdded}/-${totalDeleted} sor)\n`;
+          filesSummary += `\n*Kattints a fájlnévre a változások megtekintéséhez!*`;
+          enhancedReply = replyText + filesSummary;
+        } else {
+          // Nem történt tényleges módosítás
+          enhancedReply = replyText + '\n\n---\n### ℹ️ Megjegyzés\nA fájlok nem lettek módosítva (a kért változások már alkalmazva voltak, vagy nem találtam módosítanivalót).';
+        }
+      }
+
       const assistantMsg: ChatMessage = {
-        id: Date.now() + 1,
+        id: msgId,
         role: "assistant",
-        text: replyText,
+        text: enhancedReply,
+        modifications: messageModifications.length > 0 ? messageModifications : undefined,
       };
 
       setChatMessages((prev) => [...prev, assistantMsg]);
+      
+      // Módosítások mentése a történetbe
+      if (messageModifications.length > 0) {
+        setModificationsHistory(prev => [...prev, ...messageModifications]);
+      }
       
       // WebSocket broadcast - asszisztens válasz szinkronizálása
       wsSendChat(assistantMsg, selectedProjectId ?? undefined);
@@ -3946,6 +5387,139 @@ React.useEffect(() => {
         }
       }
 
+      // ═══════════════════════════════════════════════════════════════
+      // JÓVÁHAGYÁSRA VÁRÓ MŰVELETEK KEZELÉSE (MINDEN MÓDBAN!)
+      // Terminal parancsok, fájl törlések, stb. - mindig user jóváhagyás kell
+      // ═══════════════════════════════════════════════════════════════
+      if (data.pending_permissions && data.pending_permissions.length > 0) {
+        console.log(`[PERMISSIONS] 🔐 ${data.pending_permissions.length} jóváhagyásra váró művelet`);
+        
+        // Deduplikált hozzáadás - ne legyenek duplikátumok
+        setPendingToolPermissions(prev => {
+          const newPerms = data.pending_permissions!.filter(newPerm => 
+            !prev.some(existing => 
+              existing.tool_name === newPerm.tool_name &&
+              existing.permission_type === newPerm.permission_type &&
+              JSON.stringify(existing.arguments) === JSON.stringify(newPerm.arguments)
+            )
+          );
+          return [...prev, ...newPerms];
+        });
+        
+        // Logoljuk a felhasználónak
+        for (const perm of data.pending_permissions) {
+          if (perm.permission_type === "terminal") {
+            addLogMessage("warning", `⚠️ **JÓVÁHAGYÁS SZÜKSÉGES** - Terminal parancs: \`${perm.details.command}\``);
+          } else if (perm.permission_type === "delete") {
+            addLogMessage("warning", `⚠️ **JÓVÁHAGYÁS SZÜKSÉGES** - Fájl törlés: \`${perm.details.path}\``);
+          } else if (perm.permission_type === "write") {
+            addLogMessage("warning", `⚠️ **JÓVÁHAGYÁS SZÜKSÉGES** - Fájl írás: \`${perm.details.path}\``);
+          } else if (perm.permission_type === "edit") {
+            addLogMessage("warning", `⚠️ **JÓVÁHAGYÁS SZÜKSÉGES** - Fájl szerkesztés: \`${perm.details.path}\``);
+          } else if (perm.permission_type === "create_directory") {
+            addLogMessage("warning", `⚠️ **JÓVÁHAGYÁS SZÜKSÉGES** - Könyvtár létrehozás: \`${perm.details.path}\``);
+          }
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // AGENTIC MODE: Az LLM már közvetlenül módosította a fájlokat!
+      // ═══════════════════════════════════════════════════════════════
+      if (data.agentic_mode_used && data.modified_files) {
+        // Szűrjük ki a VALÓBAN módosított fájlokat (ahol történt változás)
+        const actuallyModifiedFiles = data.modified_files.filter(
+          (f: any) => (f.lines_added || 0) > 0 || (f.lines_deleted || 0) > 0
+        );
+        
+        console.log(`[AGENTIC] ✅ Agentic mode - ${actuallyModifiedFiles.length} fájl ténylegesen módosítva (${data.modified_files.length} érintett), ${data.tool_calls_count || 0} tool hívás`);
+        
+        // Logoljuk a módosított fájlokat RÉSZLETESEN
+        if (actuallyModifiedFiles.length > 0) {
+          // Részletes log minden fájlról
+          for (const file of actuallyModifiedFiles) {
+            const linesInfo = ` (+${file.lines_added || 0}/-${file.lines_deleted || 0} sor)`;
+            addLogMessage("success", `📝 **${file.action?.toUpperCase() || 'MÓDOSÍTVA'}**: \`${file.path}\`${linesInfo}`);
+          }
+          
+          // Összefoglaló
+          const totalAdded = actuallyModifiedFiles.reduce((sum: number, f: any) => sum + (f.lines_added || 0), 0);
+          const totalDeleted = actuallyModifiedFiles.reduce((sum: number, f: any) => sum + (f.lines_deleted || 0), 0);
+          addLogMessage("success", `🎉 **ÖSSZESEN**: ${actuallyModifiedFiles.length} fájl módosítva (+${totalAdded}/-${totalDeleted} sor)`);
+          
+          // Minden módosított fájlt nyissunk meg tab-ban és frissítsük
+          for (const file of actuallyModifiedFiles) {
+            try {
+              // Frissítsük a fájl tartalmát a lemezről
+              if (selectedProjectId) {
+                const fileResp = await fetch(
+                  `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(file.path)}`
+                );
+                if (fileResp.ok) {
+                  const fileData = await fileResp.json();
+                  const newContent = (fileData.content || "").replace(/^\uFEFF/, '');
+                  
+                  // Tab megnyitása/frissítése - openTabs használata!
+                  setOpenTabs(prev => {
+                    const existingIdx = prev.findIndex(t => t.path === file.path);
+                    if (existingIdx >= 0) {
+                      const updated = [...prev];
+                      updated[existingIdx] = { ...updated[existingIdx], content: newContent, isDirty: false };
+                      return updated;
+                    } else {
+                      return [...prev, { path: file.path, content: newContent, isDirty: false }].slice(-10);
+                    }
+                  });
+                  
+                  // Ha ez az aktív fájl, frissítsük az editort is
+                  if (selectedFilePath === file.path) {
+                    setCode(newContent);
+                  }
+                  
+                  console.log(`[AGENTIC] ✅ Tab frissítve: ${file.path}`);
+                }
+              }
+            } catch (e) {
+              console.error(`[AGENTIC] ❌ Fájl frissítés hiba: ${file.path}`, e);
+            }
+          }
+          
+          // Első módosított fájl aktiválása ha nincs aktív fájl
+          if (!selectedFilePath && actuallyModifiedFiles.length > 0) {
+            const firstFile = actuallyModifiedFiles[0].path;
+            // Használjuk az openFileInTab függvényt a megfelelő betöltéshez
+            try {
+              const fileResp = await fetch(
+                `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(firstFile)}`
+              );
+              if (fileResp.ok) {
+                const fileData = await fileResp.json();
+                const content = (fileData.content || "").replace(/^\uFEFF/, '');
+                setCode(content);
+                setSelectedFilePath(firstFile);
+                setActiveTab("code");
+              }
+            } catch (e) {
+              console.error(`[AGENTIC] ❌ Első fájl betöltés hiba:`, e);
+            }
+          }
+        } else {
+          addLogMessage("info", "🤖 **AGENTIC MÓD** - Nincs fájl módosítás (csak olvasás/keresés történt)");
+        }
+        
+        // Fájlfa frissítése
+        if (selectedProjectId) {
+          loadProjectFiles();
+        }
+        
+        // Agentic módban nincs szükség patch matching-re - KÉSZ!
+        setChatLoading(false);
+        return;
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // LEGACY MODE: [CODE_CHANGE] blokkok feldolgozása
+      // ═══════════════════════════════════════════════════════════════
+      
       // 1. ELŐSZÖR: Strukturált code_changes a backend response-ból (megbízhatóbb)
       let newPatches: SuggestedPatch[] = [];
       
@@ -4016,222 +5590,163 @@ React.useEffect(() => {
           setSuggestedPatches((prev) => [...prev, ...newPatches]);
         } else if (autoMode) {
           // ═══════════════════════════════════════════════════════
-          // AUTO MÓD: Automatikus alkalmazás + összefoglaló
+          // AUTO MÓD: Automatikus alkalmazás + chat összefoglaló
           // ═══════════════════════════════════════════════════════
           addLogMessage("info", `🤖 **AUTO MÓD** - ${newPatches.length} módosítás automatikus alkalmazása...`);
-          let appliedCount = 0;
-          let failedCount = 0;
-          let currentEditorCode = code;
+          
+          // Közös applyPatch függvény használata
+          // MINDIG lemezről töltjük!
+          const results: PatchResult[] = [];
+          const modifiedFiles = new Set<string>();
           
           for (const patch of newPatches) {
-            const patchFileName = patch.filePath.split('/').pop()?.toLowerCase();
-            const currentFileName = selectedFilePath?.split('/').pop()?.toLowerCase();
-            const isCurrentFile = patchFileName === currentFileName;
+            const result = await applyPatch(
+              patch, 
+              selectedProjectId, 
+              filesTree, 
+              BACKEND_URL
+            );
+            results.push(result);
             
-            try {
-              // 1. Először betöltjük a cél fájlt a backend-ről
-              const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(patch.filePath)}`);
-              
-              if (!loadRes.ok) {
-                addLogMessage("error", `❌ Nem található: ${patch.filePath}`);
-                failedCount++;
-                continue;
-              }
-              
-              const loadData = await loadRes.json();
-              let fileContent = loadData.content || "";
-              
-              // Helper: ékezetek normalizálása összehasonlításhoz
-              // Kezeli a double-encoded UTF-8 karaktereket is!
-              const normalizeForCompare = (str: string) => {
-                return str
-                  // Double-encoded UTF-8 patterns
-                  .replace(/Ã¡/g, 'a').replace(/Ã©/g, 'e').replace(/Ã­/g, 'i')
-                  .replace(/Ã³/g, 'o').replace(/Ã¶/g, 'o').replace(/Å'/g, 'o')
-                  .replace(/Ãº/g, 'u').replace(/Ã¼/g, 'u').replace(/Å±/g, 'u')
-                  .replace(/Ã/g, 'A').replace(/Ã‰/g, 'E').replace(/Ã/g, 'I')
-                  .replace(/Ã"/g, 'O').replace(/Ã–/g, 'O').replace(/Å/g, 'O')
-                  .replace(/Ãš/g, 'U').replace(/Ãœ/g, 'U').replace(/Å°/g, 'U')
-                  // Normal ékezetek
-                  .normalize('NFD')
-                  .replace(/[\u0300-\u036f]/g, '')
-                  .replace(/[áàâäãå]/gi, 'a')
-                  .replace(/[éèêë]/gi, 'e')
-                  .replace(/[íìîï]/gi, 'i')
-                  .replace(/[óòôöõő]/gi, 'o')
-                  .replace(/[úùûüű]/gi, 'u')
-                  .replace(/\s+/g, ' ')
-                  .trim()
-                  .toLowerCase();
-              };
-              
-              // 2. Ellenőrizzük és alkalmazzuk a patch-et
-              // Először próbáljuk pontos egyezéssel
-              if (fileContent.includes(patch.original)) {
-                const occurrences = fileContent.split(patch.original).length - 1;
-                if (occurrences === 1) {
-                  fileContent = fileContent.replace(patch.original, patch.modified);
-                  
-                  // 3. Mentés a backend-re
-                  const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      rel_path: patch.filePath,
-                      content: fileContent,
-                      encoding: "utf-8",
-                    }),
-                  });
-                  
-                  if (saveRes.ok) {
-                    appliedCount++;
-                    addLogMessage("success", `✅ Alkalmazva: ${patch.filePath}`);
-                    
-                    // Ha a jelenleg megnyitott fájl, frissítsük az editort is
-                    if (isCurrentFile) {
-                      currentEditorCode = fileContent;
-                    }
-                  } else {
-                    failedCount++;
-                    addLogMessage("error", `❌ Mentési hiba: ${patch.filePath}`);
-                  }
-                } else {
-                  addLogMessage("warning", `⚠️ Többszörös egyezés (${occurrences}x) - ${patch.filePath}`);
-                  failedCount++;
-                }
-              } else if (fileContent.includes(patch.original.trim())) {
-                // Whitespace-toleráns
-                fileContent = fileContent.replace(patch.original.trim(), patch.modified.trim());
-                
-                const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    rel_path: patch.filePath,
-                    content: fileContent,
-                    encoding: "utf-8",
-                  }),
-                });
-                
-                if (saveRes.ok) {
-                  appliedCount++;
-                  addLogMessage("info", `✅ Alkalmazva (whitespace-toleráns): ${patch.filePath}`);
-                  if (isCurrentFile) {
-                    currentEditorCode = fileContent;
-                  }
-                } else {
-                  failedCount++;
-                }
-              } else {
-                // Ékezet-toleráns keresés - soronként próbáljuk megtalálni
-                const originalLines = patch.original.split('\n');
-                const fileLines = fileContent.split('\n');
-                let foundStartIdx = -1;
-                
-                // Keressük meg az első sor normalizált verzióját
-                const normalizedFirstLine = normalizeForCompare(originalLines[0]);
-                for (let i = 0; i < fileLines.length; i++) {
-                  if (normalizeForCompare(fileLines[i]) === normalizedFirstLine) {
-                    // Ellenőrizzük a többi sort is
-                    let allMatch = true;
-                    for (let j = 1; j < originalLines.length && i + j < fileLines.length; j++) {
-                      if (normalizeForCompare(fileLines[i + j]) !== normalizeForCompare(originalLines[j])) {
-                        allMatch = false;
-                        break;
-                      }
-                    }
-                    if (allMatch) {
-                      foundStartIdx = i;
-                      break;
-                    }
-                  }
-                }
-                
-                if (foundStartIdx >= 0) {
-                  // Megtaláltuk - cseréljük ki a sorokat
-                  const newLines = [...fileLines];
-                  newLines.splice(foundStartIdx, originalLines.length, ...patch.modified.split('\n'));
-                  fileContent = newLines.join('\n');
-                  
-                  const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      rel_path: patch.filePath,
-                      content: fileContent,
-                      encoding: "utf-8",
-                    }),
-                  });
-                  
-                  if (saveRes.ok) {
-                    appliedCount++;
-                    addLogMessage("info", `✅ Alkalmazva (ékezet-toleráns): ${patch.filePath}`);
-                    if (isCurrentFile) {
-                      currentEditorCode = fileContent;
-                    }
-                  } else {
-                    failedCount++;
-                  }
-                } else {
-                  failedCount++;
-                  addLogMessage("warning", `⚠️ Eredeti kód nem található: ${patch.filePath}`);
-                  console.log("[AUTO MODE] Keresett:", patch.original.substring(0, 100));
-                }
-              }
-            } catch (err) {
-              console.error("[AUTO MODE] Hiba:", err);
-              failedCount++;
-              addLogMessage("error", `❌ Hiba: ${patch.filePath}`);
+            // Track módosított fájlok
+            if (result.success && result.resolvedPath) {
+              modifiedFiles.add(result.resolvedPath);
             }
           }
           
-          // Frissítsük az editort ha változott
-          if (currentEditorCode !== code) {
-            setCode(currentEditorCode);
+          // ═══════════════════════════════════════════════════════════════
+          // TÖBB FÁJL MÓDOSÍTÁS: Minden módosított fájlt nyissunk meg tab-ban!
+          // ═══════════════════════════════════════════════════════════════
+          for (const filePath of modifiedFiles) {
+            try {
+              const refreshResp = await fetch(
+                `${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(filePath)}`
+              );
+              if (refreshResp.ok) {
+                const refreshData = await refreshResp.json();
+                const content = (refreshData.content || "").replace(/^\uFEFF/, '');
+                
+                // Nyissuk meg tab-ban (vagy frissítsük ha már nyitva van)
+                const existingTabIndex = openTabs.findIndex(t => t.path === filePath);
+                if (existingTabIndex >= 0) {
+                  setOpenTabs(prev => prev.map((t, i) => 
+                    i === existingTabIndex ? { ...t, content } : t
+                  ));
+                } else {
+                  setOpenTabs(prev => [...prev, { path: filePath, content, isDirty: false }]);
+                }
+                
+                console.log(`[PATCH] ✅ Tab megnyitva/frissítve: ${filePath}`);
+              }
+            } catch (e) {
+              console.warn(`[PATCH] ⚠️ Fájl frissítés hiba: ${filePath}`, e);
+            }
           }
           
-          if (appliedCount > 0) {
-            addLogMessage("success", `🎉 **${appliedCount}/${newPatches.length}** módosítás automatikusan alkalmazva!`);
+          // Ha volt módosított fájl, az elsőt aktiváljuk
+          if (modifiedFiles.size > 0) {
+            const firstModified = Array.from(modifiedFiles)[0];
+            const tabIndex = openTabs.findIndex(t => t.path === firstModified);
+            if (tabIndex >= 0) {
+              switchToTab(tabIndex);
+            } else {
+              // Ha még nincs a tabs-ban, az új tab lesz az utolsó
+              setActiveTabIndex(openTabs.length - 1);
+              setSelectedFilePath(firstModified);
+              // Frissítsük a code-ot is
+              const tab = openTabs[openTabs.length - 1];
+              if (tab) setCode(tab.content);
+            }
+          }
+          
+          // Összefoglaló chat üzenet hozzáadása
+          const summaryText = formatPatchSummary(results, newPatches, true);
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: generateUniqueId(),
+              role: "system",
+              text: summaryText,
+            },
+          ]);
+          
+          // Log üzenetek
+          const successCount = results.filter(r => r.success).length;
+          const failedCount = results.filter(r => !r.success).length;
+          
+          if (successCount > 0) {
+            addLogMessage("success", `🎉 **${successCount}/${newPatches.length}** módosítás automatikusan alkalmazva!`);
           }
           
           if (failedCount > 0) {
-            const failedPatches = newPatches.slice(appliedCount);
-            if (failedPatches.length > 0) {
-              setSuggestedPatches((prev) => [...prev, ...failedPatches]);
+            // Ha MINDEN patch sikertelen, valószínűleg az LLM rossz kódot kapott
+            if (failedCount === newPatches.length) {
+              addLogMessage("error", `❌ **MINDEN módosítás sikertelen!** Az LLM valószínűleg elavult fájltartalmat látott.`);
+              addLogMessage("info", `💡 Nyisd meg a fájlt az editorban és próbáld újra - így az LLM friss tartalmat kap.`);
+            } else {
+              results.forEach((result, i) => {
+                if (!result.success) {
+                  addLogMessage("warning", `⚠️ ${result.error}: ${result.resolvedPath || newPatches[i].filePath}`);
+                }
+              });
             }
+            // Sikertelen patch-eket NEM tároljuk AUTO módban - csak zavarná a felhasználót
+            // (A hibaüzenetek már megjelentek a log-ban)
           }
         } else {
           // ═══════════════════════════════════════════════════════
-          // MANUAL MÓD: Modal ablak megerősítésre
+          // MANUAL MÓD: Inline megerősítés a chatben (NEM modal!)
           // ═══════════════════════════════════════════════════════
-          console.log("[MODE] Manual mode - showing confirmation modal");
+          console.log("[MODE] Manual mode - inline confirmation in chat");
+          
+          // Preview hozzáadása a chat-hez - ez lesz a megerősítő üzenet
+          let previewText = `🔔 **MEGERŐSÍTÉS SZÜKSÉGES** - ${newPatches.length} módosítás:\n\n`;
+          newPatches.forEach((patch, i) => {
+            previewText += formatPatchPreview(patch) + (i < newPatches.length - 1 ? '\n\n---\n\n' : '');
+          });
+          
+          // Egyedi ID a confirmation üzenethez
+          const confirmMsgId = generateUniqueId();
+          
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: confirmMsgId,
+              role: "system",
+              text: previewText,
+            },
+          ]);
+          
+          // Mentjük a pending change-t és az üzenet ID-t
           setPendingChange({
             patches: newPatches,
-            explanation: replyText.substring(0, 500), // Első 500 karakter magyarázatként
+            explanation: replyText.substring(0, 500),
           });
-          setShowConfirmModal(true);
+          setPendingConfirmationId(confirmMsgId);
+          // NEM showConfirmModal - inline lesz!
           addLogMessage("info", `👆 **MANUAL MÓD** - ${newPatches.length} módosítás vár MEGERŐSÍTÉSRE!`);
         }
       }
       
-      // Ha nincs patch, de az LLM engedélyt kér - figyelmeztetés + modal
+      // Ha nincs patch, de az LLM explicit engedélyt kér - csak logolás (NEM modal!)
+      // A modal zavarná a felhasználót, elég ha a chatben látja a választ
       if (newPatches.length === 0) {
-        const isAskingPermission = /engedély|engedélyez|szeretnéd|módosítsam|válaszolj.*igen|kérlek.*ok/i.test(replyText);
+        // Csak explicit [PERMISSION_REQUEST] tag esetén figyelmeztetés
         const permissionMatch = replyText.match(/\[PERMISSION_REQUEST\]/i);
         
-        if (isAskingPermission || permissionMatch) {
-          // Modal megjelenítése figyelmeztetéssel
-          setPendingChange({
-            patches: [],
-            explanation: `⚠️ Az LLM engedélyt kér konkrét kód helyett!\n\n${replyText.substring(0, 400)}...\n\n💡 Tipp: Küldj konkrétabb kérést a @fájlnév szintaxissal, pl:\n"@static/js/game.js javítsd a hiányzó változókat"`,
-          });
-          setShowConfirmModal(true);
+        if (permissionMatch) {
+          // Csak log üzenet - NEM modal!
           addLogMessage("warning", "⚠️ Az LLM engedélyt kér - használd a @fájlnév szintaxist!");
         }
       }
     } catch (err) {
       console.error(err);
-      setChatError("Hiba történt a chat hívás közben.");
+      if (err instanceof Error && err.name === 'AbortError') {
+        setChatError("⏱️ A kérés időtúllépés miatt megszakadt. Az LLM válasz túl sokáig tartott.");
+        addLogMessage("error", "⏱️ Chat timeout - próbáld újra rövidebb kéréssel");
+      } else {
+        setChatError("Hiba történt a chat hívás közben.");
+      }
     } finally {
       setChatLoading(false);
     }
@@ -4343,9 +5858,76 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
   return patches;
 }
 
+  // @ mention kezelő - autocomplete a fájlnevekhez
+  const handleAtMention = React.useCallback((inputValue: string) => {
+    // Keressük az utolsó @ jelet
+    const lastAtIndex = inputValue.lastIndexOf('@');
+    if (lastAtIndex === -1) {
+      setAtMentionActive(false);
+      setAtMentionSuggestions([]);
+      return;
+    }
+    
+    // A @ utáni szöveg (amit a user beírt)
+    const afterAt = inputValue.slice(lastAtIndex + 1);
+    
+    // Ha van szóköz az @ után, akkor már nem autocomplete
+    if (afterAt.includes(' ') || afterAt.includes('\n')) {
+      setAtMentionActive(false);
+      setAtMentionSuggestions([]);
+      return;
+    }
+    
+    // Fájlok keresése a filesTree-ben
+    if (filesTree && filesTree.length > 0) {
+      const searchTerm = afterAt.toLowerCase();
+      const allFiles: string[] = [];
+      
+      // Rekurzívan összegyűjtjük a fájlokat
+      const collectFiles = (nodes: FileNode[], prefix: string = '') => {
+        for (const node of nodes) {
+          const fullPath = prefix ? `${prefix}/${node.name}` : node.name;
+          if (!node.isDirectory) {
+            allFiles.push(fullPath);
+          }
+          if (node.children) {
+            collectFiles(node.children, fullPath);
+          }
+        }
+      };
+      collectFiles(filesTree);
+      
+      // Szűrés a keresett szöveg alapján
+      const matches = allFiles
+        .filter(f => f.toLowerCase().includes(searchTerm))
+        .slice(0, 8);  // Max 8 találat
+      
+      if (matches.length > 0) {
+        setAtMentionSuggestions(matches);
+        setAtMentionActive(true);
+        setAtMentionIndex(0);
+      } else {
+        setAtMentionActive(false);
+        setAtMentionSuggestions([]);
+      }
+    }
+  }, [filesTree]);
+  
+  // @ mention kiválasztása
+  const selectAtMention = React.useCallback((filePath: string) => {
+    const lastAtIndex = chatInput.lastIndexOf('@');
+    if (lastAtIndex !== -1) {
+      const newInput = chatInput.slice(0, lastAtIndex) + '@' + filePath + ' ';
+      setChatInput(newInput);
+    }
+    setAtMentionActive(false);
+    setAtMentionSuggestions([]);
+  }, [chatInput]);
+
   function handleChatSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!chatLoading) {
+      setAtMentionActive(false);  // Autocomplete bezárása
       sendChat();
     }
   }
@@ -4357,7 +5939,7 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
         <div className="menu-area" ref={menuRef}>
           <button
             type="button"
-            className="menu-button"
+            className={`menu-button ${menuOpen ? 'active' : ''}`}
             onClick={() => setMenuOpen((prev) => !prev)}
           >
             MENÜ ▾
@@ -4496,6 +6078,17 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
             {wsConnected ? `🔗 ${connectedClients > 1 ? connectedClients : ''}` : '🔌'}
           </span>
         </div>
+
+        {/* Téma váltó gomb */}
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={toggleTheme}
+          title={theme === 'light' ? 'Sötét téma bekapcsolása' : 'Világos téma bekapcsolása'}
+        >
+          <span className="theme-icon">{theme === 'light' ? '🌙' : '☀️'}</span>
+          <span className="theme-label">{theme === 'light' ? 'Sötét' : 'Világos'}</span>
+        </button>
 
         <div className="header-right">LLM Dev Environment</div>
       </header>
@@ -4824,6 +6417,58 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                 className="panel unified-code-panel"
                 style={{ flex: 1 }}
               >
+                {/* ═══════════ TAB BAR - Több fájl kezelése ═══════════ */}
+                {openTabs.length > 0 && (
+                  <div className="tab-bar" style={{
+                    display: 'flex',
+                    backgroundColor: '#1e1e1e',
+                    borderBottom: '1px solid #333',
+                    overflowX: 'auto',
+                    minHeight: 32,
+                  }}>
+                    {openTabs.map((tab, index) => (
+                      <div
+                        key={tab.path}
+                        className={`tab-item ${index === activeTabIndex ? 'active' : ''}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '4px 8px',
+                          cursor: 'pointer',
+                          backgroundColor: index === activeTabIndex ? '#2d2d2d' : 'transparent',
+                          borderRight: '1px solid #333',
+                          color: index === activeTabIndex ? '#fff' : '#888',
+                          fontSize: '0.85rem',
+                          whiteSpace: 'nowrap',
+                        }}
+                        onClick={() => switchToTab(index)}
+                      >
+                        <span style={{ marginRight: 8 }}>
+                          {tab.path.split('/').pop()}
+                          {tab.isDirty && ' •'}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeTab(index);
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#888',
+                            cursor: 'pointer',
+                            padding: '0 4px',
+                            fontSize: '14px',
+                          }}
+                          title="Bezárás"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
                 <div className="panel-header">
                   <span>
                     Kód {selectedFilePath && `- ${selectedFilePath}`} ({getEncodingLabel(encoding)})
@@ -4839,14 +6484,15 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                     >
                       💾 Mentés
                     </button>
-                    {/* Validálás gomb */}
+                    {/* AI Validálás gomb - aktuális fájlra */}
                       <button
                         type="button"
-                        className={`secondary-button ${isValidated ? "validate" : "validate-pending"}`}
-                        onClick={handleValidateSyntax}
-                        title={isValidated ? "Kód validálva - nincs változtatás" : "PL/I szintaxis ellenőrzése"}
+                        className={`secondary-button agentic ${agenticAnalysisLoading ? 'loading' : ''} ${!selectedFilePath ? 'needs-file' : ''}`}
+                        onClick={handleAgenticValidation}
+                        disabled={agenticAnalysisLoading || !selectedFilePath}
+                        title={!selectedFilePath ? "⚠️ Először válassz ki egy fájlt a bal oldali listából!" : "🔍 AI Validálás - Elemzi az aktuális fájlt hibákért"}
                       >
-                        ✔ Validálás
+                        {agenticAnalysisLoading ? "⏳ Elemzés..." : !selectedFilePath ? "📁 Válassz fájlt!" : "🔍 Fájl Validálás"}
                       </button>
                     {/* Javaslat navigáció */}
                     {hasSuggestions && (
@@ -4914,8 +6560,123 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                         ➕
                       </button>
                     </div>
+                    {/* Szintaxis színezés kapcsoló */}
+                    <button
+                      type="button"
+                      className={`syntax-toggle-btn ${syntaxHighlightEnabled ? 'active' : ''}`}
+                      onClick={toggleSyntaxHighlight}
+                      title={syntaxHighlightEnabled ? "Szintaxis színezés kikapcsolása (gyorsabb)" : "Szintaxis színezés bekapcsolása"}
+                    >
+                      {syntaxHighlightEnabled ? '🎨' : '📝'}
+                    </button>
                   </div>
                 </div>
+
+                {/* Kód keresés panel */}
+                {showCodeSearch && (
+                  <div 
+                    className="code-search-panel"
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <div className="code-search-input-container">
+                      <span className="code-search-icon">🔍</span>
+                      <input
+                        ref={searchInputRef}
+                        type="text"
+                        className="code-search-input"
+                        placeholder="Keresés a kódban..."
+                        value={searchTerm}
+                        autoFocus
+                        autoComplete="off"
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          setSearchTerm(e.target.value);
+                          performSearch(e.target.value);
+                        }}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            if (e.shiftKey) {
+                              goToPrevSearchResult();
+                            } else {
+                              goToNextSearchResult();
+                            }
+                          }
+                        }}
+                        onFocus={(e) => e.stopPropagation()}
+                        onBlur={(e) => {
+                          // Ne veszítse el a fókuszt ha a panelen belül kattintunk
+                          const relatedTarget = e.relatedTarget as HTMLElement;
+                          if (relatedTarget?.closest('.code-search-panel')) {
+                            e.preventDefault();
+                            setTimeout(() => searchInputRef.current?.focus(), 0);
+                          }
+                        }}
+                      />
+                      {searchResults.length > 0 && (
+                        <span className="code-search-count">
+                          {currentSearchIndex + 1}/{searchResults.length}
+                        </span>
+                      )}
+                      <button 
+                        className="code-search-nav-btn"
+                        onClick={goToPrevSearchResult}
+                        disabled={searchResults.length === 0}
+                        title="Előző (Shift+Enter)"
+                      >
+                        ▲
+                      </button>
+                      <button 
+                        className="code-search-nav-btn"
+                        onClick={goToNextSearchResult}
+                        disabled={searchResults.length === 0}
+                        title="Következő (Enter)"
+                      >
+                        ▼
+                      </button>
+                      <button 
+                        className="code-search-close-btn"
+                        onClick={closeSearch}
+                        title="Bezárás (Esc)"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {searchResults.length > 0 && searchResults.length <= 50 && (
+                      <div className="code-search-results">
+                        {searchResults.map((result, idx) => (
+                          <div
+                            key={`${result.line}-${result.column}-${idx}`}
+                            className={`code-search-result-item ${idx === currentSearchIndex ? 'active' : ''}`}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setCurrentSearchIndex(idx);
+                              scrollToSearchResult(result);
+                              // Fókusz vissza a keresőmezőre
+                              setTimeout(() => searchInputRef.current?.focus(), 10);
+                            }}
+                          >
+                            <span className="code-search-result-line">Sor {result.line}:</span>
+                            <span className="code-search-result-text">{result.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {searchResults.length > 50 && (
+                      <div className="code-search-too-many">
+                        {searchResults.length} találat - használd az ▲▼ gombokat a navigáláshoz
+                      </div>
+                    )}
+                    {searchTerm && searchResults.length === 0 && (
+                      <div className="code-search-no-results">
+                        Nincs találat: "{searchTerm}"
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Kód nézet - inline javaslat megjelenítéssel */}
                 <div 
@@ -4943,6 +6704,7 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                     diffViewRef={diffViewRef}
                     scrollToLine={scrollToLine}
                     filePath={selectedFilePath}
+                    syntaxHighlightEnabled={syntaxHighlightEnabled}
                   />
                 </div>
 
@@ -5012,18 +6774,17 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
               <div className="panel-header">
                 <span>LLM Chat</span>
                 <div className="panel-header-right">
+                  {/* AI Projekt Elemzés gomb - teljes projektre */}
                   <button
                     type="button"
-                    className="secondary-button suggestion"
-                    onClick={createSuggestionFromLastAssistant}
-                    disabled={
-                      !chatMessages.some((m) => m.role === "assistant")
-                    }
-                    title="Az utolsó asszisztens-kódból új javaslat létrehozása"
+                    className={`secondary-button agentic ${agenticAnalysisLoading ? 'loading' : ''}`}
+                    onClick={handleAgenticSuggestion}
+                    disabled={agenticAnalysisLoading || !selectedProjectId}
+                    title={!selectedProjectId ? "Először válassz ki egy projektet!" : "💡 AI Projekt Elemzés - Elemzi és javítja a teljes projektet"}
                   >
-                    ➕ Javaslat
+                    {agenticAnalysisLoading ? "⏳ Elemzés..." : "💡 Projekt Elemzés"}
                   </button>
-
+                  
                   {chatLoading && <span>Gondolkodom…</span>}
                   {chatError && (
                     <span className="projects-error">{chatError}</span>
@@ -5031,8 +6792,8 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                 </div>
               </div>
 
-              {/* Javasolt módosítások listája */}
-              {suggestedPatches.length > 0 && (
+              {/* Javasolt módosítások listája - csak MANUAL módban */}
+              {!autoMode && suggestedPatches.length > 0 && (
                 <div
                   style={{
                     padding: "6px 10px",
@@ -5145,73 +6906,358 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                 {chatMessages.map((m) => (
                   <div
                     key={m.id}
-                    className="chat-message"
+                    className={`chat-message ${m.role}`}
                     style={{
                       marginBottom: "6px",
                       textAlign: m.role === "user" ? "right" : "left",
                     }}
                     onContextMenu={(e) => handleChatMessageContextMenu(e, m)}
                   >
-                    <div
-                      style={{
-                        display: "inline-block",
-                        padding: "6px 10px",
-                        borderRadius: 10,
-                        background:
-                          m.role === "user" ? "#e5e7eb" : "#dcfce7",
-                        fontSize: "0.9rem",
-                        maxWidth: "80%",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        overflowWrap: "break-word",
-                      }}
-                    >
-                      {m.role === "assistant"
-                        ? renderAssistantMessage(m.text)
-                        : m.text}
-                    </div>
+                    {m.role === "system" ? (
+                      // System üzenet (patch summary / confirmation) - speciális megjelenítés
+                      <div
+                        style={{
+                          display: "block",
+                          padding: "10px 14px",
+                          borderRadius: 8,
+                          fontSize: "0.9rem",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          overflowWrap: "break-word",
+                          textAlign: "left",
+                        }}
+                      >
+                        {renderAssistantMessage(m.text, m.modifications)}
+                        
+                        {/* Inline megerősítő gombok ha ez a pending confirmation üzenet */}
+                        {pendingConfirmationId === m.id && pendingChange && pendingChange.patches.length > 0 && (
+                          <div style={{ 
+                            marginTop: 12, 
+                            display: 'flex', 
+                            gap: 10,
+                            borderTop: '1px solid rgba(255,255,255,0.2)',
+                            paddingTop: 12
+                          }}>
+                            <button
+                              onClick={async () => {
+                                // Megerősítés - alkalmazzuk a patch-eket
+                                // FONTOS: Átadjuk az editor tartalmát!
+                                const results: PatchResult[] = [];
+                                // MINDIG lemezről töltjük!
+                                for (const patch of pendingChange.patches) {
+                                  const result = await applyPatch(
+                                    patch, 
+                                    selectedProjectId!, 
+                                    filesTree, 
+                                    BACKEND_URL
+                                  );
+                                  results.push(result);
+                                  if (result.success && result.newContent) {
+                                    const isCurrentFile = result.resolvedPath?.toLowerCase() === selectedFilePath?.toLowerCase();
+                                    if (isCurrentFile) {
+                                      setCode(result.newContent);
+                                    }
+                                  }
+                                }
+                                
+                                // Összefoglaló
+                                const summaryText = formatPatchSummary(results, pendingChange.patches, false);
+                                const successCount = results.filter(r => r.success).length;
+                                
+                                // Frissítjük az üzenetet az eredménnyel
+                                setChatMessages(prev => prev.map(msg => 
+                                  msg.id === m.id 
+                                    ? { ...msg, text: msg.text + `\n\n---\n\n${summaryText}` }
+                                    : msg
+                                ));
+                                
+                                if (successCount > 0) {
+                                  addLogMessage("success", `🎉 ${successCount}/${pendingChange.patches.length} módosítás alkalmazva!`);
+                                }
+                                
+                                // Töröljük a pending státuszt
+                                setPendingChange(null);
+                                setPendingConfirmationId(null);
+                              }}
+                              style={{
+                                padding: '8px 16px',
+                                background: '#22c55e',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                fontWeight: 'bold',
+                              }}
+                            >
+                              ✅ Megerősítés
+                            </button>
+                            <button
+                              onClick={() => {
+                                // Elutasítás
+                                setChatMessages(prev => prev.map(msg => 
+                                  msg.id === m.id 
+                                    ? { ...msg, text: msg.text + '\n\n---\n\n❌ **Elutasítva**' }
+                                    : msg
+                                ));
+                                addLogMessage("info", "❌ Módosítás elutasítva");
+                                setPendingChange(null);
+                                setPendingConfirmationId(null);
+                              }}
+                              style={{
+                                padding: '8px 16px',
+                                background: '#ef4444',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                fontWeight: 'bold',
+                              }}
+                            >
+                              ❌ Elutasítás
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div
+                        className={`chat-bubble chat-bubble-${m.role}`}
+                      >
+                        {m.role === "assistant"
+                          ? renderAssistantMessage(m.text, m.modifications)
+                          : m.text}
+                      </div>
+                    )}
                   </div>
                 ))}
+                
+                {/* ═══════════════════════════════════════════════════════════════
+                    JÓVÁHAGYÁSRA VÁRÓ TOOL MŰVELETEK (terminal, fájl törlés, stb.)
+                    ═══════════════════════════════════════════════════════════════ */}
+                {pendingToolPermissions.length > 0 && (
+                  <div className="pending-permissions-panel">
+                    <div className="panel-title">
+                      ⚠️ Jóváhagyásra váró műveletek ({pendingToolPermissions.length})
+                    </div>
+                    
+                    {pendingToolPermissions.map((perm, idx) => (
+                      <div key={perm.tool_call_id || idx} className="permission-card">
+                        {/* Terminal parancs */}
+                        {perm.permission_type === "terminal" && (
+                          <div>
+                            <div className="permission-type terminal">
+                              🖥️ Terminal parancs
+                            </div>
+                            <div className="permission-description">
+                              {perm.details.description}
+                            </div>
+                            <div className="permission-path terminal">
+                              {perm.details.command}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Fájl törlés */}
+                        {perm.permission_type === "delete" && (
+                          <div>
+                            <div className="permission-type delete">
+                              🗑️ Fájl törlés
+                            </div>
+                            <div className="permission-path delete">
+                              {perm.details.path}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Fájl írás (write) */}
+                        {perm.permission_type === "write" && (
+                          <div>
+                            <div className="permission-type write">
+                              📝 Fájl létrehozás/írás
+                            </div>
+                            <div className="permission-path write">
+                              {perm.details.path} ({perm.details.content_length} karakter)
+                            </div>
+                            {perm.details.content_preview && (
+                              <div className="content-preview">
+                                {perm.details.content_preview}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* Fájl szerkesztés (edit) */}
+                        {perm.permission_type === "edit" && (
+                          <div>
+                            <div className="permission-type edit">
+                              ✏️ Fájl szerkesztés
+                            </div>
+                            <div className="permission-path edit">
+                              {perm.details.path}
+                            </div>
+                            <div className="diff-container">
+                              <div className="diff-box">
+                                <div className="diff-label original">❌ Eredeti:</div>
+                                <div className="diff-content original">
+                                  {perm.details.old_preview || perm.details.old_text?.substring(0, 200)}
+                                </div>
+                              </div>
+                              <div className="diff-box">
+                                <div className="diff-label new">✅ Új:</div>
+                                <div className="diff-content new">
+                                  {perm.details.new_preview || perm.details.new_text?.substring(0, 200)}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Könyvtár létrehozás */}
+                        {perm.permission_type === "create_directory" && (
+                          <div>
+                            <div className="permission-type directory">
+                              📁 Könyvtár létrehozás
+                            </div>
+                            <div className="permission-path directory">
+                              {perm.details.path}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Jóváhagyás / Elutasítás gombok */}
+                        <div className="action-buttons">
+                          <button
+                            onClick={() => executeApprovedTool(perm)}
+                            className="btn-approve"
+                          >
+                            ✅ Jóváhagyás
+                          </button>
+                          <button
+                            onClick={() => rejectToolPermission(perm)}
+                            className="btn-reject"
+                          >
+                            ❌ Elutasítás
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <form className="chat-input-row" onSubmit={handleChatSubmit}>
-                <textarea
-                  className="chat-input"
-                  placeholder="Írj az LLM-nek… | @fájl.js betölti a fájlt | Alt+Enter: új sor"
-                  autoComplete="off"
-                  value={chatInput}
-                  onChange={(e) => {
-                    setChatInput(e.target.value);
-                    // Auto-expand
-                    e.target.style.height = 'auto';
-                    e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
-                  }}
-                  onKeyDown={(e) => {
-                    // Alt+Enter vagy Ctrl+Enter: új sor beszúrása (alapértelmezett viselkedés)
-                    if ((e.altKey || e.ctrlKey) && e.key === "Enter") {
-                      return; // Engedjük az új sor beszúrását
-                    }
-                    // Enter: üzenet küldése (Shift nélkül)
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      if (!chatLoading && chatInput.trim()) {
-                        handleChatSubmit(e);
+                <div className="chat-input-wrapper">
+                  <textarea
+                    ref={chatInputRef}
+                    className="chat-input"
+                    placeholder="Írj az LLM-nek… | @fájl | Alt+Enter: új sor"
+                    autoComplete="off"
+                    value={chatInput}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setChatInput(value);
+                      handleAtMention(value);  // @ autocomplete
+                      // Auto-expand most useEffect-ben van
+                    }}
+                    onKeyDown={(e) => {
+                      // @ autocomplete navigáció
+                      if (atMentionActive && atMentionSuggestions.length > 0) {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          setAtMentionIndex(prev => Math.min(prev + 1, atMentionSuggestions.length - 1));
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          setAtMentionIndex(prev => Math.max(prev - 1, 0));
+                          return;
+                        }
+                        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                          e.preventDefault();
+                          selectAtMention(atMentionSuggestions[atMentionIndex]);
+                          return;
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setAtMentionActive(false);
+                          return;
+                        }
                       }
-                    }
-                    // Escape: mező ürítése
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setChatInput("");
-                    }
-                  }}
-                  rows={1}
-                  style={{
-                    resize: "none",
-                    minHeight: "48px",
-                    maxHeight: "200px",
-                    overflow: "auto",
-                  }}
-                />
+                      // Alt+Enter vagy Ctrl+Enter: új sor beszúrása
+                      if ((e.altKey || e.ctrlKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        const textarea = e.currentTarget;
+                        const start = textarea.selectionStart;
+                        const end = textarea.selectionEnd;
+                        const newValue = chatInput.substring(0, start) + "\n" + chatInput.substring(end);
+                        setChatInput(newValue);
+                        // Kurzor pozíció beállítása és görgetés
+                        requestAnimationFrame(() => {
+                          textarea.selectionStart = textarea.selectionEnd = start + 1;
+                          // Görgetés a kurzorhoz - scrollTop = scrollHeight görget a végére
+                          textarea.scrollTop = textarea.scrollHeight;
+                        });
+                        return;
+                      }
+                      // Enter: üzenet küldése (Shift nélkül)
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (!chatLoading && chatInput.trim()) {
+                          handleChatSubmit(e);
+                        }
+                      }
+                      // Escape: mező ürítése
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setChatInput("");
+                      }
+                    }}
+                    onBlur={() => {
+                      // Kis késleltetés, hogy a kattintás működjön
+                      setTimeout(() => setAtMentionActive(false), 150);
+                    }}
+                    rows={1}
+                    style={{
+                      resize: "none",
+                      minHeight: "48px",
+                      maxHeight: "200px",
+                      overflow: "auto",
+                    }}
+                  />
+                  {/* @ mention autocomplete dropdown */}
+                  {atMentionActive && atMentionSuggestions.length > 0 && (
+                    <div className="at-mention-dropdown" style={{
+                      position: 'absolute',
+                      bottom: '100%',
+                      left: 0,
+                      right: 0,
+                      background: 'var(--bg-tertiary, #2d2d2d)',
+                      border: '1px solid var(--border-color, #444)',
+                      borderRadius: '4px',
+                      maxHeight: '200px',
+                      overflowY: 'auto',
+                      zIndex: 1000,
+                      boxShadow: '0 -2px 10px rgba(0,0,0,0.3)',
+                    }}>
+                      {atMentionSuggestions.map((file, idx) => (
+                        <div
+                          key={file}
+                          onClick={() => selectAtMention(file)}
+                          style={{
+                            padding: '8px 12px',
+                            cursor: 'pointer',
+                            background: idx === atMentionIndex ? 'var(--accent-color, #007acc)' : 'transparent',
+                            color: idx === atMentionIndex ? 'white' : 'inherit',
+                            fontSize: '13px',
+                            fontFamily: 'monospace',
+                          }}
+                          onMouseEnter={() => setAtMentionIndex(idx)}
+                        >
+                          📄 {file}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   className="primary-button"
                   type="submit"
@@ -5637,15 +7683,15 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
             )}
             
             {!backupLoading && backupList.length > 0 && (
-              <div className="backup-content" style={{ display: "flex", gap: "20px" }}>
+              <div className="backup-content">
                 {/* Backup lista */}
-                <div className="backup-list" style={{ flex: "1", maxHeight: "400px", overflowY: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <div className="backup-list">
+                  <table>
                     <thead>
-                      <tr style={{ borderBottom: "2px solid #ddd", textAlign: "left" }}>
-                        <th style={{ padding: "8px" }}>Fájl</th>
-                        <th style={{ padding: "8px" }}>Dátum/Idő</th>
-                        <th style={{ padding: "8px" }}>Méret</th>
+                      <tr>
+                        <th>Fájl</th>
+                        <th>Dátum/Idő</th>
+                        <th>Méret</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5656,21 +7702,11 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                             setSelectedBackup(backup.filename);
                             loadBackupPreview(backup.filename);
                           }}
-                          style={{
-                            cursor: "pointer",
-                            backgroundColor: selectedBackup === backup.filename ? "#e3f2fd" : "transparent",
-                            borderBottom: "1px solid #eee",
-                          }}
+                          className={selectedBackup === backup.filename ? "selected" : ""}
                         >
-                          <td style={{ padding: "8px", fontFamily: "monospace", fontSize: "0.9em" }}>
-                            {backup.original_name}
-                          </td>
-                          <td style={{ padding: "8px", whiteSpace: "nowrap" }}>
-                            {backup.timestamp_formatted}
-                          </td>
-                          <td style={{ padding: "8px", whiteSpace: "nowrap" }}>
-                            {(backup.size_bytes / 1024).toFixed(1)} KB
-                          </td>
+                          <td>{backup.original_name}</td>
+                          <td>{backup.timestamp_formatted}</td>
+                          <td>{(backup.size_bytes / 1024).toFixed(1)} KB</td>
                         </tr>
                       ))}
                     </tbody>
@@ -5678,29 +7714,18 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                 </div>
                 
                 {/* Előnézet */}
-                <div className="backup-preview" style={{ flex: "1", maxHeight: "400px", overflowY: "auto" }}>
-                  <h4 style={{ margin: "0 0 10px 0" }}>Előnézet</h4>
+                <div className="backup-preview">
+                  <h4>Előnézet</h4>
                   {selectedBackup && backupPreview !== null ? (
-                    <pre style={{
-                      backgroundColor: "#f5f5f5",
-                      padding: "10px",
-                      borderRadius: "4px",
-                      fontSize: "0.8em",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      maxHeight: "350px",
-                      overflow: "auto",
-                    }}>
-                      {backupPreview}
-                    </pre>
+                    <pre>{backupPreview}</pre>
                   ) : (
-                    <p style={{ color: "#666" }}>Válassz egy backupot az előnézethez.</p>
+                    <p className="no-preview">Válassz egy backupot az előnézethez.</p>
                   )}
                 </div>
               </div>
             )}
             
-            <div className="modal-buttons" style={{ marginTop: "20px" }}>
+            <div className="modal-buttons">
               <button
                 type="button"
                 className="secondary-button"
@@ -5985,8 +8010,8 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
         />
       )}
 
-      {/* Megerősítő Modal - Normal módhoz */}
-      {showConfirmModal && pendingChange && (
+      {/* Megerősítő Modal - DEPRECATED - most inline a chatben van! */}
+      {false && showConfirmModal && pendingChange && (
         <div className="confirm-modal-overlay" onClick={() => setShowConfirmModal(false)}>
           <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
             <h3>{pendingChange.patches.length > 0 ? '🔔 Módosítás megerősítése' : '⚠️ Figyelmeztetés'}</h3>
@@ -6025,118 +8050,167 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                     if (!pendingChange) return;
                     setShowConfirmModal(false);
                     
-                    // Helper: ékezetek normalizálása összehasonlításhoz
-                    // Kezeli a double-encoded UTF-8 karaktereket is!
-                    const normalizeForCompare = (str: string) => {
-                      return str
-                        // Double-encoded UTF-8 patterns
-                        .replace(/Ã¡/g, 'a').replace(/Ã©/g, 'e').replace(/Ã­/g, 'i')
-                        .replace(/Ã³/g, 'o').replace(/Ã¶/g, 'o').replace(/Å'/g, 'o')
-                        .replace(/Ãº/g, 'u').replace(/Ã¼/g, 'u').replace(/Å±/g, 'u')
-                        .replace(/Ã/g, 'A').replace(/Ã‰/g, 'E').replace(/Ã/g, 'I')
-                        .replace(/Ã"/g, 'O').replace(/Ã–/g, 'O').replace(/Å/g, 'O')
-                        .replace(/Ãš/g, 'U').replace(/Ãœ/g, 'U').replace(/Å°/g, 'U')
-                        // Normal ékezetek
-                        .normalize('NFD')
-                        .replace(/[\u0300-\u036f]/g, '')
-                        .replace(/[áàâäãå]/gi, 'a')
-                        .replace(/[éèêë]/gi, 'e')
-                        .replace(/[íìîï]/gi, 'i')
-                        .replace(/[óòôöõő]/gi, 'o')
-                        .replace(/[úùûüű]/gi, 'u')
-                        .replace(/\s+/g, ' ')
-                        .trim()
-                        .toLowerCase();
-                    };
-                    
-                    // Alkalmazzuk a módosításokat
-                    let appliedCount = 0;
+                    // UGYANAZ a közös applyPatch függvény mint AUTO módban!
+                    // MINDIG lemezről töltjük!
+                    const results: PatchResult[] = [];
                     for (const patch of pendingChange.patches) {
-                      try {
-                        const loadRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file?rel_path=${encodeURIComponent(patch.filePath)}`);
-                        if (!loadRes.ok) {
-                          addLogMessage("error", `❌ Nem található: ${patch.filePath}`);
-                          continue;
+                      const result = await applyPatch(
+                        patch, 
+                        selectedProjectId!, 
+                        filesTree, 
+                        BACKEND_URL
+                      );
+                      results.push(result);
+                      
+                      // Ha sikeres és ez az aktuális fájl, frissítsük az editort
+                      if (result.success && result.newContent) {
+                        const isCurrentFile = result.resolvedPath?.toLowerCase() === selectedFilePath?.toLowerCase();
+                        if (isCurrentFile) {
+                          setCode(result.newContent);
                         }
-                        const loadData = await loadRes.json();
-                        let fileContent = loadData.content || "";
-                        let applied = false;
-                        
-                        // 1. Pontos egyezés
-                        if (fileContent.includes(patch.original)) {
-                          fileContent = fileContent.replace(patch.original, patch.modified);
-                          applied = true;
-                        }
-                        // 2. Whitespace-toleráns
-                        else if (fileContent.includes(patch.original.trim())) {
-                          fileContent = fileContent.replace(patch.original.trim(), patch.modified.trim());
-                          applied = true;
-                        }
-                        // 3. Ékezet-toleráns (fuzzy)
-                        else {
-                          const originalLines = patch.original.split('\n');
-                          const fileLines = fileContent.split('\n');
-                          const normalizedFirstLine = normalizeForCompare(originalLines[0]);
-                          
-                          for (let i = 0; i < fileLines.length; i++) {
-                            if (normalizeForCompare(fileLines[i]) === normalizedFirstLine) {
-                              let allMatch = true;
-                              for (let j = 1; j < originalLines.length && i + j < fileLines.length; j++) {
-                                if (normalizeForCompare(fileLines[i + j]) !== normalizeForCompare(originalLines[j])) {
-                                  allMatch = false;
-                                  break;
-                                }
-                              }
-                              if (allMatch) {
-                                const newLines = [...fileLines];
-                                newLines.splice(i, originalLines.length, ...patch.modified.split('\n'));
-                                fileContent = newLines.join('\n');
-                                applied = true;
-                                break;
-                              }
-                            }
-                          }
-                        }
-                        
-                        if (applied) {
-                          const saveRes = await fetch(`${BACKEND_URL}/projects/${selectedProjectId}/file/save`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              rel_path: patch.filePath,
-                              content: fileContent,
-                              encoding: "utf-8",
-                            }),
-                          });
-                          
-                          if (saveRes.ok) {
-                            appliedCount++;
-                            addLogMessage("success", `✅ Alkalmazva: ${patch.filePath}`);
-                            
-                            // Frissítsük az editort ha ez a megnyitott fájl
-                            const patchFileName = patch.filePath.split('/').pop()?.toLowerCase();
-                            const currentFileName = selectedFilePath?.split('/').pop()?.toLowerCase();
-                            if (patchFileName === currentFileName) {
-                              setCode(fileContent);
-                            }
-                          }
-                        } else {
-                          addLogMessage("warning", `⚠️ Eredeti kód nem található: ${patch.filePath}`);
-                        }
-                      } catch (err) {
-                        addLogMessage("error", `❌ Hiba: ${patch.filePath}`);
                       }
                     }
                     
-                    if (appliedCount > 0) {
-                      addLogMessage("success", `🎉 ${appliedCount}/${pendingChange.patches.length} módosítás alkalmazva!`);
+                    // Összefoglaló chat üzenet hozzáadása
+                    const summaryText = formatPatchSummary(results, pendingChange.patches, false);
+                    setChatMessages((prev) => [
+                      ...prev,
+                      {
+                        id: generateUniqueId(),
+                        role: "system",
+                        text: summaryText,
+                      },
+                    ]);
+                    
+                    // Log üzenetek
+                    const successCount = results.filter(r => r.success).length;
+                    const failedCount = results.filter(r => !r.success).length;
+                    
+                    if (successCount > 0) {
+                      addLogMessage("success", `🎉 ${successCount}/${pendingChange.patches.length} módosítás alkalmazva!`);
                     }
+                    
+                    if (failedCount > 0) {
+                      results.forEach((result, i) => {
+                        if (!result.success) {
+                          addLogMessage("warning", `⚠️ ${result.error}: ${result.resolvedPath || pendingChange.patches[i].filePath}`);
+                        }
+                      });
+                    }
+                    
                     setPendingChange(null);
                   }}
                 >
                   ✅ Megerősítés
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Diff Viewer Modal - Fájl módosítások megtekintése */}
+      {showDiffViewer && diffViewData && (
+        <div 
+          className="modal-backdrop"
+          onClick={() => setShowDiffViewer(false)}
+        >
+          <div 
+            className="diff-viewer-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Sticky fejléc: navigáció + címsor */}
+            <div className="diff-viewer-sticky-header">
+              {/* Fájl navigáció - ha több módosítás van */}
+              {allDiffModifications.length > 1 && (
+                <div className="diff-file-nav">
+                  <button
+                    type="button"
+                    className="diff-file-nav-btn"
+                    onClick={() => {
+                      const prevIndex = currentDiffModIndex === 0 
+                        ? allDiffModifications.length - 1 
+                        : currentDiffModIndex - 1;
+                      const prevMod = allDiffModifications[prevIndex];
+                      setCurrentDiffModIndex(prevIndex);
+                      setDiffViewData({
+                        path: prevMod.path,
+                        before: prevMod.before_content || '',
+                        after: prevMod.after_content || '',
+                        linesAdded: prevMod.lines_added,
+                        linesDeleted: prevMod.lines_deleted,
+                      });
+                    }}
+                    title="Előző változtatás"
+                  >
+                    ⬆️ Előző
+                  </button>
+                  <span className="diff-file-nav-counter">
+                    {currentDiffModIndex + 1} / {allDiffModifications.length} változás
+                  </span>
+                  <button
+                    type="button"
+                    className="diff-file-nav-btn"
+                    onClick={() => {
+                      const nextIndex = (currentDiffModIndex + 1) % allDiffModifications.length;
+                      const nextMod = allDiffModifications[nextIndex];
+                      setCurrentDiffModIndex(nextIndex);
+                      setDiffViewData({
+                        path: nextMod.path,
+                        before: nextMod.before_content || '',
+                        after: nextMod.after_content || '',
+                        linesAdded: nextMod.lines_added,
+                        linesDeleted: nextMod.lines_deleted,
+                      });
+                    }}
+                    title="Következő változtatás"
+                  >
+                    Következő ⬇️
+                  </button>
+                </div>
+              )}
+              
+              {/* Fájl címsor és statisztikák */}
+              <div className="diff-viewer-header">
+                <h3>📊 Változások: {diffViewData.path}</h3>
+                <div className="diff-stats">
+                  <span className="diff-stat added">+{diffViewData.linesAdded} sor hozzáadva</span>
+                  <span className="diff-stat deleted">-{diffViewData.linesDeleted} sor törölve</span>
+                </div>
+                <button 
+                  type="button"
+                  className="modal-close"
+                  onClick={() => setShowDiffViewer(false)}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            
+            <div className="diff-viewer-content">
+              <DiffViewer 
+                before={diffViewData.before} 
+                after={diffViewData.after}
+              />
+            </div>
+            <div className="diff-viewer-footer">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => {
+                  handleChatFileClick(diffViewData.path);
+                  setShowDiffViewer(false);
+                }}
+              >
+                📄 Fájl megnyitása
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setShowDiffViewer(false)}
+              >
+                Bezárás
+              </button>
             </div>
           </div>
         </div>

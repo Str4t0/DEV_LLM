@@ -2,14 +2,150 @@
   box-sizing: border-box;
 }
 
+/* ====== TÉMA VÁLTOZÓK ====== */
+/* Cursor IDE-szerű világos/sötét témák */
+:root {
+  /* Light theme - Cursor-szerű világos */
+  --bg-primary: #f8f9fb;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f3f4f6;
+  --bg-panel: #ffffff;
+  --bg-code: #fafbfc;
+  --bg-code-gutter: #f0f1f3;
+  --bg-input: #ffffff;
+  --bg-hover: #e8eaed;
+  --bg-sidebar: #f5f6f8;
+  --bg-header: #ffffff;
+  --bg-dropdown: #ffffff;
+  --bg-diff-added: #e6ffed;
+  --bg-diff-removed: #ffeef0;
+  --bg-diff-context: #fafbfc;
+  --bg-terminal: #1e1e1e;
+  
+  --text-primary: #1a1a1a;
+  --text-secondary: #374151;
+  --text-muted: #6b7280;
+  --text-code: #1f2937;
+  --text-code-comment: #6b7280;
+  --text-code-keyword: #be185d;
+  --text-code-string: #059669;
+  --text-code-number: #0284c7;
+  --text-code-function: #7c3aed;
+  
+  --border-primary: #e1e4e8;
+  --border-secondary: #d0d7de;
+  --border-focus: #0969da;
+  
+  --accent-primary: #22c55e;
+  --accent-secondary: #8b5cf6;
+  --accent-info: #0969da;
+  --accent-warning: #d97706;
+  --accent-error: #cf222e;
+  
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 3px 6px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  
+  /* Chat message colors - light */
+  --chat-user-bg: #e3f8e8;
+  --chat-user-border: #b8e6c1;
+  --chat-assistant-bg: #f6f8fa;
+  --chat-assistant-border: #e1e4e8;
+  --chat-system-bg: #fff8e1;
+  --chat-system-border: #ffe082;
+  
+  /* Log colors - light */
+  --log-info-bg: #dbeafe;
+  --log-info-text: #1d4ed8;
+  --log-success-bg: #dcfce7;
+  --log-success-text: #15803d;
+  --log-warning-bg: #fef3c7;
+  --log-warning-text: #b45309;
+  --log-error-bg: #fee2e2;
+  --log-error-text: #b91c1c;
+  
+  /* Code editor line colors - light */
+  --line-number-color: #8b949e;
+  --line-highlight-bg: #fffbdd;
+  --selection-bg: #b4d5fe;
+}
+
+/* Dark theme - Cursor-szerű sötét, magas kontraszt */
+[data-theme="dark"] {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --bg-panel: #161b22;
+  --bg-code: #0d1117;
+  --bg-code-gutter: #161b22;
+  --bg-input: #21262d;
+  --bg-hover: #30363d;
+  --bg-sidebar: #010409;
+  --bg-header: #161b22;
+  --bg-dropdown: #21262d;
+  --bg-diff-added: #1a4721;
+  --bg-diff-removed: #5c2323;
+  --bg-diff-context: #0d1117;
+  --bg-terminal: #0d1117;
+  
+  --text-primary: #ffffff;
+  --text-secondary: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-code: #f1f5f9;
+  --text-code-comment: #94a3b8;
+  --text-code-keyword: #fb7185;
+  --text-code-string: #34d399;
+  --text-code-number: #38bdf8;
+  --text-code-function: #c084fc;
+  
+  --border-primary: #30363d;
+  --border-secondary: #484f58;
+  --border-focus: #58a6ff;
+  
+  --accent-primary: #3fb950;
+  --accent-secondary: #a371f7;
+  --accent-info: #58a6ff;
+  --accent-warning: #d29922;
+  --accent-error: #f85149;
+  
+  --shadow-sm: 0 0 0 1px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 3px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  
+  /* Chat message colors - dark */
+  --chat-user-bg: #1a4721;
+  --chat-user-border: #238636;
+  --chat-assistant-bg: #21262d;
+  --chat-assistant-border: #30363d;
+  --chat-system-bg: #3d2d00;
+  --chat-system-border: #9e6a03;
+  
+  /* Log colors - dark, high contrast */
+  --log-info-bg: #0c2d6b;
+  --log-info-text: #79c0ff;
+  --log-success-bg: #1a4721;
+  --log-success-text: #7ee787;
+  --log-warning-bg: #3d2d00;
+  --log-warning-text: #f0c239;
+  --log-error-bg: #5c2323;
+  --log-error-text: #ff7b72;
+  
+  /* Code editor line colors - dark */
+  --line-number-color: #6e7681;
+  --line-highlight-bg: #2d333b;
+  --selection-bg: #264f78;
+}
+
 html,
 body,
 #root {
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #f1f3f6;
+  background: var(--bg-primary);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text-primary);
+  transition: background-color 0.3s, color 0.3s;
 }
 
 .app-root {
@@ -27,11 +163,59 @@ body,
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  border-bottom: 1px solid #ddd;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-sm);
   font-size: 0.9rem;
   z-index: 100;
+  transition: background-color 0.3s, border-color 0.3s;
+}
+
+/* ====== TÉMA VÁLTÓ GOMB - Lila gradiens ====== */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #ffffff;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.theme-toggle:hover {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(139, 92, 246, 0.3);
+}
+
+.theme-toggle .theme-icon {
+  font-size: 1rem;
+}
+
+/* Sötét mód theme toggle */
+[data-theme="dark"] .theme-toggle {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .theme-toggle:hover {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+@media (max-width: 768px) {
+  .theme-toggle {
+    padding: 5px 10px;
+    font-size: 0.75rem;
+  }
+  
+  .theme-toggle .theme-label {
+    display: none;
+  }
 }
 
 @media (max-width: 768px) {
@@ -83,20 +267,42 @@ body,
 }
 
 .menu-button {
-  background: transparent;
-  border: 1px solid #555;
-  color: #cde;
-  padding: 4px 12px;
-  border-radius: 4px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  color: #ffffff;
+  padding: 5px 12px;
+  border-radius: 6px;
   cursor: pointer;
   font-weight: 600;
-  font-size: 0.9rem;
-  transition: background 0.15s, border-color 0.15s;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .menu-button:hover {
-  background: #334;
-  border-color: #7af;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(139, 92, 246, 0.3);
+}
+
+/* Aktív állapot - zöld amikor a menü nyitva */
+.menu-button.active,
+.menu-button:active {
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.3);
+}
+
+[data-theme="dark"] .menu-button {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .menu-button:hover {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+[data-theme="dark"] .menu-button.active,
+[data-theme="dark"] .menu-button:active {
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
 }
 
 .menu-dropdown {
@@ -104,13 +310,20 @@ body,
   top: 100%;
   left: 0;
   margin-top: 4px;
-  background: #1e222a;
-  border: 1px solid #444;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   min-width: 160px;
   z-index: 1000;
   overflow: hidden;
+}
+
+/* Sötét mód menu dropdown */
+[data-theme="dark"] .menu-dropdown {
+  background: #1e1e2e;
+  border-color: #45475a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 .menu-dropdown-item {
@@ -120,14 +333,23 @@ body,
   text-align: left;
   background: transparent;
   border: none;
-  color: #cde;
+  color: #374151;
   font-size: 0.9rem;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .menu-dropdown-item:hover {
-  background: #2a3040;
+  background: #f3f4f6;
+}
+
+/* Sötét mód menu dropdown item */
+[data-theme="dark"] .menu-dropdown-item {
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .menu-dropdown-item:hover {
+  background: #313244;
 }
 
 .history-buttons {
@@ -138,12 +360,13 @@ body,
 
 .history-button {
   border-radius: 6px;
-  border: 1px solid #d4d4d8;
-  background: #f4f4f5;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
   padding: 2px 6px;
   font-size: 0.8rem;
   cursor: pointer;
   min-width: 24px;
+  color: var(--text-primary);
 }
 
 .history-button:disabled {
@@ -152,7 +375,7 @@ body,
 }
 
 .history-button:not(:disabled):hover {
-  background: #e5e7eb;
+  background: var(--bg-hover);
 }
 
 .status-area {
@@ -248,13 +471,15 @@ body,
 /* ====== PANELEK ====== */
 
 .panel {
-  background: #ffffff;
+  background: var(--bg-panel);
   border-radius: 12px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
   position: relative;
   overflow: hidden;
+  border: 1px solid var(--border-primary);
+  transition: background-color 0.3s, border-color 0.3s;
 }
 
 /* Bal oszlop: projektek */
@@ -347,14 +572,14 @@ body,
 
 .suggestion-counter {
   font-size: 0.85rem;
-  color: #9ab;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
 .nav-btn {
-  background: #2a3040;
-  border: 1px solid #444;
-  color: #cde;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
   padding: 4px 8px;
   border-radius: 4px;
   cursor: pointer;
@@ -363,8 +588,8 @@ body,
 }
 
 .nav-btn:hover:not(:disabled) {
-  background: #3a4050;
-  border-color: #7af;
+  background: var(--bg-hover);
+  border-color: var(--accent-info);
 }
 
 .nav-btn:disabled {
@@ -378,13 +603,13 @@ body,
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: #1a1e24;
+  background: var(--bg-code);
 }
 
 .suggestion-header {
   padding: 10px 14px;
-  background: #252a35;
-  border-bottom: 1px solid #3a4050;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -403,16 +628,16 @@ body,
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #1a2030;
+  background: var(--bg-tertiary);
   padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid #3a4a5a;
+  border: 1px solid var(--border-primary);
 }
 
 .position-nav-btn {
-  background: #2a3545;
-  border: 1px solid #4a5a6a;
-  color: #9cf;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-secondary);
+  color: var(--accent-info);
   padding: 4px 10px;
   border-radius: 4px;
   cursor: pointer;
@@ -421,35 +646,35 @@ body,
 }
 
 .position-nav-btn:hover {
-  background: #3a4555;
-  border-color: #7af;
-  color: #fff;
+  background: var(--bg-hover);
+  border-color: var(--accent-info);
+  color: var(--text-primary);
 }
 
 .position-counter {
   font-size: 0.85rem;
-  color: #9ab;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
 .position-line {
   margin-left: 6px;
-  color: #7a8a9a;
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 
 .suggestion-file {
   font-size: 0.9rem;
-  color: #cde;
+  color: var(--text-secondary);
 }
 
 .suggestion-file strong {
-  color: #7af;
+  color: var(--accent-info);
 }
 
 .suggestion-desc {
   font-size: 0.8rem;
-  color: #8899aa;
+  color: var(--text-muted);
 }
 
 .suggestion-diff {
@@ -460,8 +685,8 @@ body,
 
 .suggestion-actions {
   padding: 12px 14px;
-  background: #1e222a;
-  border-top: 1px solid #3a4050;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
   display: flex;
   gap: 10px;
 }
@@ -500,8 +725,8 @@ body,
 
 .clear-btn {
   background: transparent;
-  border: 1px solid #555;
-  color: #9ab;
+  border: 1px solid var(--border-secondary);
+  color: var(--text-muted);
   padding: 8px 16px;
   border-radius: 6px;
   cursor: pointer;
@@ -511,8 +736,8 @@ body,
 }
 
 .clear-btn:hover {
-  background: #2a3040;
-  border-color: #777;
+  background: var(--bg-hover);
+  border-color: var(--border-primary);
 }
 
 /* Kontextus diff nézet */
@@ -520,7 +745,7 @@ body,
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 0.85rem;
   line-height: 1.5;
-  background: #1a1e24;
+  background: var(--bg-code);
 }
 
 .context-diff-view .diff-line {
@@ -532,34 +757,29 @@ body,
   width: 45px;
   text-align: right;
   padding-right: 12px;
-  color: #5a6a7a;
+  color: var(--line-number-color);
   user-select: none;
   flex-shrink: 0;
 }
 
 .context-diff-view .diff-line-context {
-  background: #1a1e24;
-  color: #8899aa;
+  background: var(--bg-diff-context);
+  color: var(--text-muted);
 }
 
 .context-diff-view .diff-line-added {
-  background: #1a3a2a;
-  color: #7fdf7f;
+  background: var(--bg-diff-added);
+  color: var(--accent-primary);
 }
 
 .context-diff-view .diff-line-removed {
-  background: #4a1a1a;
-  color: #ff9999;
-}
-
-.context-diff-view .diff-line-added {
-  background: #1a3a1a;
-  color: #99ff99;
+  background: var(--bg-diff-removed);
+  color: var(--accent-error);
 }
 
 .context-diff-view .diff-line-common {
-  background: #252a35;
-  color: #cde;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
 }
 
 .diff-section-label {
@@ -570,15 +790,15 @@ body,
 }
 
 .diff-section-removed {
-  background: #3a1515;
-  color: #ff8888;
-  border-left: 3px solid #ff4444;
+  background: var(--bg-diff-removed);
+  color: var(--accent-error);
+  border-left: 3px solid var(--accent-error);
 }
 
 .diff-section-added {
-  background: #153a15;
-  color: #88ff88;
-  border-left: 3px solid #44ff44;
+  background: var(--bg-diff-added);
+  color: var(--accent-primary);
+  border-left: 3px solid var(--accent-primary);
 }
 
 /* ==========================================
@@ -588,7 +808,7 @@ body,
 .inline-code-view {
   flex: 1;
   overflow: auto; /* Mindkét irányban görgethető */
-  background: #1e2530;
+  background: var(--bg-code);
   font-family: "Fira Code", "Consolas", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
@@ -604,7 +824,7 @@ body,
   width: 50px;
   text-align: right;
   padding-right: 12px;
-  color: #666;
+  color: var(--line-number-color);
   user-select: none;
   flex-shrink: 0;
 }
@@ -619,25 +839,25 @@ body,
 .inline-line-text {
   flex: 1;
   white-space: pre;
-  color: #ddd;
+  color: var(--text-code);
 }
 
 .inline-hidden-marker {
   padding: 8px;
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
-  background: #181c24;
-  border-top: 1px dashed #333;
-  border-bottom: 1px dashed #333;
+  background: var(--bg-secondary);
+  border-top: 1px dashed var(--border-primary);
+  border-bottom: 1px dashed var(--border-primary);
 }
 
 /* Javaslat blokk */
 .inline-suggestion-block {
   margin: 8px 0;
-  border: 2px solid #4a90d9;
+  border: 2px solid var(--accent-info);
   border-radius: 8px;
-  background: #1a2535;
+  background: var(--bg-tertiary);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
@@ -646,10 +866,10 @@ body,
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: #2a3a50;
-  border-bottom: 1px solid #4a90d9;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--accent-info);
   border-radius: 6px 6px 0 0;
-  color: #8cf;
+  color: var(--accent-info);
   font-weight: bold;
 }
 
@@ -659,7 +879,7 @@ body,
 }
 
 .inline-apply-btn {
-  background: #2e7d32;
+  background: var(--accent-primary);
   color: white;
   border: none;
   padding: 6px 16px;
@@ -670,11 +890,11 @@ body,
 }
 
 .inline-apply-btn:hover {
-  background: #388e3c;
+  filter: brightness(1.1);
 }
 
 .inline-skip-btn {
-  background: #c62828;
+  background: var(--accent-error);
   color: white;
   border: none;
   padding: 6px 16px;
@@ -685,31 +905,31 @@ body,
 }
 
 .inline-skip-btn:hover {
-  background: #d32f2f;
+  filter: brightness(1.1);
 }
 
 .inline-manual-position {
   display: flex;
   align-items: center;
   padding: 6px 12px;
-  background: #2a3a4a;
-  color: #9ab;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
   font-size: 0.75rem;
-  border-bottom: 1px solid #4a90d9;
+  border-bottom: 1px solid var(--accent-info);
 }
 
 .inline-manual-position input {
-  background: #1a2a3a;
-  color: #fff;
-  border: 1px solid #4a90d9;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-info);
   border-radius: 3px;
   padding: 2px 6px;
   font-size: 0.75rem;
 }
 
 .inline-manual-position button {
-  background: #4a90d9;
-  color: #fff;
+  background: var(--accent-info);
+  color: white;
   border: none;
   border-radius: 3px;
   cursor: pointer;
@@ -717,7 +937,7 @@ body,
 }
 
 .inline-manual-position button:hover {
-  background: #5aa0e9;
+  filter: brightness(1.1);
 }
 
 .inline-position-info {
@@ -725,10 +945,10 @@ body,
   justify-content: space-between;
   align-items: center;
   padding: 6px 12px;
-  background: #3a3520;
-  color: #ffcc00;
+  background: var(--log-warning-bg);
+  color: var(--accent-warning);
   font-size: 0.75rem;
-  border-bottom: 1px solid #4a90d9;
+  border-bottom: 1px solid var(--accent-info);
 }
 
 .inline-position-nav {
@@ -737,8 +957,8 @@ body,
 }
 
 .inline-pos-btn {
-  background: #555;
-  color: white;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
   border: none;
   padding: 4px 10px;
   border-radius: 3px;
@@ -747,7 +967,7 @@ body,
 }
 
 .inline-pos-btn:hover:not(:disabled) {
-  background: #777;
+  background: var(--bg-hover);
 }
 
 .inline-pos-btn:disabled {
@@ -757,7 +977,7 @@ body,
 
 /* Szekciók */
 .inline-removed-section {
-  border-bottom: 1px solid #444;
+  border-bottom: 1px solid var(--border-primary);
 }
 
 .inline-added-section {
@@ -768,59 +988,59 @@ body,
   padding: 4px 12px;
   font-size: 0.75rem;
   font-weight: bold;
-  color: #aaa;
+  color: var(--text-muted);
 }
 
 .inline-removed-section .inline-section-label {
-  background: #3a1515;
-  color: #ff8888;
+  background: var(--bg-diff-removed);
+  color: var(--accent-error);
 }
 
 .inline-added-section .inline-section-label {
-  background: #153a15;
-  color: #88ff88;
+  background: var(--bg-diff-added);
+  color: var(--accent-primary);
 }
 
 /* Removed és added sorok */
 .inline-removed {
-  background: #3a1a1a;
+  background: var(--bg-diff-removed);
 }
 
 .inline-removed .inline-line-text {
-  color: #ff9999;
+  color: var(--accent-error);
 }
 
 .inline-removed .inline-gutter {
-  color: #ff6666;
+  color: var(--accent-error);
 }
 
 .inline-added {
-  background: #1a3a1a;
+  background: var(--bg-diff-added);
 }
 
 .inline-added .inline-line-text {
-  color: #99ff99;
+  color: var(--accent-primary);
 }
 
 .inline-added .inline-gutter {
-  color: #66ff66;
+  color: var(--accent-primary);
 }
 
 .diff-change-marker {
   padding: 6px 12px;
-  background: #2a3545;
-  color: #7af;
+  background: var(--bg-tertiary);
+  color: var(--accent-info);
   font-size: 0.75rem;
   text-align: center;
-  border-top: 1px dashed #4a5a6a;
-  border-bottom: 1px dashed #4a5a6a;
+  border-top: 1px dashed var(--border-secondary);
+  border-bottom: 1px dashed var(--border-secondary);
   margin: 4px 0;
 }
 
 .diff-context-marker {
   padding: 4px 12px;
-  background: #1e2530;
-  color: #888;
+  background: var(--bg-code);
+  color: var(--text-muted);
   font-size: 0.7rem;
   text-align: center;
   font-style: italic;
@@ -896,9 +1116,11 @@ body,
   flex-direction: column;
   margin-top: 8px;
   border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
+  border: 1px solid var(--border-primary);
+  transition: background-color 0.3s, border-color 0.3s;
 }
 
 /* Chat üzenetek területe – görgethető, de nem tágul végtelenre */
@@ -907,55 +1129,353 @@ body,
   overflow-y: auto;
   padding: 10px;
   font-size: 0.9rem;
-  background: #fff;
+  background: var(--bg-secondary);
   min-height: 0;
+}
+
+/* ====== JÓVÁHAGYÁS PANEL ====== */
+.pending-permissions-panel {
+  margin: 12px 0;
+  padding: 12px;
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border-radius: 8px;
+  border: 2px solid #f59e0b;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.2);
+}
+
+[data-theme="dark"] .pending-permissions-panel {
+  background: linear-gradient(135deg, #422006 0%, #78350f 100%);
+  border-color: #f59e0b;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+}
+
+.pending-permissions-panel .panel-title {
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #92400e;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-theme="dark"] .pending-permissions-panel .panel-title {
+  color: #fbbf24;
+}
+
+.pending-permissions-panel .permission-card {
+  background: white;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid #d97706;
+}
+
+[data-theme="dark"] .pending-permissions-panel .permission-card {
+  background: #1f2937;
+  border-color: #92400e;
+}
+
+.pending-permissions-panel .permission-card:last-child {
+  margin-bottom: 0;
+}
+
+.pending-permissions-panel .permission-type {
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pending-permissions-panel .permission-type.terminal { color: #1f2937; }
+.pending-permissions-panel .permission-type.delete { color: #dc2626; }
+.pending-permissions-panel .permission-type.write { color: #0891b2; }
+.pending-permissions-panel .permission-type.edit { color: #7c3aed; }
+.pending-permissions-panel .permission-type.directory { color: #ca8a04; }
+
+[data-theme="dark"] .pending-permissions-panel .permission-type.terminal { color: #e2e8f0; }
+[data-theme="dark"] .pending-permissions-panel .permission-type.delete { color: #f87171; }
+[data-theme="dark"] .pending-permissions-panel .permission-type.write { color: #22d3ee; }
+[data-theme="dark"] .pending-permissions-panel .permission-type.edit { color: #a78bfa; }
+[data-theme="dark"] .pending-permissions-panel .permission-type.directory { color: #fbbf24; }
+
+.pending-permissions-panel .permission-description {
+  color: #374151;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
+}
+
+[data-theme="dark"] .pending-permissions-panel .permission-description {
+  color: #d1d5db;
+}
+
+.pending-permissions-panel .permission-path {
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+.pending-permissions-panel .permission-path.terminal {
+  background: #1f2937;
+  color: #10b981;
+}
+
+.pending-permissions-panel .permission-path.delete {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+[data-theme="dark"] .pending-permissions-panel .permission-path.delete {
+  background: #450a0a;
+  color: #fca5a5;
+}
+
+.pending-permissions-panel .permission-path.write {
+  background: #ecfeff;
+  color: #0e7490;
+}
+
+[data-theme="dark"] .pending-permissions-panel .permission-path.write {
+  background: #083344;
+  color: #67e8f9;
+}
+
+.pending-permissions-panel .permission-path.edit {
+  background: #f5f3ff;
+  color: #5b21b6;
+}
+
+[data-theme="dark"] .pending-permissions-panel .permission-path.edit {
+  background: #2e1065;
+  color: #c4b5fd;
+}
+
+.pending-permissions-panel .permission-path.directory {
+  background: #fefce8;
+  color: #a16207;
+}
+
+[data-theme="dark"] .pending-permissions-panel .permission-path.directory {
+  background: #422006;
+  color: #fde047;
+}
+
+.pending-permissions-panel .diff-container {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pending-permissions-panel .diff-box {
+  flex: 1;
+}
+
+.pending-permissions-panel .diff-label {
+  font-size: 0.75rem;
+  margin-bottom: 4px;
+}
+
+.pending-permissions-panel .diff-label.original {
+  color: #dc2626;
+}
+
+.pending-permissions-panel .diff-label.new {
+  color: #16a34a;
+}
+
+[data-theme="dark"] .pending-permissions-panel .diff-label.original {
+  color: #f87171;
+}
+
+[data-theme="dark"] .pending-permissions-panel .diff-label.new {
+  color: #4ade80;
+}
+
+.pending-permissions-panel .diff-content {
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.75rem;
+  max-height: 100px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.pending-permissions-panel .diff-content.original {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+[data-theme="dark"] .pending-permissions-panel .diff-content.original {
+  background: #450a0a;
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+.pending-permissions-panel .diff-content.new {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+[data-theme="dark"] .pending-permissions-panel .diff-content.new {
+  background: #052e16;
+  border-color: #166534;
+  color: #86efac;
+}
+
+.pending-permissions-panel .action-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pending-permissions-panel .btn-approve {
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border: none;
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  color: white;
+  transition: all 0.2s ease;
+}
+
+.pending-permissions-panel .btn-approve:hover {
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  transform: translateY(-1px);
+}
+
+.pending-permissions-panel .btn-reject {
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border: none;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  transition: all 0.2s ease;
+}
+
+.pending-permissions-panel .btn-reject:hover {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  transform: translateY(-1px);
+}
+
+.pending-permissions-panel .content-preview {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.8rem;
+  margin-bottom: 10px;
+  max-height: 150px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #374151;
+}
+
+[data-theme="dark"] .pending-permissions-panel .content-preview {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+/* ====== CHAT BUBORÉKOK ====== */
+.chat-bubble {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  max-width: 80%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.chat-bubble-user {
+  background: #e5e7eb;
+  color: #1f2937;
+}
+
+.chat-bubble-assistant {
+  background: #dcfce7;
+  color: #166534;
+}
+
+/* Sötét mód chat buborékok - MAGAS KONTRASZT */
+[data-theme="dark"] .chat-bubble-user {
+  background: #374151;
+  color: #f9fafb;
+}
+
+[data-theme="dark"] .chat-bubble-assistant {
+  background: #1a4731;
+  color: #d1fae5;
 }
 
 /* Chat beviteli sáv alul fixen */
 .chat-input-row {
   display: flex;
-  gap: 10px;
-  padding: 12px 14px;
-  border-top: 1px solid #e5e7eb;
-  background: linear-gradient(to top, #f8fafc, #ffffff);
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-primary);
+  background: var(--bg-panel);
   flex-shrink: 0;
   align-items: flex-end;
 }
 
-.chat-input {
+.chat-input-wrapper {
+  position: relative;
   flex: 1;
-  padding: 12px 16px;
-  border-radius: 16px;
-  border: 2px solid #e5e7eb;
+  min-width: 0;
+}
+
+/* Chat input textarea */
+textarea.chat-input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 14px;
   font-size: 0.9rem;
-  transition: all 0.2s ease;
   font-family: inherit;
   line-height: 1.5;
-  overflow-y: auto;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border-radius: 12px;
+  border: 2px solid var(--border-primary);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+  box-sizing: border-box;
   resize: none;
-}
-
-.chat-input:focus {
-  border-color: #3b82f6;
   outline: none;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.chat-input:hover:not(:focus) {
-  border-color: #cbd5e1;
+textarea.chat-input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), var(--shadow-sm);
 }
 
-.chat-input::placeholder {
-  color: #94a3b8;
+textarea.chat-input:hover:not(:focus) {
+  border-color: var(--border-secondary);
+}
+
+textarea.chat-input::placeholder {
+  color: var(--text-muted);
 }
 
 .chat-input-row .primary-button {
-  padding: 12px 20px;
-  border-radius: 12px;
+  padding: 10px 16px;
+  border-radius: 10px;
   font-weight: 600;
-  min-width: 80px;
+  min-width: 70px;
+  flex-shrink: 0;
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   border: none;
   color: white;
@@ -997,10 +1517,12 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-primary);
   font-size: 0.85rem;
   font-weight: 600;
-  background: #f8f9fb;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  transition: background-color 0.3s, border-color 0.3s, color 0.3s;
 }
 
 .panel-header-right {
@@ -1055,13 +1577,27 @@ body,
 }
 
 .diff-line-added {
-  background: #ecfdf5;
+  background: #bbf7d0;
   color: #166534;
+  border-left: 4px solid #22c55e;
 }
 
 .diff-line-removed {
-  background: #fef2f2;
-  color: #b91c1c;
+  background: #fecaca;
+  color: #991b1b;
+  border-left: 4px solid #ef4444;
+}
+
+[data-theme="dark"] .diff-line-added {
+  background: rgba(34, 197, 94, 0.25);
+  color: #86efac;
+  border-left: 4px solid #22c55e;
+}
+
+[data-theme="dark"] .diff-line-removed {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+  border-left: 4px solid #ef4444;
 }
 
 /* Régi .line-numbers - kompatibilitáshoz megtartva */
@@ -1082,10 +1618,10 @@ body,
 .line-numbers-gutter {
   min-width: 50px;
   padding: 10px 8px 10px 4px;
-  background: #2d3748;
-  color: #718096;
+  background: var(--bg-code-gutter);
+  color: var(--line-number-color);
   text-align: right;
-  border-right: 1px solid #4a5568;
+  border-right: 1px solid var(--border-primary);
   overflow: hidden;
   user-select: none;
   flex-shrink: 0;
@@ -1108,9 +1644,10 @@ body,
   font-size: inherit;
   line-height: inherit;
   overflow: auto;
-  background: #1a202c;
-  color: #e2e8f0;
+  background: var(--bg-code);
+  color: var(--text-code);
   tab-size: 4;
+  caret-color: var(--text-primary);
 }
 
 /* ====== HIGHLIGHTED CODE EDITOR ====== */
@@ -1128,7 +1665,7 @@ body,
   flex: 1;
   position: relative;
   overflow: auto;
-  background: #1a202c;
+  background: var(--bg-code);
   -webkit-overflow-scrolling: touch;
 }
 
@@ -1205,40 +1742,74 @@ body,
   contain: none;
 }
 
+/* === VILÁGOS MÓD - PL/I szintaxis === */
 .pli-token-keyword {
-  color: #c792ea; /* Lila - kulcsszavak */
+  color: #7c3aed; /* Erős lila - kulcsszavak */
   font-weight: 600;
 }
 
 .pli-token-preprocessor {
-  color: #f78c6c; /* Narancs - preprocessor */
+  color: #c2410c; /* Sötét narancs - preprocessor */
   font-weight: 600;
 }
 
 .pli-token-string {
-  color: #c3e88d; /* Zöld - stringek */
+  color: #047857; /* Sötét zöld - stringek */
 }
 
 .pli-token-comment {
-  color: #546e7a; /* Szürke - kommentek */
+  color: #64748b; /* Sötétebb szürke - kommentek */
   font-style: italic;
 }
 
 .pli-token-number {
-  color: #f78c6c; /* Narancs - számok */
+  color: #b45309; /* Sötét narancs - számok */
 }
 
 .pli-token-operator {
-  color: #89ddff; /* Kék - operátorok */
+  color: #0369a1; /* Sötét kék - operátorok */
   font-weight: 500;
 }
 
 .pli-token-constant {
-  color: #ffcb6b; /* Sárga - konstansok */
+  color: #a16207; /* Sötét sárga/barna - konstansok */
 }
 
 .pli-token-normal {
-  color: #e2e8f0; /* Fehér - normál szöveg */
+  color: #1e293b; /* Sötét szürke - normál szöveg */
+}
+
+/* === SÖTÉT MÓD - PL/I szintaxis === */
+[data-theme="dark"] .pli-token-keyword {
+  color: #c792ea; /* Világos lila - kulcsszavak */
+}
+
+[data-theme="dark"] .pli-token-preprocessor {
+  color: #f78c6c; /* Narancs - preprocessor */
+}
+
+[data-theme="dark"] .pli-token-string {
+  color: #c3e88d; /* Világos zöld - stringek */
+}
+
+[data-theme="dark"] .pli-token-comment {
+  color: #6b7280; /* Szürke - kommentek */
+}
+
+[data-theme="dark"] .pli-token-number {
+  color: #f78c6c; /* Narancs - számok */
+}
+
+[data-theme="dark"] .pli-token-operator {
+  color: #89ddff; /* Világos kék - operátorok */
+}
+
+[data-theme="dark"] .pli-token-constant {
+  color: #ffcb6b; /* Sárga - konstansok */
+}
+
+[data-theme="dark"] .pli-token-normal {
+  color: #e2e8f0; /* Világos szürke - normál szöveg */
 }
 
 /* ====== PROJEKTEK LISTA ====== */
@@ -1276,9 +1847,18 @@ body,
   background: #f3f4f6;
 }
 
+[data-theme="dark"] .project-item:hover {
+  background: #313244;
+}
+
 .project-item.selected {
   background: #dcfce7;
   border: 1px solid #16a34a;
+}
+
+[data-theme="dark"] .project-item.selected {
+  background: #1a4731;
+  border-color: #22c55e;
 }
 
 .project-name {
@@ -1305,6 +1885,314 @@ body,
 
 .chat-file-link:hover {
   color: #1d4ed8;
+}
+
+/* ====== CHAT DIFF LINK - Kattintható módosított fájlok ====== */
+.chat-diff-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  color: #ffffff;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  margin: 2px 4px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  transition: all 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.chat-diff-link:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
+}
+
+.chat-diff-link .diff-link-icon {
+  font-size: 1rem;
+}
+
+.chat-diff-link .diff-link-path {
+  font-family: "Fira Code", monospace;
+  font-size: 0.8rem;
+}
+
+/* ====== DIFF VIEWER MODAL ====== */
+.diff-viewer-modal {
+  background: var(--bg-panel);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  width: 90%;
+  max-width: 1000px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Sticky fejléc - mindig látható marad */
+.diff-viewer-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Fájl navigáció - több módosítás esetén */
+.diff-file-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 10px 20px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-file-nav-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  color: #ffffff;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-file-nav-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.diff-file-nav-counter {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 0 12px;
+  min-width: 120px;
+  text-align: center;
+}
+
+.diff-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: var(--bg-header);
+}
+
+.diff-viewer-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.diff-stats {
+  display: flex;
+  gap: 12px;
+}
+
+.diff-stat {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+
+.diff-stat.added {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.diff-stat.deleted {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+[data-theme="dark"] .diff-stat.added {
+  background: #14532d;
+  color: #86efac;
+}
+
+[data-theme="dark"] .diff-stat.deleted {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+.diff-viewer-content {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg-code);
+}
+
+.diff-viewer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-header);
+}
+
+/* ====== DIFF VIEWER KOMPONENS ====== */
+.diff-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+}
+
+.diff-viewer-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.diff-nav-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  color: #ffffff;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.diff-nav-btn:hover:not(:disabled) {
+  transform: scale(1.05);
+}
+
+.diff-nav-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diff-nav-counter {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.diff-viewer-code {
+  flex: 1;
+  overflow: auto;
+  font-family: "Fira Code", Menlo, Monaco, Consolas, "Courier New", monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  padding: 8px 0;
+}
+
+.diff-viewer-code .diff-line {
+  display: flex;
+  padding: 1px 10px;
+  min-height: 24px;
+}
+
+.diff-viewer-code .diff-line.current-change {
+  outline: 2px solid #667eea;
+  outline-offset: -2px;
+  background: rgba(102, 126, 234, 0.1) !important;
+}
+
+.diff-viewer-code .diff-line-num {
+  width: 50px;
+  text-align: right;
+  padding-right: 10px;
+  color: var(--text-muted);
+  user-select: none;
+  font-size: 0.8rem;
+}
+
+.diff-viewer-code .diff-line-added {
+  background: #bbf7d0;
+  border-left: 4px solid #22c55e;
+}
+
+.diff-viewer-code .diff-line-removed {
+  background: #fecaca;
+  border-left: 4px solid #ef4444;
+}
+
+.diff-viewer-code .diff-line-common {
+  background: transparent;
+}
+
+[data-theme="dark"] .diff-viewer-code .diff-line-added {
+  background: rgba(34, 197, 94, 0.25);
+  border-left: 4px solid #22c55e;
+}
+
+[data-theme="dark"] .diff-viewer-code .diff-line-removed {
+  background: rgba(239, 68, 68, 0.25);
+  border-left: 4px solid #ef4444;
+}
+
+.diff-viewer-code .diff-gutter {
+  width: 20px;
+  text-align: center;
+  font-weight: bold;
+  user-select: none;
+}
+
+.diff-viewer-code .diff-line-added .diff-gutter {
+  color: #15803d;
+  font-weight: bold;
+}
+
+.diff-viewer-code .diff-line-added .diff-text {
+  color: #166534;
+}
+
+.diff-viewer-code .diff-line-removed .diff-gutter {
+  color: #b91c1c;
+  font-weight: bold;
+}
+
+.diff-viewer-code .diff-line-removed .diff-text {
+  color: #991b1b;
+}
+
+[data-theme="dark"] .diff-viewer-code .diff-line-added .diff-gutter {
+  color: #4ade80;
+  font-weight: bold;
+}
+
+[data-theme="dark"] .diff-viewer-code .diff-line-added .diff-text {
+  color: #86efac;
+}
+
+[data-theme="dark"] .diff-viewer-code .diff-line-removed .diff-gutter {
+  color: #f87171;
+  font-weight: bold;
+}
+
+[data-theme="dark"] .diff-viewer-code .diff-line-removed .diff-text {
+  color: #fca5a5;
+}
+
+.diff-viewer-code .diff-text {
+  flex: 1;
+  white-space: pre;
+  color: var(--text-code);
 }
 
 /* ====== REINDEX / DELETE GOMBOK ====== */
@@ -1392,6 +2280,13 @@ body,
   box-shadow: 0 15px 40px rgba(15, 23, 42, 0.35);
 }
 
+/* Sötét mód modal */
+[data-theme="dark"] .modal {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.6);
+}
+
 .modal h2 {
   margin: 0 0 12px;
   font-size: 1rem;
@@ -1417,6 +2312,21 @@ body,
   padding: 6px 8px;
   font-size: 0.85rem;
   font-family: inherit;
+  background: #ffffff;
+  color: #374151;
+}
+
+/* Sötét mód modal form inputs */
+[data-theme="dark"] .modal-form input,
+[data-theme="dark"] .modal-form textarea {
+  background: #313244;
+  border-color: #45475a;
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .modal-form input::placeholder,
+[data-theme="dark"] .modal-form textarea::placeholder {
+  color: #6c7086;
 }
 
 .modal-form textarea {
@@ -1582,6 +2492,16 @@ body,
   border: 1px solid #3b82f6;
 }
 
+/* Sötét mód fájl kijelölés */
+[data-theme="dark"] .file-item:hover {
+  background: #313244;
+}
+
+[data-theme="dark"] .file-item.selected {
+  background: #45475a;
+  border-color: #89b4fa;
+}
+
 .file-icon {
   font-size: 0.85rem;
   width: 16px;
@@ -1654,10 +2574,11 @@ body,
     left: 0;
     right: 0;
     height: 50px;
-    background: #ffffff;
-    border-top: 1px solid #e5e7eb;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-primary);
     display: flex;
     z-index: 200;
+    transition: background-color 0.3s, border-color 0.3s;
   }
 
   .mobile-tab {
@@ -1669,13 +2590,14 @@ body,
     align-items: center;
     justify-content: center;
     gap: 4px;
-    color: #6b7280;
+    color: var(--text-muted);
+    transition: color 0.3s;
   }
 
   .mobile-tab.active {
-    color: #16a34a;
+    color: var(--accent-primary);
     font-weight: 600;
-    border-top: 2px solid #16a34a;
+    border-top: 2px solid var(--accent-primary);
   }
   
     /* --- CHAT MOBILON --- */
@@ -1694,7 +2616,7 @@ body,
     overflow-y: auto;         /* görgethető előzmények */
   }
 
-  .chat-input {
+  textarea.chat-input {
     font-size: 15px;
     padding: 10px 14px;
     border-radius: 14px;
@@ -1798,7 +2720,7 @@ body,
     border-radius: 20px;
   }
 
-  .chat-input {
+  textarea.chat-input {
     font-size: 14px;
     padding: 6px 8px;
   }
@@ -1807,6 +2729,130 @@ body,
   .secondary-button {
     padding: 6px 10px;
     font-size: 13px;
+  }
+  
+  /* === MOBIL: Kód panel fejléc === */
+  .unified-code-panel .panel-header {
+    flex-wrap: wrap;
+    height: auto !important;
+    min-height: 44px;
+    padding: 8px;
+    gap: 8px;
+    background: #1e293b;
+    border-bottom: 2px solid #334155;
+  }
+  
+  .unified-code-panel .panel-header > span {
+    font-size: 11px;
+    color: #94a3b8;
+    flex: 1 1 100%;
+    margin-bottom: 4px;
+  }
+  
+  .panel-header-right {
+    display: flex !important;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+    justify-content: flex-start;
+  }
+  
+  .panel-header-right .secondary-button {
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+    border-radius: 6px;
+    font-weight: 600;
+  }
+  
+  .panel-header-right .save-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    color: white !important;
+    border-color: transparent !important;
+  }
+  
+  .panel-header-right .agentic {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    color: white !important;
+    border-color: transparent !important;
+  }
+  
+  /* Encoding select mobilon */
+  .encoding-select {
+    padding: 6px 8px;
+    font-size: 11px;
+    background: #334155;
+    color: #e2e8f0;
+    border: 1px solid #475569;
+    border-radius: 4px;
+  }
+  
+  /* Suggestion nav mobilon */
+  .suggestion-nav {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  
+  .suggestion-nav button {
+    padding: 6px 10px;
+    font-size: 12px;
+    background: #475569;
+    color: white;
+    border: none;
+    border-radius: 4px;
+  }
+  
+  .suggestion-counter {
+    font-size: 11px;
+    color: #94a3b8;
+  }
+  
+  /* Tab bar mobilon */
+  .tab-bar {
+    min-height: 36px !important;
+  }
+  
+  .tab-item {
+    font-size: 12px !important;
+    padding: 6px 10px !important;
+  }
+  
+  /* === MOBIL: Log panel több üzenet === */
+  .log-panel {
+    max-height: none !important;
+    min-height: 300px;
+    flex: 1;
+  }
+  
+  .log-panel .panel-header {
+    background: #1e293b;
+    color: #e2e8f0;
+    border-bottom: 1px solid #334155;
+    min-height: 40px;
+  }
+  
+  .log-window-content {
+    background: var(--bg-panel);
+    max-height: calc(100vh - 200px);
+    min-height: 250px;
+    overflow-y: auto;
+  }
+  
+  .log-message {
+    padding: 8px 10px;
+    font-size: 12px;
+    margin-bottom: 6px;
+    border-radius: 6px;
+  }
+  
+  .log-timestamp {
+    color: #64748b;
+  }
+  
+  .log-empty {
+    color: #64748b;
+    padding: 40px;
   }
 }
 
@@ -1987,13 +3033,14 @@ body,
   font-family: "Fira Code", monospace;
   min-height: 0;
   height: 100%;
-  background: #ffffff;
+  background: var(--bg-panel);
+  transition: background-color 0.3s;
 }
 
 .log-empty {
   padding: 20px;
   text-align: center;
-  color: #9ca3af;
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -2006,26 +3053,27 @@ body,
   border-radius: 4px;
   line-height: 1.4;
   word-wrap: break-word;
+  transition: background-color 0.3s, color 0.3s;
 }
 
 .log-message.log-info {
-  background: #eff6ff;
-  color: #1e40af;
+  background: var(--log-info-bg);
+  color: var(--log-info-text);
 }
 
 .log-message.log-success {
-  background: #f0fdf4;
-  color: #166534;
+  background: var(--log-success-bg);
+  color: var(--log-success-text);
 }
 
 .log-message.log-warning {
-  background: #fffbeb;
-  color: #92400e;
+  background: var(--log-warning-bg);
+  color: var(--log-warning-text);
 }
 
 .log-message.log-error {
-  background: #fef2f2;
-  color: #991b1b;
+  background: var(--log-error-bg);
+  color: var(--log-error-text);
 }
 
 .log-timestamp {
@@ -2045,9 +3093,9 @@ body,
   word-break: break-word;
 }
 
-/* ====== MODERN GOMB STÍLUSOK ====== */
+/* ====== MODERN GOMB STÍLUSOK - LILA ====== */
 
-/* Icon gombok - modern, kerek, kisebb padding */
+/* Icon gombok - lila gradiens alapértelmezetten */
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -2055,9 +3103,9 @@ body,
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
-  color: #374151;
+  border: none;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
   font-size: 0.9rem;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -2066,10 +3114,9 @@ body,
 }
 
 .icon-button:hover {
-  background: #f3f4f6;
-  border-color: #d1d5db;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
   transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 4px rgba(139, 92, 246, 0.3);
 }
 
 .icon-button:active {
@@ -2077,96 +3124,151 @@ body,
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-/* Törlés gomb - piros, kuka ikon */
+/* Sötét mód icon-button */
+[data-theme="dark"] .icon-button {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .icon-button:hover {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* Törlés gomb - piros */
 .icon-button.delete {
-  background: #fef2f2;
-  border-color: #fecaca;
-  color: #dc2626;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: #ffffff;
   width: 24px;
   height: 24px;
   font-size: 0.85rem;
 }
 
 .icon-button.delete:hover {
-  background: #fee2e2;
-  border-color: #fca5a5;
-  color: #b91c1c;
+  background: linear-gradient(135deg, #f87171 0%, #ef4444 100%);
+  box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
 }
 
-/* Refresh/Reindex gomb - kék, körbenyíl ikon */
+/* Refresh/Reindex gomb - lila alapból, zöld amikor fut */
 .icon-button.refresh {
-  background: #eff6ff;
-  border-color: #bfdbfe;
-  color: #2563eb;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
 }
 
 .icon-button.refresh:hover {
-  background: #dbeafe;
-  border-color: #93c5fd;
-  color: #1d4ed8;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
 }
 
+/* Reindexing - ZÖLD amikor fut */
 .icon-button.refresh.reindexing {
-  background: linear-gradient(90deg, #eff6ff 0%, #dbeafe 50%, #eff6ff 100%);
-  background-size: 200% 100%;
-  animation: reindex-pulse 1.5s ease-in-out infinite;
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  animation: reindex-glow 1.5s ease-in-out infinite;
 }
 
-@keyframes reindex-pulse {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+@keyframes reindex-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(34, 197, 94, 0.5); }
+  50% { box-shadow: 0 0 15px rgba(34, 197, 94, 0.8); }
 }
 
-/* Edit gomb - szürke, ceruza ikon */
+/* Edit gomb - lila */
 .icon-button.edit {
-  background: #f9fafb;
-  border-color: #e5e7eb;
-  color: #6b7280;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
 }
 
 .icon-button.edit:hover {
-  background: #f3f4f6;
-  border-color: #d1d5db;
-  color: #4b5563;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
 }
 
-/* Add gomb - zöld, + ikon */
+/* Add gomb - lila */
 .icon-button.add {
-  background: #f0fdf4;
-  border-color: #bbf7d0;
-  color: #16a34a;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
   font-weight: bold;
   font-size: 1.1rem;
 }
 
 .icon-button.add:hover {
-  background: #dcfce7;
-  border-color: #86efac;
-  color: #15803d;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
 }
 
-/* Modern secondary button - kisebb padding, jobb design */
+/* Sötét mód */
+[data-theme="dark"] .icon-button.edit,
+[data-theme="dark"] .icon-button.add {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .icon-button.edit:hover,
+[data-theme="dark"] .icon-button.add:hover {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* ====== ÁLTALÁNOS GOMB STÍLUSOK ====== */
+
+/* Primary gomb - Lila gradiens */
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.primary-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(139, 92, 246, 0.3);
+}
+
+.primary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Sötét mód primary button */
+[data-theme="dark"] .primary-button {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .primary-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* ====== EGYSÉGES GOMB STÍLUS - Lila gradiens (Projekt Elemzés stílus) ====== */
+
+/* Alap secondary gomb - Lila gradiens */
 .secondary-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-radius: 6px;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
-  color: #374151;
+  border: none;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
   font-size: 0.85rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-.secondary-button:hover {
-  background: #f9fafb;
-  border-color: #d1d5db;
-  color: #111827;
+.secondary-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(139, 92, 246, 0.3);
+}
+
+.secondary-button:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .secondary-button:disabled {
@@ -2174,66 +3276,120 @@ body,
   cursor: not-allowed;
 }
 
-/* Validálás gomb - modern, szürke alapból */
+/* Mentés gomb - Lila (ugyanaz mint a többi) */
+.secondary-button.save-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
+}
+
+.secondary-button.save-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  box-shadow: 0 3px 8px rgba(139, 92, 246, 0.3);
+}
+
+/* Validálás/Agentic gomb - ugyanaz a lila */
+.secondary-button.agentic {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
+}
+
+.secondary-button.agentic:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  box-shadow: 0 3px 8px rgba(139, 92, 246, 0.3);
+}
+
+.secondary-button.agentic:disabled {
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  opacity: 0.6;
+}
+
+/* Nincs fájl kiválasztva - Sárga figyelmeztető */
+.secondary-button.agentic.needs-file:disabled {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: #1c1917;
+  opacity: 0.9;
+}
+
+.secondary-button.agentic.loading {
+  cursor: wait;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Validálás gomb - Szürke ha pending */
 .secondary-button.validate-pending {
-  background: #f9fafb;
-  border-color: #e5e7eb;
-  color: #6b7280;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
 }
 
-.secondary-button.validate-pending:hover {
-  background: #f3f4f6;
-  border-color: #d1d5db;
-  color: #4b5563;
+.secondary-button.validate-pending:hover:not(:disabled) {
+  background: var(--bg-hover);
 }
 
-/* Validálás gomb - zöld ha validálva és nem változott */
+/* Validálás gomb - Zöld ha validálva */
 .secondary-button.validate {
-  background: #f0fdf4;
-  border-color: #bbf7d0;
-  color: #16a34a;
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  color: #ffffff;
 }
 
-.secondary-button.validate:hover {
-  background: #dcfce7;
-  border-color: #86efac;
-  color: #15803d;
-}
-
-/* Javaslat gomb - modern, lila */
-.secondary-button.suggestion {
-  background: #faf5ff;
-  border-color: #e9d5ff;
-  color: #9333ea;
-}
-
-.secondary-button.suggestion:hover {
-  background: #f3e8ff;
-  border-color: #d8b4fe;
-  color: #7e22ce;
-}
-
-/* Encoding select - modern, kisebb */
+/* Encoding select - Lila gradiens */
 .encoding-select {
-  padding: 4px 8px;
+  padding: 5px 10px;
   border-radius: 6px;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
-  color: #374151;
+  border: none;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
   font-size: 0.85rem;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .encoding-select:hover {
-  border-color: #d1d5db;
-  background: #f9fafb;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
 }
 
 .encoding-select:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+}
+
+/* Encoding select opciók */
+.encoding-select option {
+  background: var(--bg-dropdown);
+  color: var(--text-primary);
+}
+
+/* Sötét mód - ugyanaz a lila, de kicsit sötétebb */
+[data-theme="dark"] .secondary-button {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .secondary-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+[data-theme="dark"] .encoding-select {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .encoding-select:hover {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* Sötét mód save-btn is lila */
+[data-theme="dark"] .secondary-button.save-btn {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .secondary-button.save-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
 
 /* ====== CONTEXT MENU ====== */
@@ -2309,30 +3465,291 @@ body,
   margin: 4px 8px;
 }
 
-/* ====== AUTO MODE TOGGLE ====== */
+/* ====== CONTEXT MENU - SÖTÉT MÓD ====== */
+[data-theme="dark"] .context-menu {
+  background: #1e1e2e;
+  border-color: #45475a;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5), 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .context-menu-item {
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .context-menu-item:hover:not(.disabled) {
+  background: #313244;
+}
+
+[data-theme="dark"] .context-menu-item.danger {
+  color: #f38ba8;
+}
+
+[data-theme="dark"] .context-menu-item.danger:hover:not(.disabled) {
+  background: #45475a;
+}
+
+[data-theme="dark"] .context-menu-item.disabled {
+  color: #6c7086;
+}
+
+[data-theme="dark"] .context-menu-divider {
+  background: #45475a;
+}
+
+/* ====== KÓD KERESÉS PANEL ====== */
+
+.code-search-panel {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  border-bottom: 2px solid #6366f1;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  animation: searchSlideIn 0.2s ease-out;
+  /* Biztosítja hogy a kattintások nem mennek át */
+  isolation: isolate;
+}
+
+@keyframes searchSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.code-search-input-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.code-search-icon {
+  font-size: 16px;
+  opacity: 0.8;
+}
+
+.code-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 14px;
+  padding: 6px 0;
+  outline: none;
+  font-family: inherit;
+  min-width: 100px;
+  /* Fontos: biztosítja hogy az input interaktív maradjon */
+  position: relative;
+  z-index: 10;
+}
+
+.code-search-input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.code-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.code-search-count {
+  color: #a5b4fc;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.code-search-nav-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  transition: all 0.15s;
+}
+
+.code-search-nav-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.5);
+  border-color: #6366f1;
+}
+
+.code-search-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.code-search-close-btn {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.code-search-close-btn:hover {
+  background: rgba(239, 68, 68, 0.4);
+  border-color: #ef4444;
+  color: #fff;
+}
+
+.code-search-results {
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 4px;
+}
+
+.code-search-result-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 12px;
+}
+
+.code-search-result-item:hover {
+  background: rgba(99, 102, 241, 0.3);
+}
+
+.code-search-result-item.active {
+  background: rgba(99, 102, 241, 0.5);
+  border-left: 3px solid #6366f1;
+}
+
+.code-search-result-line {
+  color: #a5b4fc;
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.code-search-result-text {
+  color: #e2e8f0;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-search-too-many {
+  color: #fbbf24;
+  font-size: 12px;
+  padding: 8px;
+  text-align: center;
+  background: rgba(251, 191, 36, 0.1);
+  border-radius: 4px;
+}
+
+.code-search-no-results {
+  color: #f87171;
+  font-size: 12px;
+  padding: 8px;
+  text-align: center;
+  background: rgba(248, 113, 113, 0.1);
+  border-radius: 4px;
+}
+
+/* Mobil optimalizáció */
+@media (max-width: 768px) {
+  .code-search-panel {
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  
+  .code-search-input {
+    font-size: 16px; /* iOS zoom fix */
+  }
+  
+  .code-search-results {
+    max-height: 150px;
+  }
+  
+  .code-search-result-item {
+    padding: 8px;
+  }
+}
+
+/* ====== AUTO MODE TOGGLE - Lila gradiens ====== */
 
 .auto-mode-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  padding: 5px 12px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
   border-radius: 6px;
   font-size: 0.85rem;
+  font-weight: 600;
+  color: #ffffff;
   cursor: pointer;
   transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .auto-mode-toggle:hover {
-  background: #f3f4f6;
-  border-color: #d1d5db;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(139, 92, 246, 0.3);
 }
 
 .auto-mode-toggle.active {
-  background: #dbeafe;
-  border-color: #93c5fd;
-  color: #1d4ed8;
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  color: #ffffff;
+}
+
+.auto-mode-toggle.active:hover {
+  background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
+  box-shadow: 0 3px 8px rgba(34, 197, 94, 0.3);
+}
+
+/* Sötét mód */
+[data-theme="dark"] .auto-mode-toggle {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .auto-mode-toggle:hover {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+[data-theme="dark"] .auto-mode-toggle.active {
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  color: #ffffff;
 }
 
 .auto-mode-toggle .toggle-switch {
@@ -2442,6 +3859,11 @@ body,
   color: #16a34a;
 }
 
+[data-theme="dark"] .syntax-error-actions .fix-all-btn {
+  background: #1a4731;
+  color: #4ade80;
+}
+
 .syntax-error-actions .fix-all-btn:hover {
   background: #bbf7d0;
 }
@@ -2516,9 +3938,77 @@ body,
   cursor: not-allowed;
 }
 
-.syntax-error-fix-btn:hover {
-  background: #dbeafe;
-  border-color: #93c5fd;
+.syntax-error-fix-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+}
+
+/* Sötét mód syntax error panel */
+[data-theme="dark"] .syntax-error-panel {
+  background: #312131;
+  border-color: #5c3c5c;
+}
+
+[data-theme="dark"] .syntax-error-header {
+  background: #3d2a3d;
+  border-bottom-color: #5c3c5c;
+}
+
+[data-theme="dark"] .syntax-error-title {
+  color: #f38ba8;
+}
+
+[data-theme="dark"] .syntax-error-count .error-count {
+  color: #f38ba8;
+}
+
+[data-theme="dark"] .syntax-error-count .warning-count {
+  color: #f9e2af;
+}
+
+[data-theme="dark"] .syntax-error-list {
+  background: #1e1e2e;
+}
+
+[data-theme="dark"] .syntax-error-item {
+  border-bottom-color: #45475a;
+}
+
+[data-theme="dark"] .syntax-error-item:hover {
+  background: #313244;
+}
+
+[data-theme="dark"] .syntax-error-line {
+  color: #a6adc8;
+}
+
+[data-theme="dark"] .syntax-error-message {
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .syntax-error-fix-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+[data-theme="dark"] .syntax-error-fix-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+}
+
+[data-theme="dark"] .fix-all-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
+}
+
+[data-theme="dark"] .fix-all-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+}
+
+[data-theme="dark"] .close-btn {
+  color: #a6adc8;
+}
+
+[data-theme="dark"] .close-btn:hover {
+  color: #cdd6f4;
+  background: #45475a;
 }
 
 /* ====== MOBILE IMPROVEMENTS ====== */
@@ -2560,7 +4050,7 @@ body,
     width: 100% !important;
     max-width: none !important;
     z-index: 50;
-    background: white;
+    background: var(--bg-primary);
     display: flex;
     flex-direction: column;
   }
@@ -2598,7 +4088,7 @@ body,
     bottom: 50px;
     width: 100% !important;
     z-index: 50;
-    background: #1e1e1e;
+    background: var(--bg-code);
     flex-basis: auto !important;
   }
 
@@ -2719,7 +4209,7 @@ body,
     bottom: 50px;
     width: 100% !important;
     z-index: 50;
-    background: white;
+    background: var(--bg-primary);
     flex-basis: auto !important;
     margin: 0 !important;
   }
@@ -2779,8 +4269,8 @@ body,
     bottom: 0;
     left: 0;
     right: 0;
-    background: white;
-    border-top: 1px solid #e5e7eb;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-primary);
     padding: 6px;
     z-index: 100;
     height: 50px;
@@ -2793,13 +4283,14 @@ body,
     font-size: 0.75rem;
     border-radius: 6px;
     border: none;
-    background: #f3f4f6;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all 0.2s;
   }
 
   .mobile-tab.active {
-    background: #3b82f6;
+    background: var(--accent-info);
     color: white;
   }
 
@@ -2817,7 +4308,7 @@ body,
   left: 280px;
   width: calc(100% - 280px - 380px);
   max-width: 800px;
-  background: #1e1e1e;
+  background: var(--bg-terminal);
   color: #4ec9b0;
   border-radius: 12px 12px 0 0;
   overflow: hidden;
@@ -2826,8 +4317,8 @@ body,
   display: flex;
   flex-direction: column;
   z-index: 1000;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
-  border: 1px solid #333;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border-primary);
   border-bottom: none;
 }
 
@@ -2993,10 +4484,62 @@ body,
 .chat-message {
   position: relative;
   transition: background 0.15s ease;
+  color: var(--text-primary);
 }
 
 .chat-message:hover {
   background: rgba(0, 0, 0, 0.02);
+}
+
+/* Sötét mód chat üzenetek - magas kontraszt */
+[data-theme="dark"] .chat-message {
+  color: #f0f0f0;
+}
+
+[data-theme="dark"] .chat-message:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ====== SYSTEM MESSAGE (patch summary) ====== */
+
+.chat-message.system {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(147, 51, 234, 0.08) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0;
+  font-size: 0.9em;
+}
+
+.chat-message.system pre {
+  background: rgba(0, 0, 0, 0.15);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+.chat-message.system code {
+  background: rgba(0, 0, 0, 0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+[data-theme="dark"] .chat-message.system {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(168, 85, 247, 0.15) 100%);
+  border-color: rgba(139, 92, 246, 0.4);
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .chat-message.system pre {
+  background: rgba(0, 0, 0, 0.3);
+  color: #f0f0f0;
+}
+
+[data-theme="dark"] .chat-message.system code {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0f0f0;
 }
 
 .chat-message-actions {
@@ -3027,13 +4570,64 @@ body,
   background: #e5e7eb;
 }
 
+/* Sötét mód chat message actions */
+[data-theme="dark"] .chat-message-action-btn {
+  background: #313244;
+  border-color: #45475a;
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .chat-message-action-btn:hover {
+  background: #45475a;
+}
+
+/* ====== MODAL OVERLAY (közös) ====== */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(4px);
+}
+
+.modal-content {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+  max-height: 90vh;
+  overflow: hidden;
+}
+
+/* Sötét mód modal-content */
+[data-theme="dark"] .modal-content {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+}
+}
+
 /* ====== LLM SETTINGS MODAL ====== */
 
 .llm-settings-modal {
-  max-width: 700px;
-  max-height: 80vh;
+  width: 700px;
+  max-width: 90vw;
+  max-height: 85vh;
   overflow: hidden;
   display: flex;
+  background: #ffffff;
+}
+
+/* Sötét mód LLM settings */
+[data-theme="dark"] .llm-settings-modal {
+  background: #1e1e2e;
+  color: #cdd6f4;
   flex-direction: column;
 }
 
@@ -3067,6 +4661,25 @@ body,
   color: #374151;
 }
 
+/* Sötét mód modal header */
+[data-theme="dark"] .modal-header {
+  border-bottom-color: #45475a;
+  background: #1e1e2e;
+}
+
+[data-theme="dark"] .modal-header h2 {
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .modal-close {
+  color: #a6adc8;
+}
+
+[data-theme="dark"] .modal-close:hover {
+  background: #45475a;
+  color: #cdd6f4;
+}
+
 .llm-settings-body {
   flex: 1;
   overflow-y: auto;
@@ -3095,19 +4708,36 @@ body,
   color: #374151;
 }
 
+/* Sötét mód */
+[data-theme="dark"] .provider-list-header h3 {
+  color: #cdd6f4;
+}
+
 .add-provider-btn {
   padding: 6px 14px;
-  background: #3b82f6;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   border: none;
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.9rem;
-  transition: background 0.15s ease;
+  font-weight: 600;
+  transition: all 0.15s ease;
 }
 
 .add-provider-btn:hover {
-  background: #2563eb;
+  background: linear-gradient(135deg, #818cf8 0%, #8b5cf6 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(139, 92, 246, 0.3);
+}
+
+/* Sötét mód */
+[data-theme="dark"] .add-provider-btn {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .add-provider-btn:hover {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
 
 .no-providers {
@@ -3117,6 +4747,13 @@ body,
   background: #f9fafb;
   border-radius: 8px;
   border: 2px dashed #e5e7eb;
+}
+
+/* Sötét mód */
+[data-theme="dark"] .no-providers {
+  color: #a6adc8;
+  background: #313244;
+  border-color: #45475a;
 }
 
 .no-providers p {
@@ -3145,6 +4782,22 @@ body,
 .provider-card.active {
   border-color: #22c55e;
   background: #f0fdf4;
+}
+
+/* Sötét mód provider card */
+[data-theme="dark"] .provider-card {
+  background: #313244;
+  border-color: #45475a;
+}
+
+[data-theme="dark"] .provider-card:hover {
+  border-color: #6c7086;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .provider-card.active {
+  border-color: #22c55e;
+  background: #1a4731;
 }
 
 .provider-header {
@@ -3207,6 +4860,27 @@ body,
   color: #dc2626;
 }
 
+/* Sötét mód provider details */
+[data-theme="dark"] .provider-type {
+  background: #45475a;
+  color: #89b4fa;
+}
+
+[data-theme="dark"] .provider-model {
+  background: #45475a;
+  color: #f9e2af;
+}
+
+[data-theme="dark"] .api-key-status.set {
+  background: #1a4731;
+  color: #4ade80;
+}
+
+[data-theme="dark"] .api-key-status.missing {
+  background: #45475a;
+  color: #f38ba8;
+}
+
 .provider-actions {
   display: flex;
   gap: 8px;
@@ -3253,6 +4927,44 @@ body,
   background: #fee2e2;
 }
 
+/* Sötét mód provider actions */
+[data-theme="dark"] .provider-actions {
+  border-top-color: #45475a;
+}
+
+[data-theme="dark"] .provider-actions button {
+  border-color: #45475a;
+}
+
+[data-theme="dark"] .activate-btn {
+  background: #313244;
+  color: #89b4fa;
+  border-color: #45475a !important;
+}
+
+[data-theme="dark"] .activate-btn:hover {
+  background: #45475a;
+}
+
+[data-theme="dark"] .edit-btn {
+  background: #313244;
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .edit-btn:hover {
+  background: #45475a;
+}
+
+[data-theme="dark"] .delete-btn {
+  background: #313244;
+  color: #f38ba8;
+  border-color: #45475a !important;
+}
+
+[data-theme="dark"] .delete-btn:hover {
+  background: #45475a;
+}
+
 /* Add provider form */
 .add-provider-form {
   background: #f9fafb;
@@ -3260,6 +4972,31 @@ body,
   border-radius: 8px;
   margin-top: 20px;
   border: 1px solid #e5e7eb;
+}
+
+/* Sötét mód add provider form */
+[data-theme="dark"] .add-provider-form {
+  background: #313244;
+  border-color: #45475a;
+}
+
+[data-theme="dark"] .add-provider-form h3 {
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .add-provider-form label {
+  color: #a6adc8;
+}
+
+[data-theme="dark"] .add-provider-form input,
+[data-theme="dark"] .add-provider-form select {
+  background: #1e1e2e;
+  border-color: #45475a;
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .add-provider-form input::placeholder {
+  color: #6c7086;
 }
 
 .add-provider-form h3 {
@@ -3332,6 +5069,138 @@ body,
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.85rem;
+}
+
+/* ====== BACKUP MODAL ====== */
+
+.backup-modal {
+  background: #ffffff;
+}
+
+[data-theme="dark"] .backup-modal {
+  background: #1e1e2e;
+  color: #cdd6f4;
+}
+
+.backup-modal h2 {
+  margin: 0 0 16px 0;
+  color: #111827;
+}
+
+[data-theme="dark"] .backup-modal h2 {
+  color: #cdd6f4;
+}
+
+.backup-content {
+  display: flex;
+  gap: 20px;
+}
+
+.backup-list {
+  flex: 1;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.backup-list table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.backup-list th {
+  padding: 8px;
+  text-align: left;
+  border-bottom: 2px solid #e5e7eb;
+  color: #374151;
+}
+
+[data-theme="dark"] .backup-list th {
+  border-bottom-color: #45475a;
+  color: #cdd6f4;
+}
+
+.backup-list tr {
+  cursor: pointer;
+  border-bottom: 1px solid #f3f4f6;
+  transition: background 0.15s;
+}
+
+[data-theme="dark"] .backup-list tr {
+  border-bottom-color: #45475a;
+}
+
+.backup-list tr:hover {
+  background: #f3f4f6;
+}
+
+[data-theme="dark"] .backup-list tr:hover {
+  background: #313244;
+}
+
+.backup-list tr.selected {
+  background: #e0e7ff;
+}
+
+[data-theme="dark"] .backup-list tr.selected {
+  background: #45475a;
+}
+
+.backup-list td {
+  padding: 8px;
+  font-family: monospace;
+  font-size: 0.9em;
+  color: #374151;
+}
+
+[data-theme="dark"] .backup-list td {
+  color: #cdd6f4;
+}
+
+.backup-preview {
+  flex: 1;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.backup-preview h4 {
+  margin: 0 0 10px 0;
+  color: #374151;
+}
+
+[data-theme="dark"] .backup-preview h4 {
+  color: #cdd6f4;
+}
+
+.backup-preview pre {
+  background: #f5f5f5;
+  padding: 10px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 350px;
+  overflow: auto;
+  color: #374151;
+}
+
+[data-theme="dark"] .backup-preview pre {
+  background: #313244;
+  color: #cdd6f4;
+}
+
+.backup-preview .no-preview {
+  color: #6b7280;
+}
+
+[data-theme="dark"] .backup-preview .no-preview {
+  color: #a6adc8;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
 }
 
 /* ====== EXPORT DIALOG ====== */
@@ -3457,33 +5326,33 @@ body,
   }
 }
 
-/* ====== CODE ZOOM CONTROLS ====== */
+/* ====== CODE ZOOM CONTROLS - Lila gradiens ====== */
 
 .zoom-controls {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   margin-left: 8px;
-  background: #1e222a;
-  border: 1px solid #374151;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 6px;
   padding: 2px 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .zoom-btn {
   background: transparent;
   border: none;
-  color: #9ca3af;
-  font-size: 0.8rem;
+  color: #ffffff;
+  font-size: 0.85rem;
   padding: 4px 8px;
   cursor: pointer;
   border-radius: 4px;
   transition: all 0.15s;
+  font-weight: 600;
 }
 
 .zoom-btn:hover:not(:disabled) {
-  background: #374151;
-  color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .zoom-btn:disabled {
@@ -3492,19 +5361,60 @@ body,
 }
 
 .zoom-level {
-  font-size: 0.75rem;
-  color: #9ca3af;
+  font-size: 0.8rem;
+  color: #ffffff;
   min-width: 40px;
   text-align: center;
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 4px;
   transition: background 0.15s;
+  font-weight: 600;
 }
 
 .zoom-level:hover {
-  background: #374151;
-  color: #60a5fa;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Sötét mód zoom controls */
+[data-theme="dark"] .zoom-controls {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+/* ====== SZINTAXIS SZÍNEZÉS KAPCSOLÓ ====== */
+.syntax-toggle-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  color: #ffffff;
+  font-size: 1rem;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+  margin-left: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.syntax-toggle-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.syntax-toggle-btn.active {
+  background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+}
+
+.syntax-toggle-btn.active:hover {
+  background: linear-gradient(135deg, #68d391 0%, #48bb78 100%);
+}
+
+/* Sötét mód syntax toggle */
+[data-theme="dark"] .syntax-toggle-btn {
+  background: linear-gradient(135deg, #5b6cdb 0%, #6b42a0 100%);
+}
+
+[data-theme="dark"] .syntax-toggle-btn.active {
+  background: linear-gradient(135deg, #38a169 0%, #2f855a 100%);
 }
 
 @media (max-width: 768px) {
@@ -3545,14 +5455,21 @@ body,
 
 .project-context-menu {
   position: fixed;
-  background: #1e222a;
-  border: 1px solid #444;
+  background: var(--bg-dropdown, #ffffff);
+  border: 1px solid var(--border-primary, #e5e7eb);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   min-width: 180px;
   z-index: 2000;
   overflow: hidden;
   animation: contextMenuFadeIn 0.15s ease;
+}
+
+/* Sötét mód */
+[data-theme="dark"] .project-context-menu {
+  background: #1e1e2e;
+  border-color: #45475a;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
 
 @keyframes contextMenuFadeIn {
@@ -3574,7 +5491,7 @@ body,
   padding: 12px 14px;
   background: transparent;
   border: none;
-  color: #e5e7eb;
+  color: var(--text-primary, #374151);
   font-size: 0.9rem;
   cursor: pointer;
   text-align: left;
@@ -3585,7 +5502,17 @@ body,
 
 .project-context-menu-item:hover,
 .project-context-menu-item:active {
-  background: #2d3748;
+  background: var(--bg-hover, #f3f4f6);
+}
+
+/* Sötét mód */
+[data-theme="dark"] .project-context-menu-item {
+  color: #cdd6f4;
+}
+
+[data-theme="dark"] .project-context-menu-item:hover,
+[data-theme="dark"] .project-context-menu-item:active {
+  background: #313244;
 }
 
 @media (max-width: 768px) {
@@ -3600,17 +5527,30 @@ body,
 }
 
 .project-context-menu-item.danger {
-  color: #f87171;
+  color: #dc2626;
 }
 
 .project-context-menu-item.danger:hover {
-  background: #7f1d1d;
+  background: #fef2f2;
 }
 
 .project-context-menu-divider {
   height: 1px;
-  background: #374151;
+  background: var(--border-primary, #e5e7eb);
   margin: 4px 0;
+}
+
+/* Sötét mód */
+[data-theme="dark"] .project-context-menu-item.danger {
+  color: #f38ba8;
+}
+
+[data-theme="dark"] .project-context-menu-item.danger:hover {
+  background: #45475a;
+}
+
+[data-theme="dark"] .project-context-menu-divider {
+  background: #45475a;
 }
 
 /* ======================================

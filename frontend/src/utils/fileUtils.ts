@@ -91,6 +91,77 @@ export function findPathInTreeByName(
 }
 
 /**
+ * Ellenőrzi, hogy egy adott útvonal létezik-e a fájlfában
+ */
+export function validatePathInTree(
+  path: string,
+  filesTree: FileNode[] | null
+): boolean {
+  if (!filesTree || !path) return false;
+  
+  const normalizedPath = path.replace(/\\/g, "/").toLowerCase();
+  
+  const stack: FileNode[] = [...filesTree];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (!node.is_dir && node.path.toLowerCase() === normalizedPath) {
+      return true;
+    }
+    if (node.children) stack.push(...node.children);
+  }
+  return false;
+}
+
+/**
+ * Fájl útvonal feloldása a fájlfából
+ * Először próbálja pontosan, majd fuzzy kereséssel
+ */
+export function resolvePathFromTree(
+  rawPath: string,
+  filesTree: FileNode[] | null
+): string | null {
+  if (!filesTree || !rawPath) return null;
+  
+  const filePath = sanitizeRawPath(rawPath);
+  const normalizedPath = filePath.toLowerCase();
+  
+  // 1. Pontos egyezés (case-insensitive)
+  const stack: FileNode[] = [...filesTree];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (!node.is_dir && node.path.toLowerCase() === normalizedPath) {
+      return node.path;
+    }
+    if (node.children) stack.push(...node.children);
+  }
+  
+  // 2. Ha csak fájlnév volt megadva, keresés név alapján
+  if (!filePath.includes("/")) {
+    return findPathInTreeByName(filesTree, filePath);
+  }
+  
+  // 3. Partial path match - ha a path végződése egyezik
+  const pathParts = normalizedPath.split("/");
+  const searchStack: FileNode[] = [...filesTree];
+  while (searchStack.length) {
+    const node = searchStack.pop()!;
+    if (!node.is_dir) {
+      const nodeParts = node.path.toLowerCase().split("/");
+      // Check if the end of the node path matches
+      if (nodeParts.length >= pathParts.length) {
+        const nodeEnd = nodeParts.slice(-pathParts.length).join("/");
+        if (nodeEnd === normalizedPath) {
+          return node.path;
+        }
+      }
+    }
+    if (node.children) searchStack.push(...node.children);
+  }
+  
+  return null;
+}
+
+/**
  * Nyers path feloldása chat-ből érkező fájl linkhez
  */
 export function resolveRelPathFromChat(
@@ -99,14 +170,22 @@ export function resolveRelPathFromChat(
 ): string | null {
   let filePath = sanitizeRawPath(rawPath);
 
-  // Ha már mappát is tartalmaz, hagyjuk
-  if (filePath.includes("/")) return filePath;
-
-  // Csak fájlnév érkezett → keresés a file tree-ben
+  // Ha nincs filesTree, adjuk vissza ahogy van
   if (!filesTree) return filePath;
 
-  const found = findPathInTreeByName(filesTree, filePath);
-  return found;
+  // Próbáljuk feloldani a fájlfából
+  const resolved = resolvePathFromTree(filePath, filesTree);
+  
+  // Ha találtunk, adjuk vissza
+  if (resolved) return resolved;
+  
+  // Ha nem találtunk és nincs könyvtár benne, még egy próba név alapján
+  if (!filePath.includes("/")) {
+    return findPathInTreeByName(filesTree, filePath);
+  }
+  
+  // Nem találtuk - visszaadjuk az eredetit (backend ellenőrzi majd)
+  return filePath;
 }
 
 /**

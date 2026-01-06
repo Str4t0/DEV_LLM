@@ -6,3 +6,4 @@ pydantic
 openai
 python-dotenv
 cryptography
+tiktoken

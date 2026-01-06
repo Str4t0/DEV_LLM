@@ -27,9 +27,9 @@ from pathlib import Path
 MAX_HISTORY_MESSAGES = 20  # Csökkentve a relevancia érdekében
 MAX_HISTORY_CHARS_PER_MSG = 3000  # Optimalizálva
 
-# File inclusion limits - MEGNÖVELVE az egész fájlokhoz
-MAX_FILE_CONTENT_CHARS = 32000  # 32KB per file (egész fájlok)
-MAX_TOTAL_FILE_CHARS = 80000  # 80KB összesen
+# File inclusion limits - optimalizálva a gyors válaszokhoz
+MAX_FILE_CONTENT_CHARS = 15000  # 15KB per file - nagy fájlokhoz RAG
+MAX_TOTAL_FILE_CHARS = 40000  # 40KB összesen
 MAX_FILES_TO_INCLUDE = 10  # Max files to include at once
 
 # Aktív fájl tartalom limit (az aktuálisan szerkesztett fájl)

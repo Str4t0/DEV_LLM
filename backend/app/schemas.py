@@ -33,8 +33,7 @@ class ProjectRead(ProjectBase):
     id: int
     created_at: datetime
 
-
-class Config:
+    class Config:
         extra = "ignore"  # ha a frontend netán többet küld, ne dőljön el
 
 

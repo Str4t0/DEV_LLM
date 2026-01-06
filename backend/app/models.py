@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, BigInteger, ForeignKey
 from sqlalchemy.sql import func
 
 from .database import Base
@@ -31,3 +31,24 @@ class LLMProvider(Base):
     temperature = Column(String(10), default="0.7")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class ChatMessage(Base):
+    """Chat üzenetek - eszközök közötti szinkronizáláshoz."""
+    __tablename__ = "chat_messages"
+
+    id = Column(BigInteger, primary_key=True, index=True)  # Frontend generált ID
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    role = Column(String(20), nullable=False)  # user, assistant, system
+    content = Column(Text, nullable=False)  # 'content' mert így van a létező DB-ben
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserSettings(Base):
+    """Felhasználói beállítások - eszközök közötti szinkronizáláshoz."""
+    __tablename__ = "user_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), nullable=False, unique=True, index=True)  # pl. "auto_mode", "theme"
+    value = Column(Text, nullable=True)  # JSON string
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -24,7 +24,21 @@ export interface FileNode {
 /**
  * Chat üzenet szerepek
  */
-export type ChatRole = "user" | "assistant";
+export type ChatRole = "user" | "assistant" | "system";
+
+/**
+ * Fájl módosítás részletek (diff adatokkal)
+ */
+export interface FileModification {
+  path: string;
+  action: "create" | "edit" | "write" | "delete";
+  lines_added: number;
+  lines_deleted: number;
+  before_content?: string;
+  after_content?: string;
+  timestamp: string;
+  messageId: number;  // Melyik chat üzenethez tartozik
+}
 
 /**
  * Chat üzenet
@@ -33,6 +47,7 @@ export interface ChatMessage {
   id: number;
   role: ChatRole;
   text: string;
+  modifications?: FileModification[];  // Csatolt fájl módosítások
 }
 
 /**
@@ -61,11 +76,12 @@ export interface ProjectEditorSettings {
 }
 
 /**
- * Projekt kód (forrás + módosított)
+ * Projekt kód (forrás + módosított + fájl útvonal)
  */
 export interface ProjectCode {
   source: string;
   projected: string;
+  filePath?: string;  // A fájl elérési útja - fontos a chat működéséhez!
 }
 
 /**
@@ -124,4 +140,31 @@ export type DiffKind = "common" | "added" | "removed";
 export interface DiffLine {
   type: DiffKind;
   text: string;
+}
+
+/**
+ * Jóváhagyásra váró művelet (terminal parancs, fájl törlés, fájl írás, stb.)
+ */
+export interface PendingPermission {
+  tool_call_id: string;
+  tool_name: string;
+  permission_type: "terminal" | "delete" | "write" | "edit" | "create_directory";
+  details: {
+    command?: string;
+    description?: string;
+    working_directory?: string;
+    timeout?: number;
+    path?: string;
+    full_path?: string;
+    size?: number;
+    content_length?: number;
+    content_preview?: string;
+    content?: string;
+    old_text?: string;
+    new_text?: string;
+    old_preview?: string;
+    new_preview?: string;
+    file_hash?: string;  // Fájl frissesség ellenőrzéshez
+  };
+  arguments: Record<string, unknown>;
 }
