@@ -1086,6 +1086,16 @@ Lines: {line_count}
             for warning in encoding_check.get("warnings", []):
                 safe_print(f"[ENCODING WARNING] {warning}")
             
+            # 🔧 FIX: Ellenőrizzük, hogy a változtatás már alkalmazva van-e (AUTO módban is!)
+            if old_text not in content and new_text in content:
+                safe_print(f"[APPLY_EDIT] Change already applied to {path}, skipping duplicate")
+                return ToolResult(
+                    success=True,
+                    result=f"✅ A változtatás MÁR ALKALMAZVA van a fájlban: {path}. Nincs szükség további módosításra.",
+                    modified_files=[],
+                    file_modifications=[]
+                )
+            
             # Check if old_text exists
             if old_text not in content:
                 # Try with normalized whitespace
@@ -2111,18 +2121,58 @@ EXECUTE NOW!"""
             safe_print(f"[AGENTIC] Final response received after {tool_calls_count} tool calls")
             
             # Build modified files info with detailed diff data
-            # ⚠️ FONTOS: Csak VALÓBAN módosított fájlokat adjunk vissza (lines_added > 0 VAGY lines_deleted > 0)
-            modified_files_info = []
+            # ⚠️ FONTOS: Konszolidáljuk a módosításokat fájlonként!
+            # Ha ugyanaz a fájl többször módosult, csak EGY bejegyzés legyen:
+            # - before_content: az ELSŐ módosítás előtti állapot
+            # - after_content: az UTOLSÓ módosítás utáni állapot
+            consolidated_mods: Dict[str, Dict[str, Any]] = {}
             for mod in all_file_modifications:
-                # Csak akkor adjuk hozzá, ha tényleg történt változás
-                if mod.lines_added > 0 or mod.lines_deleted > 0:
-                    modified_files_info.append({
+                if mod.lines_added == 0 and mod.lines_deleted == 0:
+                    continue  # Skip no-op modifications
+                    
+                if mod.path not in consolidated_mods:
+                    # Első módosítás erre a fájlra
+                    consolidated_mods[mod.path] = {
                         "path": mod.path,
                         "action": mod.action,
                         "lines_added": mod.lines_added,
                         "lines_deleted": mod.lines_deleted,
-                        "before_content": mod.before_content,
+                        "before_content": mod.before_content,  # Eredeti állapot
                         "after_content": mod.after_content,
+                    }
+                else:
+                    # Későbbi módosítás - frissítjük az after_content-et és összegezzük a változásokat
+                    existing = consolidated_mods[mod.path]
+                    existing["after_content"] = mod.after_content  # Legújabb állapot
+                    # Az első before_content marad (eredeti állapot)
+                    # A lines_added/deleted-et NEM összeadjuk, hanem újraszámoljuk a végső diff-ből
+            
+            # Újraszámoljuk a tényleges változásokat az eredeti és végső állapot között
+            modified_files_info = []
+            for path, mod_info in consolidated_mods.items():
+                before = mod_info["before_content"] or ""
+                after = mod_info["after_content"] or ""
+                
+                # Tényleges diff számítás
+                import difflib
+                old_lines = before.split('\n')
+                new_lines = after.split('\n')
+                lines_added = 0
+                lines_deleted = 0
+                for line in difflib.unified_diff(old_lines, new_lines, lineterm=''):
+                    if line.startswith('+') and not line.startswith('+++'):
+                        lines_added += 1
+                    elif line.startswith('-') and not line.startswith('---'):
+                        lines_deleted += 1
+                
+                if lines_added > 0 or lines_deleted > 0:
+                    modified_files_info.append({
+                        "path": path,
+                        "action": mod_info["action"],
+                        "lines_added": lines_added,
+                        "lines_deleted": lines_deleted,
+                        "before_content": before,
+                        "after_content": after,
                     })
             
             # Ha vannak extra fájlok amiket nem követtünk részletesen
@@ -2140,21 +2190,52 @@ EXECUTE NOW!"""
                 pending_permissions=pending_permissions
             )
     
-    # Max iterations reached - ugyanaz a részletes info
-    # ⚠️ FONTOS: Csak VALÓBAN módosított fájlokat adjunk vissza
-    modified_files_info = []
+    # Max iterations reached - ugyanaz a konszolidálási logika
+    # ⚠️ FONTOS: Konszolidáljuk a módosításokat fájlonként!
+    consolidated_mods: Dict[str, Dict[str, Any]] = {}
     for mod in all_file_modifications:
-        # Csak akkor adjuk hozzá, ha tényleg történt változás
-        if mod.lines_added > 0 or mod.lines_deleted > 0:
-            modified_files_info.append({
+        if mod.lines_added == 0 and mod.lines_deleted == 0:
+            continue
+            
+        if mod.path not in consolidated_mods:
+            consolidated_mods[mod.path] = {
                 "path": mod.path,
                 "action": mod.action,
                 "lines_added": mod.lines_added,
                 "lines_deleted": mod.lines_deleted,
                 "before_content": mod.before_content,
                 "after_content": mod.after_content,
+            }
+        else:
+            existing = consolidated_mods[mod.path]
+            existing["after_content"] = mod.after_content
+    
+    # Újraszámoljuk a tényleges változásokat
+    import difflib
+    modified_files_info = []
+    for path, mod_info in consolidated_mods.items():
+        before = mod_info["before_content"] or ""
+        after = mod_info["after_content"] or ""
+        
+        old_lines = before.split('\n')
+        new_lines = after.split('\n')
+        lines_added = 0
+        lines_deleted = 0
+        for line in difflib.unified_diff(old_lines, new_lines, lineterm=''):
+            if line.startswith('+') and not line.startswith('+++'):
+                lines_added += 1
+            elif line.startswith('-') and not line.startswith('---'):
+                lines_deleted += 1
+        
+        if lines_added > 0 or lines_deleted > 0:
+            modified_files_info.append({
+                "path": path,
+                "action": mod_info["action"],
+                "lines_added": lines_added,
+                "lines_deleted": lines_deleted,
+                "before_content": before,
+                "after_content": after,
             })
-    # ⚠️ NE adjunk hozzá 0 változással rendelkező fájlokat!
     
     return AgenticResult(
         success=False,
