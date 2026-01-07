@@ -180,7 +180,7 @@ export function useWebSocketSync({
           }, 30000);
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           if (!mountedRef.current) return;
           setIsConnected(false);
           
@@ -189,16 +189,23 @@ export function useWebSocketSync({
             pingIntervalRef.current = null;
           }
 
-          // Újracsatlakozás
-          if (reconnectAttemptsRef.current < 5) {
-            const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-            if (reconnectAttemptsRef.current < 3) {
-              console.log(`[WS] Újracsatlakozás ${Math.round(delay/1000)}s múlva...`);
+          // Újracsatlakozás - mobilon is működjön!
+          // Növelt retry limit (10) és rövidebb kezdő delay mobilon
+          const maxRetries = 10;
+          if (reconnectAttemptsRef.current < maxRetries) {
+            // Mobilon rövidebb delay az első néhány próbálkozásnál
+            const baseDelay = reconnectAttemptsRef.current < 3 ? 500 : 1000;
+            const delay = Math.min(baseDelay * Math.pow(1.5, reconnectAttemptsRef.current), 15000);
+            
+            if (reconnectAttemptsRef.current < 5) {
+              console.log(`[WS] Újracsatlakozás ${Math.round(delay/1000)}s múlva... (${reconnectAttemptsRef.current + 1}/${maxRetries})`);
             }
             reconnectTimeoutRef.current = setTimeout(() => {
               reconnectAttemptsRef.current++;
               connect();
             }, delay);
+          } else {
+            console.warn('[WS] Max újracsatlakozási próbálkozások elérve. Frissítsd az oldalt.');
           }
         };
 
@@ -246,9 +253,36 @@ export function useWebSocketSync({
     // Kis késleltetés a mount után
     const timer = setTimeout(connect, 200);
 
+    // Visibility change kezelés - mobilon újracsatlakozás ha az app előtérbe kerül
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Ha az oldal látható és nincs kapcsolat, próbáljunk újracsatlakozni
+        if (wsRef.current?.readyState !== WebSocket.OPEN) {
+          console.log('[WS] Oldal előtérbe került - újracsatlakozás...');
+          reconnectAttemptsRef.current = 0; // Reset retry counter
+          connect();
+        }
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Online/Offline eseménykezelés
+    const handleOnline = () => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        console.log('[WS] Hálózat elérhető - újracsatlakozás...');
+        reconnectAttemptsRef.current = 0;
+        connect();
+      }
+    };
+    
+    window.addEventListener('online', handleOnline);
+
     return () => {
       mountedRef.current = false;
       clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
       // Inline cleanup - nem függünk a cleanup callback-től
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);

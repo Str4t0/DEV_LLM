@@ -1908,8 +1908,8 @@ const App: React.FC = () => {
             action: f.action || 'edit',
             lines_added: f.lines_added || 0,
             lines_deleted: f.lines_deleted || 0,
-            before_content: f.before_content,
-            after_content: f.after_content,
+            before_content: f.before_content || '',  // 🔧 Default to empty string for new files
+            after_content: f.after_content || '',    // 🔧 Default to empty string for deleted files
             timestamp: new Date().toISOString(),
             messageId: valMsgId,
           }));
@@ -2028,13 +2028,23 @@ const App: React.FC = () => {
           const totalDeleted = actualProjMods.reduce((sum: number, f: any) => sum + (f.lines_deleted || 0), 0);
           
           // Módosítások mentése
+          // 🔍 DEBUG: Log what we receive from backend
+          console.log('[PROJ ANALYSIS] Modified files from backend:', actualProjMods.map((f: any) => ({
+            path: f.path,
+            action: f.action,
+            has_before: !!f.before_content,
+            has_after: !!f.after_content,
+            before_len: f.before_content?.length || 0,
+            after_len: f.after_content?.length || 0,
+          })));
+          
           projModifications = actualProjMods.map((f: any) => ({
             path: f.path,
             action: f.action || 'edit',
             lines_added: f.lines_added || 0,
             lines_deleted: f.lines_deleted || 0,
-            before_content: f.before_content,
-            after_content: f.after_content,
+            before_content: f.before_content || '',  // 🔧 Default to empty string for new files
+            after_content: f.after_content || '',    // 🔧 Default to empty string for deleted files
             timestamp: new Date().toISOString(),
             messageId: projMsgId,
           }));
@@ -3586,126 +3596,53 @@ const App: React.FC = () => {
   const [browseItems, setBrowseItems] = React.useState<Array<{ name: string; path: string; is_directory: boolean }>>([]);
   const [browseParentPath, setBrowseParentPath] = React.useState<string | null>(null);
   const [browseLoading, setBrowseLoading] = React.useState(false);
+  const [showNewFolderInput, setShowNewFolderInput] = React.useState(false);
+  const [newFolderName, setNewFolderName] = React.useState("");
 
   // Chat state - BACKEND API-ból töltjük be először, fallback localStorage-ra
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
   const [chatHistoryLoaded, setChatHistoryLoaded] = React.useState(false);
   
-  // Chat history betöltése a backend API-ból
+  // ═══════════════════════════════════════════════════════════════
+  // EGYSZERŰSÍTETT CHAT KEZELÉS - CSAK LOCALSTORAGE (projekt-specifikus)
+  // ═══════════════════════════════════════════════════════════════
+  
+  // Chat betöltése amikor projekt változik
   React.useEffect(() => {
-    async function loadChatFromBackend() {
-      try {
-        const response = await fetch(`${BACKEND_URL}/api/sync/chat?limit=100`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.messages && data.messages.length > 0) {
-            console.log(`[CHAT] ${data.messages.length} üzenet betöltve BACKEND-ből`);
-            setChatMessages(data.messages.map((m: any) => ({
-              id: m.id,
-              role: m.role,
-              text: m.text,
-            })));
-            setChatHistoryLoaded(true);
-            return;
-          }
-        }
-      } catch (e) {
-        console.warn('[CHAT] Backend chat betöltési hiba, localStorage fallback:', e);
-      }
-      
-      // Fallback: localStorage
-      try {
-        const saved = localStorage.getItem('chat_history');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          
-          // EGYSZERI TISZTÍTÁS: Ha duplikált ID-k vannak, töröljük az egészet
-          const allIds = parsed.map((m: any) => m.id).filter((id: any) => id != null);
-          const uniqueIds = new Set(allIds);
-          if (allIds.length !== uniqueIds.size) {
-            console.warn('[CHAT] ⚠️ Duplikált ID-k találhatók! localStorage TÖRÖLVE');
-            localStorage.removeItem('chat_history');
-            setChatHistoryLoaded(true);
-            return;
-          }
-          
-          const seenIds = new Set<number>();
-          const uniqueMessages: any[] = [];
-          let idCounter = 0;
-          
-          for (const m of parsed) {
-            let newId = m.id ?? (Date.now() * 1000 + idCounter++);
-            while (seenIds.has(newId)) {
-              newId = Date.now() * 1000 + idCounter++;
-            }
-            seenIds.add(newId);
-            uniqueMessages.push({ ...m, id: newId });
-          }
-          
-          console.log(`[CHAT] ${uniqueMessages.length} üzenet betöltve localStorage-ból`);
-          setChatMessages(uniqueMessages);
-          
-          // Szinkronizáljuk a backend-re
-          if (uniqueMessages.length > 0) {
-            fetch(`${BACKEND_URL}/api/sync/chat/bulk`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(uniqueMessages.map(m => ({
-                id: m.id,
-                role: m.role,
-                text: m.text,
-                project_id: null
-              })))
-            }).then(r => {
-              if (r.ok) console.log('[CHAT] localStorage szinkronizálva a backend-re');
-            }).catch(() => {});
-          }
-        }
-      } catch (e) {
-        console.error('[CHAT] localStorage hiba:', e);
-        localStorage.removeItem('chat_history');
-      }
+    if (!selectedProjectId) {
+      setChatMessages([]);
       setChatHistoryLoaded(true);
+      return;
     }
     
-    loadChatFromBackend();
-  }, []);
+    // Egyszerű localStorage betöltés - NINCS backend, NINCS async zavarodás
+    const chatKey = `projectChat_${selectedProjectId}`;
+    try {
+      const saved = localStorage.getItem(chatKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          console.log(`[CHAT] ${parsed.length} üzenet betöltve (projekt: ${selectedProjectId})`);
+          setChatMessages(parsed);
+        } else {
+          setChatMessages([]);
+        }
+      } else {
+        console.log(`[CHAT] Üres chat (új projekt: ${selectedProjectId})`);
+        setChatMessages([]);
+      }
+    } catch (e) {
+      console.error('[CHAT] Betöltési hiba:', e);
+      setChatMessages([]);
+    }
+    setChatHistoryLoaded(true);
+  }, [selectedProjectId]);
   // chatInput és setChatInput már korábban definiálva (context menük miatt)
   const [chatLoading, setChatLoading] = React.useState(false);
   const [chatError, setChatError] = React.useState<string | null>(null);
 
-  // Chat history mentése backend-re és localStorage-ba amikor változik
-  const lastSavedMessageIdRef = React.useRef<number>(0);
-  
-  React.useEffect(() => {
-    if (chatMessages.length > 0 && chatHistoryLoaded) {
-      try {
-        // localStorage fallback
-        const toSave = chatMessages.slice(-100);
-        localStorage.setItem('chat_history', JSON.stringify(toSave));
-        
-        // Backend szinkronizáció - csak az újakat küldjük
-        const lastMsg = chatMessages[chatMessages.length - 1];
-        if (lastMsg && lastMsg.id && lastMsg.id > lastSavedMessageIdRef.current) {
-          // Csak az utolsó üzenetet küldjük (valós időben)
-          fetch(`${BACKEND_URL}/api/sync/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              id: lastMsg.id,
-              role: lastMsg.role,
-              text: lastMsg.text,
-              project_id: selectedProjectId
-            })
-          }).then(() => {
-            lastSavedMessageIdRef.current = lastMsg.id!;
-          }).catch(() => {});
-        }
-      } catch (e) {
-        console.error('[CHAT] localStorage mentési hiba:', e);
-      }
-    }
-  }, [chatMessages, chatHistoryLoaded, selectedProjectId]);
+  // EGYSZERŰSÍTETT CHAT MENTÉS - csak projekt-specifikus localStorage
+  // (A saveProjectChat useEffect-ben történik, ami külön van definiálva)
 
   // ===== WEBSOCKET SYNC - Real-time szinkronizáció PC és mobil között =====
   const {
@@ -3744,12 +3681,8 @@ const App: React.FC = () => {
         }
         
         console.log('[WS] Új chat üzenet hozzáadva:', msgWithId.id);
-        const updated = [...prev, msgWithId];
-        // Mentjük localStorage-ba is
-        try {
-          localStorage.setItem('chat_history', JSON.stringify(updated.slice(-100)));
-        } catch (e) { /* ignore */ }
-        return updated;
+        return [...prev, msgWithId];
+        // NEM mentünk itt - a saveProjectChat useEffect menti
       });
     }, []),
     onLogMessage: React.useCallback((log: { level: string; message: string }) => {
@@ -3757,52 +3690,10 @@ const App: React.FC = () => {
       addLogMessage(log.level as 'info' | 'success' | 'warning' | 'error', log.message);
     }, [addLogMessage]),
     onStateSync: React.useCallback((state: any) => {
-      // Teljes állapot szinkronizáció (új kliens csatlakozáskor)
-      console.log('[WS] State sync érkezett:', state);
-      if (state.chat_messages && state.chat_messages.length > 0) {
-        console.log(`[WS] ${state.chat_messages.length} chat üzenet a szerverről`);
-        setChatMessages(prev => {
-          // Összefésüljük a helyi és távoli üzeneteket
-          const merged = [...prev];
-          const seenIds = new Set(merged.map(m => m.id));
-          let newCount = 0;
-          let idCounter = 0;
-          
-          for (const msg of state.chat_messages) {
-            // Generálunk egyedi ID-t ha nincs vagy duplikált
-            let newId = msg.id ?? generateUniqueId();
-            while (seenIds.has(newId)) {
-              newId = generateUniqueId();
-              idCounter++;
-            }
-            
-            const msgWithId = { ...msg, id: newId };
-            seenIds.add(newId);
-            
-            // Szöveg alapú duplikáció ellenőrzés (azonos üzenet ne legyen kétszer)
-            const isDuplicate = merged.some(m => 
-              m.role === msgWithId.role && 
-              m.text === msgWithId.text &&
-              Math.abs((m.id || 0) - (msgWithId.id || 0)) < 60000 // 1 percen belül
-            );
-            
-            if (!isDuplicate) {
-              merged.push(msgWithId);
-              newCount++;
-            }
-          }
-          
-          console.log(`[WS] ${newCount} új üzenet összefésülve, összesen: ${merged.length}`);
-          // Rendezés id (timestamp) szerint
-          merged.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
-          const final = merged.slice(-100); // Max 100 üzenet
-          // Mentjük localStorage-ba
-          try {
-            localStorage.setItem('chat_history', JSON.stringify(final));
-          } catch (e) { /* ignore */ }
-          return final;
-        });
-      }
+      // Teljes állapot szinkronizáció - KIKAPCSOLVA a chat összekeverés elkerülése érdekében
+      // A chat most kizárólag projekt-specifikus localStorage-ból töltődik
+      console.log('[WS] State sync érkezett (chat sync kikapcsolva)');
+      // NEM szinkronizálunk chat-et WebSocket-en - minden projekt külön kezeli
     }, []),
     onFileChange: React.useCallback((projectId: number, filePath: string) => {
       // Távoli fájl változás - megnyitjuk a fájlt ha ugyanaz a projekt
@@ -4359,7 +4250,7 @@ const App: React.FC = () => {
       setFilesError(null);
       try {
         const res = await fetch(
-          `${BACKEND_URL}/projects/${selectedProjectId}/files?max_depth=3`
+          `${BACKEND_URL}/projects/${selectedProjectId}/files?max_depth=10`
         );
         if (!res.ok) {
           throw new Error(`Hiba a fájllista betöltésekor: ${res.status}`);
@@ -4507,16 +4398,6 @@ const App: React.FC = () => {
     setHistory([snap]);
     setHistoryIndex(0);
   }, [selectedProjectId]);
-
-// Chat üzenetek betöltése projektváltáskor
-React.useEffect(() => {
-  if (!selectedProjectId) {
-    setChatMessages([]);
-    return;
-  }
-  const loaded = loadProjectChat(selectedProjectId);
-  setChatMessages(loaded);
-}, [selectedProjectId]);
 
 // Chat üzenetek mentése localStorage-be, ha változnak
 React.useEffect(() => {
@@ -4722,9 +4603,21 @@ React.useEffect(() => {
         }
       });
 
-      setSelectedProjectId((prev) =>
-        prev == null ? saved.id : prev === saved.id ? saved.id : prev
-      );
+      // Új projekt létrehozásakor MINDIG váltsunk az új projektre
+      if (projectModalMode === "create") {
+        // FONTOS: Először töröljük a localStorage-ből a chat-et az új projekt ID-val
+        // hogy amikor a useEffect betölti, üres legyen
+        const newProjectChatKey = `projectChat_${saved.id}`;
+        localStorage.removeItem(newProjectChatKey);
+        
+        // Majd váltsunk az új projektre - a useEffect üres chat-et fog betölteni
+        setSelectedProjectId(saved.id);
+      } else {
+        // Szerkesztés esetén csak akkor váltsunk ha ez volt kiválasztva
+        setSelectedProjectId((prev) =>
+          prev === saved.id ? saved.id : prev
+        );
+      }
 
       setIsProjectModalOpen(false);
     } catch (err: any) {
@@ -4775,6 +4668,35 @@ React.useEffect(() => {
   const handleBrowseNavigate = React.useCallback((path: string) => {
     loadBrowseDirectory(path);
   }, [loadBrowseDirectory]);
+
+  // Új mappa létrehozása
+  const handleCreateFolder = React.useCallback(async () => {
+    if (!newFolderName.trim() || !browseCurrentPath) return;
+    
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/create-directory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: browseCurrentPath,
+          name: newFolderName.trim()
+        }),
+      });
+      
+      if (!res.ok) {
+        const error = await res.json();
+        alert(error.detail || "Hiba a mappa létrehozásakor");
+        return;
+      }
+      
+      // Sikeres létrehozás - frissítsük a listát
+      setNewFolderName("");
+      setShowNewFolderInput(false);
+      loadBrowseDirectory(browseCurrentPath);
+    } catch (err: any) {
+      alert(err.message || "Hiba a mappa létrehozásakor");
+    }
+  }, [browseCurrentPath, newFolderName, loadBrowseDirectory]);
 
   async function handleReindexProject(projectId: number) {
     const project = projects.find((p) => p.id === projectId);
@@ -5035,10 +4957,20 @@ React.useEffect(() => {
 			  onClick={(e) => {
 				e.stopPropagation();
 				
+				// 🔍 DEBUG: Log what we're looking for
+				console.log('[DIFF CLICK] Looking for:', diffPath);
+				console.log('[DIFF CLICK] Message modifications:', modifications?.map(m => ({ 
+				  path: m.path, 
+				  has_before: !!m.before_content, 
+				  has_after: !!m.after_content 
+				})));
+				console.log('[DIFF CLICK] History count:', modificationsHistory.length);
+				
 				// ⚠️ FONTOS: Csak az AKTUÁLIS ÜZENET módosításait használjuk!
 				// NE keverjük a history-val, mert az összekeveri a before/after-t!
+				// 🔧 FIX: Új fájloknál (create) a before_content üres lehet!
 				const currentMsgMods = (modifications || []).filter(
-				  m => m.path === diffPath && m.before_content && m.after_content
+				  m => m.path === diffPath && (m.after_content || m.before_content)
 				);
 				
 				// Ha nincs az üzenetben, keressük a history-ban (de csak EGYETLEN bejegyzést!)
@@ -5048,15 +4980,19 @@ React.useEffect(() => {
 				  modToShow = currentMsgMods[currentMsgMods.length - 1]; // Utolsó állapot
 				} else {
 				  // Keressük a history-ban a LEGUTOLSÓ módosítást erre a fájlra
+				  // 🔧 FIX: Új fájloknál a before_content üres lehet!
 				  const historyMods = modificationsHistory
-				    .filter(m => m.path === diffPath && m.before_content && m.after_content)
+				    .filter(m => m.path === diffPath && (m.after_content || m.before_content))
 				    .slice(-1); // Csak a legutolsó
 				  modToShow = historyMods[0] || null;
 				}
 				
+				console.log('[DIFF CLICK] Found modToShow:', modToShow ? { path: modToShow.path, has_before: !!modToShow.before_content, has_after: !!modToShow.after_content } : null);
+				
 				if (modToShow) {
 				  // Csak az aktuális üzenet egyedi fájljait mutassuk navigációban
-				  const uniqueFilesInMsg = (modifications || []).filter(m => m.before_content && m.after_content);
+				  // 🔧 FIX: Új fájloknál a before_content üres lehet!
+				  const uniqueFilesInMsg = (modifications || []).filter(m => m.after_content || m.before_content);
 				  const seenPaths = new Set<string>();
 				  const uniqueMods: FileModification[] = [];
 				  for (const m of uniqueFilesInMsg) {
@@ -5332,8 +5268,8 @@ React.useEffect(() => {
           action: f.action || 'edit',
           lines_added: f.lines_added || 0,
           lines_deleted: f.lines_deleted || 0,
-          before_content: f.before_content,
-          after_content: f.after_content,
+          before_content: f.before_content || '',  // 🔧 Default to empty string for new files
+          after_content: f.after_content || '',    // 🔧 Default to empty string for deleted files
           timestamp: new Date().toISOString(),
           messageId: msgId,
         }));
@@ -7557,17 +7493,86 @@ function parseSuggestedPatches(reply: string): SuggestedPatch[] {
                       ⬆️ Feljebb
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setShowNewFolderInput(!showNewFolderInput)}
+                    title="Új mappa létrehozása"
+                    style={{ background: showNewFolderInput ? '#22c55e' : undefined, color: showNewFolderInput ? 'white' : undefined }}
+                  >
+                    ➕ Új mappa
+                  </button>
                   <div style={{ 
                     flex: 1, 
                     padding: "4px 8px", 
-                    background: "#f3f4f6", 
+                    background: "var(--bg-tertiary)", 
                     borderRadius: "4px",
                     fontSize: "0.85rem",
-                    wordBreak: "break-all"
+                    wordBreak: "break-all",
+                    color: "var(--text-primary)"
                   }}>
                     {browseCurrentPath}
                   </div>
                 </div>
+                
+                {/* Új mappa létrehozás input */}
+                {showNewFolderInput && (
+                  <div style={{ 
+                    display: "flex", 
+                    gap: "8px", 
+                    marginBottom: "16px",
+                    padding: "12px",
+                    background: "var(--bg-tertiary)",
+                    borderRadius: "6px",
+                    border: "1px solid var(--border-primary)"
+                  }}>
+                    <input
+                      type="text"
+                      placeholder="Új mappa neve..."
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleCreateFolder();
+                        }
+                        if (e.key === "Escape") {
+                          setShowNewFolderInput(false);
+                          setNewFolderName("");
+                        }
+                      }}
+                      autoFocus
+                      style={{ 
+                        flex: 1, 
+                        padding: "8px 12px",
+                        borderRadius: "4px",
+                        border: "1px solid var(--border-primary)",
+                        background: "var(--bg-input)",
+                        color: "var(--text-primary)"
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={handleCreateFolder}
+                      disabled={!newFolderName.trim()}
+                      style={{ padding: "8px 16px" }}
+                    >
+                      Létrehoz
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => {
+                        setShowNewFolderInput(false);
+                        setNewFolderName("");
+                      }}
+                      style={{ padding: "8px 12px" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
 
                 {/* Mappák listája */}
                 <div style={{ 

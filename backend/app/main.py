@@ -1325,6 +1325,64 @@ def browse_directories(path: Optional[str] = None):
     )
 
 
+class CreateDirectoryRequest(BaseModel):
+    """Request to create a new directory"""
+    path: str  # Full path where the new directory should be created
+    name: str  # Name of the new directory
+
+
+@app.post("/api/create-directory")
+def create_directory_api(request: CreateDirectoryRequest):
+    """
+    Új mappa létrehozása a megadott helyen.
+    """
+    import os
+    
+    # Biztonsági ellenőrzés: path legyen abszolút és létező
+    parent_path = os.path.abspath(request.path)
+    if not os.path.isdir(parent_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A szülő könyvtár nem létezik: {parent_path}"
+        )
+    
+    # Új mappa útvonala
+    new_dir_path = os.path.join(parent_path, request.name)
+    
+    # Ellenőrizzük, hogy a mappa név érvényes-e
+    invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+    if any(c in request.name for c in invalid_chars):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Érvénytelen karakterek a mappa névben: {invalid_chars}"
+        )
+    
+    # Ellenőrizzük, hogy már létezik-e
+    if os.path.exists(new_dir_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A mappa már létezik: {new_dir_path}"
+        )
+    
+    try:
+        os.makedirs(new_dir_path)
+        return {
+            "status": "ok",
+            "message": f"Mappa létrehozva: {request.name}",
+            "path": new_dir_path
+        }
+    except PermissionError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Nincs jogosultság a mappa létrehozásához."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Hiba a mappa létrehozásakor: {str(e)}"
+        )
+
+
 # =====================================
 #   LLM CLIENT + /chat
 # =====================================
